@@ -43,4 +43,4 @@ review, then deploy and burn the upgrade authority (`solana program set-upgrade-
 
 - one on-chain hash ≈ 180 compute units; a signature check is 4–5k hashes on average
 - a normal unlock is 2 transactions; worst case splits verification over more
-- the unlock buffer's rent is returned; the `Spent` marker (~0.0017 SOL) stays as proof the key is used
+- the unlock buffer's rent is returned; the `Spent` marker (~0.0016 SOL) stays as proof the key is used
