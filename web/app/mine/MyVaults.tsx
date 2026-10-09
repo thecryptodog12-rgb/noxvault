@@ -64,7 +64,7 @@ export default function MyVaults() {
         kicker="02 // my vaults"
         title={
           <>
-            What the <span className="inv">night</span> holds
+            My <span className="inv">vaults</span>
           </>
         }
         sub="Your words find your vaults by themselves: the browser derives vault #0, #1, #2… and asks the chain which ones hold funds or were already used."
@@ -111,7 +111,7 @@ export default function MyVaults() {
             right={
               <div className="flex items-center gap-4">
                 <button
-                  className="text-[10px] uppercase tracking-[0.18em] text-dim hover:text-moon disabled:opacity-40"
+                  className="text-[10px] uppercase tracking-[0.18em] text-dim hover:text-teal disabled:opacity-40"
                   disabled={loading}
                   onClick={() => master && scan(master)}
                 >
@@ -228,14 +228,14 @@ function VaultItem({
   };
 
   return (
-    <li className={`px-4 py-4 ${active ? "bg-moon/[0.04]" : ""}`}>
+    <li className={`px-4 py-4 ${active ? "bg-teal/[0.04]" : ""}`}>
       <div className="flex flex-col gap-3 md:flex-row md:items-center">
         <div className="flex min-w-0 flex-1 items-center gap-4">
           <div className="font-display w-12 shrink-0 text-[20px] text-mute">#{row.index}</div>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <Status kind={row.pending ? "pending" : row.spent ? "spent" : "sealed"} />
-              <a className="truncate text-[13px] hover:text-moon" href={explorerUrl(addr)} target="_blank" rel="noreferrer">
+              <a className="truncate text-[13px] hover:text-teal" href={explorerUrl(addr)} target="_blank" rel="noreferrer">
                 {short(addr, 6)}
               </a>
               <Copy value={addr} />
@@ -243,7 +243,7 @@ function VaultItem({
             {row.spent && row.successor && (
               <div className="mt-1 text-[11.5px] text-dim">
                 spent → successor{" "}
-                <a className="text-mute hover:text-moon" href={explorerUrl(row.successor.toBase58())} target="_blank" rel="noreferrer">
+                <a className="text-mute hover:text-teal" href={explorerUrl(row.successor.toBase58())} target="_blank" rel="noreferrer">
                   {short(row.successor.toBase58(), 6)}
                 </a>
               </div>

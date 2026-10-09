@@ -21,7 +21,7 @@ interface Signed {
 export default function KeyLab() {
   const [key, setKey] = useState<OneTimeKey | null>(null);
   const [genMs, setGenMs] = useState(0);
-  const [msg, setMsg] = useState("pay 1 SOL to the night watch");
+  const [msg, setMsg] = useState("pay 1 SOL to alice");
   const [first, setFirst] = useState<Signed | null>(null);
   const [second, setSecond] = useState<Signed | null>(null);
   const [confirm2, setConfirm2] = useState(false);
@@ -76,7 +76,7 @@ export default function KeyLab() {
         kicker="04 // key lab"
         title={
           <>
-            Take a key <span className="inv">apart</span>
+            Key <span className="inv">lab</span>
           </>
         }
         sub="Everything on this page runs in your browser with the same WOTS+ code the vaults use. Nothing is sent anywhere. The lab signs sha256(text) instead of a real withdrawal message."
@@ -96,7 +96,7 @@ export default function KeyLab() {
               </div>
               <div className="flex gap-3">
                 <span className="w-16 shrink-0 text-dim">root</span>
-                <span className="truncate text-moon">{hex(key.root)}</span>
+                <span className="truncate text-teal">{hex(key.root)}</span>
               </div>
               <div className="flex gap-3">
                 <span className="w-16 shrink-0 text-dim">work</span>
@@ -214,7 +214,7 @@ export default function KeyLab() {
                   </button>
                 </div>
                 {verifyRes && (
-                  <div className={`border px-4 py-3 ${verifyRes.ok ? "border-moon text-moon" : "border-bad/70 text-bad"}`}>
+                  <div className={`border px-4 py-3 ${verifyRes.ok ? "border-teal text-teal" : "border-bad/70 text-bad"}`}>
                     <div className="font-display text-[22px]">{verifyRes.ok ? "VALID" : "REJECTED"}</div>
                     <div className="mt-1 text-[11px] text-dim">
                       rebuilt root {hex(verifyRes.root).slice(0, 24)}… {verifyRes.ok ? "=" : "≠"} key root ·{" "}

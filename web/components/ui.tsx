@@ -39,10 +39,10 @@ export function PageHead({ kicker, title, sub }: { kicker: string; title: ReactN
   return (
     <header className="mb-8 md:mb-10">
       <div className="label mb-4 flex items-center gap-2">
-        <span className="inline-block h-1.5 w-1.5 bg-moon" />
+        <span className="text-teal">{">"}</span>
         {kicker}
       </div>
-      <h1 className="font-display text-[34px] leading-[1.05] sm:text-[46px] md:text-[56px]">{title}</h1>
+      <h1 className="font-display text-[32px] leading-[1.08] sm:text-[44px] md:text-[54px]">{title}</h1>
       {sub && <p className="mt-5 max-w-2xl text-[14px] text-mute">{sub}</p>}
     </header>
   );
@@ -50,14 +50,14 @@ export function PageHead({ kicker, title, sub }: { kicker: string; title: ReactN
 
 export function Status({ kind }: { kind: "sealed" | "spent" | "pending" | "empty" }) {
   const map = {
-    sealed: "border-moon text-moon",
+    sealed: "border-teal text-teal",
     spent: "border-line-2 text-dim",
     pending: "border-warn text-warn",
     empty: "border-line text-dim",
   } as const;
   return (
-    <span className={`inline-flex items-center gap-1.5 border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.18em] ${map[kind]}`}>
-      <span className={`inline-block h-1.5 w-1.5 ${kind === "sealed" ? "bg-moon" : kind === "pending" ? "bg-warn" : "bg-line-2"}`} />
+    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] ${map[kind]}`}>
+      <span className={`inline-block h-1.5 w-1.5 rounded-full ${kind === "sealed" ? "bg-teal" : kind === "pending" ? "bg-warn" : "bg-line-2"}`} />
       {kind}
     </span>
   );
@@ -68,7 +68,7 @@ export function Copy({ value, className = "" }: { value: string; className?: str
   return (
     <button
       type="button"
-      className={`text-[10px] uppercase tracking-[0.18em] text-dim hover:text-moon ${className}`}
+      className={`text-[10px] uppercase tracking-[0.18em] text-dim hover:text-teal ${className}`}
       onClick={async () => {
         try {
           await navigator.clipboard.writeText(value);
@@ -87,11 +87,11 @@ export function Note({ kind = "info", children }: { kind?: "info" | "warn" | "ba
     info: "border-line-2 text-mute",
     warn: "border-warn/60 text-warn",
     bad: "border-bad/60 text-bad",
-    ok: "border-moon/60 text-moon",
+    ok: "border-teal/60 text-teal",
   }[kind];
   const tag = { info: "note", warn: "warn", bad: "error", ok: "ok" }[kind];
   return (
-    <div className={`border-l-2 ${c} bg-ink-2/80 px-3 py-2 text-[12.5px] leading-relaxed`}>
+    <div className={`rounded-r border-l-2 ${c} bg-ink-2/80 px-3 py-2 text-[12.5px] leading-relaxed`}>
       <span className="mr-2 uppercase tracking-[0.18em] opacity-80">{tag} //</span>
       <span className="text-bone/85">{children}</span>
     </div>
@@ -101,7 +101,7 @@ export function Note({ kind = "info", children }: { kind?: "info" | "warn" | "ba
 export function Empty({ title, children }: { title: string; children?: ReactNode }) {
   return (
     <div className="flex flex-col items-center justify-center gap-2 px-6 py-12 text-center">
-      <div className="font-display text-[15px] text-mute">{title}</div>
+      <div className="text-[14px] font-bold text-mute">{title}</div>
       {children && <div className="max-w-md text-[12.5px] text-dim">{children}</div>}
     </div>
   );

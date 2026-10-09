@@ -46,7 +46,7 @@ export default function Risks() {
         kicker="07 // risks"
         title={
           <>
-            Read this <span className="inv">before</span> dusk
+            Risks &amp; <span className="inv">disclaimer</span>
           </>
         }
         sub="Hash-based signatures fix one specific threat. They do not make experimental software safe. Here is what can go wrong."

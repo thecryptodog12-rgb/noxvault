@@ -12,16 +12,16 @@ const W = LW + COLS * (CW + GX);
 const H = LEN * (CH + GY);
 
 const C = {
-  idle: "#17171c",
-  walked: "#3d3d47",
-  verify: "#1d1d24",
-  end: "#4a4a55",
-  rev: "#e9e6df",
-  revSum: "#b8a6ff",
-  second: "#ffb86b",
-  exposed: "rgba(255,107,122,0.55)",
-  label: "#6d6d78",
-  labelSum: "#b8a6ff",
+  idle: "#0c171a",
+  walked: "#1d3b3e",
+  verify: "#0f1d21",
+  end: "#2f4c52",
+  rev: "#2ee6d6",
+  revSum: "#ffb547",
+  second: "#ff6b7a",
+  exposed: "rgba(255,107,122,0.4)",
+  label: "#5f7479",
+  labelSum: "#ffb547",
 };
 
 export default function ChainGrid({ a, b }: { a: number[] | null; b: number[] | null }) {

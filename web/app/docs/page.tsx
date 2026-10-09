@@ -21,7 +21,7 @@ export default function Docs() {
         kicker="05 // how it works"
         title={
           <>
-            The protocol, <span className="inv">plainly</span>
+            How it <span className="inv">works</span>
           </>
         }
         sub="A walk through the Noxvault v1 spec. The program, the SDK and this site all follow the same document."
@@ -31,7 +31,7 @@ export default function Docs() {
           <div className="sticky top-24 flex flex-col gap-1 text-[12px]">
             <div className="label mb-2">contents</div>
             {TOC.map(([id, t], i) => (
-              <a key={id} href={`#${id}`} className="text-mute hover:text-moon">
+              <a key={id} href={`#${id}`} className="text-mute hover:text-teal">
                 <span className="text-dim">{String(i + 1).padStart(2, "0")}</span> {t}
               </a>
             ))}

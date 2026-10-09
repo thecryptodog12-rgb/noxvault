@@ -370,7 +370,7 @@ export default function UnlockFlow({
             <>
               <div className="flex items-center justify-between">
                 <Label>signed message (frozen)</Label>
-                <span className="text-[10px] uppercase tracking-[0.18em] text-moon">
+                <span className="text-[10px] uppercase tracking-[0.18em] text-teal">
                   {lockSource === "chain" ? "from chain" : "from this browser"}
                 </span>
               </div>
@@ -471,7 +471,7 @@ export default function UnlockFlow({
                     </ul>
                   </Note>
                   <label className="flex cursor-pointer items-start gap-2 text-[12px] text-mute">
-                    <input type="checkbox" className="mt-1 accent-[#b8a6ff]" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
+                    <input type="checkbox" className="mt-1 accent-[#2ee6d6]" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
                     I understand these warnings and want to sign this exact message.
                   </label>
                 </div>
@@ -528,7 +528,7 @@ export default function UnlockFlow({
                     <span className="w-5 text-[10px] text-dim">{String(i + 1).padStart(2, "0")}</span>
                     <span className={steps[i] === "done" ? "text-mute" : steps[i] === "failed" ? "text-bad" : ""}>{t.label}</span>
                     {sigs[i] && (
-                      <a className="ml-auto text-[10px] text-dim hover:text-moon" href={explorerUrl(sigs[i]!, "tx")} target="_blank" rel="noreferrer">
+                      <a className="ml-auto text-[10px] text-dim hover:text-teal" href={explorerUrl(sigs[i]!, "tx")} target="_blank" rel="noreferrer">
                         tx ↗
                       </a>
                     )}
@@ -579,6 +579,6 @@ export default function UnlockFlow({
 }
 
 function StepDot({ s }: { s: StepState }) {
-  const c = s === "done" ? "bg-moon" : s === "sending" ? "bg-warn animate-pulse" : s === "failed" ? "bg-bad" : "border border-line-2";
+  const c = s === "done" ? "bg-teal" : s === "sending" ? "bg-warn animate-pulse" : s === "failed" ? "bg-bad" : "border border-line-2";
   return <span className={`inline-block h-2.5 w-2.5 shrink-0 ${c}`} />;
 }

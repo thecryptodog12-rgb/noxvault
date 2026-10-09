@@ -1,67 +1,19 @@
-// Pixel mark: a crescent moon inside a vault frame, drawn as SVG squares.
-const MOON = [
-  "....###.......",
-  "..###.........",
-  ".###..........",
-  ".###..........",
-  "###...........",
-  "###...........",
-  "####..........",
-  "####..........",
-  "#####.......#.",
-  ".#####.....##.",
-  ".############.",
-  "..##########..",
-  "...########...",
-  ".....####.....",
-];
-const STAR: [number, number][] = [
-  [10, 2], [9, 3], [10, 3], [11, 3], [10, 4],
-];
-const SIZE = 20; // frame 20×20, moon at offset 3
-
-function frame(): [number, number][] {
-  const px: [number, number][] = [];
-  for (let i = 1; i < SIZE - 1; i++) {
-    px.push([i, 0], [i, SIZE - 1], [0, i], [SIZE - 1, i]);
-  }
-  // bolts
-  px.push([2, 2], [SIZE - 3, 2], [2, SIZE - 3], [SIZE - 3, SIZE - 3]);
-  return px;
-}
-
-const MOON_PX: [number, number][] = MOON.flatMap((row, y) =>
-  [...row].flatMap((c, x) => (c === "#" ? [[x + 3, y + 3] as [number, number]] : []))
-);
-const FRAME_PX = frame();
-
-export function Mark({ size = 28, className = "" }: { size?: number; className?: string }) {
+// Noxvault mark: a hexagon outline with an inner facet, drawn as a teal line icon.
+export function Mark({ size = 30, className = "" }: { size?: number; className?: string }) {
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox={`0 0 ${SIZE} ${SIZE}`}
-      shapeRendering="crispEdges"
-      className={className}
-      aria-hidden
-    >
-      {FRAME_PX.map(([x, y]) => (
-        <rect key={`f${x}-${y}`} x={x} y={y} width={1} height={1} fill="#3a3a44" />
-      ))}
-      {MOON_PX.map(([x, y]) => (
-        <rect key={`m${x}-${y}`} x={x} y={y} width={1} height={1} fill="#e9e6df" />
-      ))}
-      {STAR.map(([x, y]) => (
-        <rect key={`s${x}-${y}`} x={x + 3} y={y + 3} width={1} height={1} fill="#b8a6ff" />
-      ))}
+    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" className={className} aria-hidden>
+      <path d="M16 2.5 27.7 9.25v13.5L16 29.5 4.3 22.75V9.25L16 2.5Z" stroke="#2ee6d6" strokeWidth="1.6" strokeLinejoin="round" />
+      <path d="M16 8.5 22.5 16 16 23.5 9.5 16 16 8.5Z" stroke="#e6f0ef" strokeWidth="1.4" strokeLinejoin="round" />
+      <path d="M9.5 16h13" stroke="#2ee6d6" strokeOpacity=".5" strokeWidth="1" />
     </svg>
   );
 }
 
-export function Wordmark({ className = "" }: { className?: string }) {
+export function Wordmark({ className = "", meta = true }: { className?: string; meta?: boolean }) {
   return (
-    <span className={`font-display text-[18px] tracking-wide ${className}`}>
-      NOX<span className="text-moon">/</span>VAULT
+    <span className={`flex items-baseline gap-3 ${className}`}>
+      <span className="text-[19px] font-bold tracking-[0.22em] text-bone">NOXVAULT</span>
+      {meta && <span className="hidden text-[12px] tracking-[0.08em] text-dim xl:inline">{"// v1.0 // SOLANA"}</span>}
     </span>
   );
 }

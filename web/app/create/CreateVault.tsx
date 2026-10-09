@@ -66,7 +66,7 @@ export default function CreateVault() {
         kicker="01 // create vault"
         title={
           <>
-            Seal a vault <span className="inv">tonight</span>
+            Create a <span className="inv">vault</span>
           </>
         }
         sub="Make a 24-word secret in this browser, see the address of your next fresh vault, then fund it from any wallet."
@@ -81,7 +81,7 @@ export default function CreateVault() {
                   <button
                     key={m}
                     className={`flex-1 px-4 py-2.5 text-[11px] uppercase tracking-[0.18em] ${
-                      mode === m ? "bg-ink-3 text-moon" : "text-dim hover:text-bone"
+                      mode === m ? "bg-ink-3 text-teal" : "text-dim hover:text-bone"
                     }`}
                     onClick={() => {
                       setMode(m);
@@ -140,7 +140,7 @@ export default function CreateVault() {
                         type="checkbox"
                         checked={wrote}
                         onChange={(e) => setWrote(e.target.checked)}
-                        className="mt-1 accent-[#b8a6ff]"
+                        className="mt-1 accent-[#2ee6d6]"
                         disabled={!revealed}
                       />
                       <span>I wrote these 24 words down, in order, somewhere offline.</span>
@@ -211,20 +211,20 @@ export default function CreateVault() {
           <Panel title="what happens" className="text-[12.5px]">
             <ol className="flex flex-col gap-3 p-4 text-mute">
               <li>
-                <span className="text-moon">01</span> The words become a master secret. Vault <em>i</em> is the i-th WOTS+ key
+                <span className="text-teal">01</span> The words become a master secret. Vault <em>i</em> is the i-th WOTS+ key
                 derived from it.
               </li>
               <li>
-                <span className="text-moon">02</span> The browser checks the chain for vaults you already used and shows the next
+                <span className="text-teal">02</span> The browser checks the chain for vaults you already used and shows the next
                 fresh one. A key is never reused.
               </li>
               <li>
-                <span className="text-moon">03</span> You send SOL with a plain transfer. Your wallet pays; it gets no power over
+                <span className="text-teal">03</span> You send SOL with a plain transfer. Your wallet pays; it gets no power over
                 the vault.
               </li>
               <li>
-                <span className="text-moon">04</span> Optional: list the vault in the public{" "}
-                <Link href="/vaults" className="underline decoration-dotted hover:text-moon">
+                <span className="text-teal">04</span> Optional: list the vault in the public{" "}
+                <Link href="/vaults" className="underline decoration-dotted hover:text-teal">
                   explorer
                 </Link>
                 . This reveals that the address is a Noxvault, nothing else.
@@ -343,7 +343,7 @@ function ReadyVault({ master, words, onForget }: { master: Uint8Array; words: st
 
   return (
     <>
-      <Panel lit title="step 2 // your next fresh vault" right={<span className="text-[10px] uppercase tracking-[0.18em] text-moon">sealed</span>}>
+      <Panel lit title="step 2 // your next fresh vault" right={<span className="text-[10px] uppercase tracking-[0.18em] text-teal">sealed</span>}>
         <div className="flex flex-col gap-4 p-4 sm:p-5">
           {!scan ? (
             <div className="text-[13px] text-mute">
@@ -374,7 +374,7 @@ function ReadyVault({ master, words, onForget }: { master: Uint8Array; words: st
                   href={key ? explorerUrl(key.vault.toBase58()) : "#"}
                   target="_blank"
                   rel="noreferrer"
-                  className="mt-1 block break-all border border-line bg-ink px-3 py-2 text-[13px] hover:border-moon-dim"
+                  className="mt-1 block break-all border border-line bg-ink px-3 py-2 text-[13px] hover:border-teal-dim"
                 >
                   {key?.vault.toBase58()}
                 </a>
@@ -411,9 +411,9 @@ function ReadyVault({ master, words, onForget }: { master: Uint8Array; words: st
               <button
                 key={v}
                 onClick={() => setRemember(v)}
-                className={`border px-3 py-2.5 text-left ${remember === v ? "border-moon bg-moon/[0.06]" : "border-line hover:border-line-2"}`}
+                className={`border px-3 py-2.5 text-left ${remember === v ? "border-teal bg-teal/[0.06]" : "border-line hover:border-line-2"}`}
               >
-                <div className={`text-[12px] ${remember === v ? "text-moon" : ""}`}>{t}</div>
+                <div className={`text-[12px] ${remember === v ? "text-teal" : ""}`}>{t}</div>
                 <div className="mt-0.5 text-[11px] text-dim">{s}</div>
               </button>
             ))}
@@ -436,7 +436,7 @@ function ReadyVault({ master, words, onForget }: { master: Uint8Array; words: st
                 withdraw it before then.
               </Note>
               <label className="flex cursor-pointer items-center gap-2 text-[12px] text-mute">
-                <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} className="accent-[#b8a6ff]" />I
+                <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} className="accent-[#2ee6d6]" />I
                 understand, let me deposit anyway
               </label>
             </div>
@@ -472,7 +472,7 @@ function ReadyVault({ master, words, onForget }: { master: Uint8Array; words: st
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-dashed border-line pt-4">
                 <div className="text-[12px] text-mute">
                   {registered ? (
-                    <span className="text-moon">✓ listed in the explorer</span>
+                    <span className="text-teal">✓ listed in the explorer</span>
                   ) : (
                     <>List this vault in the public explorer (optional, costs a little rent).</>
                   )}
@@ -551,7 +551,7 @@ function TokenDeposit({ vault, disabled }: { vault: PublicKey | null; disabled: 
 
   if (!open)
     return (
-      <button className="self-start text-[11px] uppercase tracking-[0.18em] text-dim hover:text-moon" onClick={() => setOpen(true)}>
+      <button className="self-start text-[11px] uppercase tracking-[0.18em] text-dim hover:text-teal" onClick={() => setOpen(true)}>
         [+ deposit an spl token instead]
       </button>
     );

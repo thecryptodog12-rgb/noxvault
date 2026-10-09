@@ -84,7 +84,7 @@ export default function Explorer() {
         kicker="03 // explorer"
         title={
           <>
-            Every vault <span className="inv">under</span> the moon
+            Vault <span className="inv">explorer</span>
           </>
         }
         sub="Vaults that chose to register, and every key that has been spent. Registering is optional, so this is not every Noxvault in existence."
@@ -134,7 +134,7 @@ export default function Explorer() {
                     return (
                       <tr key={a}>
                         <td>
-                          <a href={`/vaults?q=${a}`} className="hover:text-moon">
+                          <a href={`/vaults?q=${a}`} className="hover:text-teal">
                             {short(a, 6)}
                           </a>
                         </td>
@@ -156,13 +156,13 @@ export default function Explorer() {
           {loading ? (
             <Empty title="loading…" />
           ) : spents!.length === 0 ? (
-            <Empty title="quiet night">No key has been spent yet.</Empty>
+            <Empty title="no unlocks yet">No key has been spent yet.</Empty>
           ) : (
             <ul className="divide-y divide-dashed divide-line">
               {spents!.slice(0, 20).map((s) => (
                 <li key={s.vault.toBase58()} className="px-4 py-3 text-[12px]">
                   <div className="flex items-center justify-between gap-2">
-                    <a href={`/vaults?q=${s.vault.toBase58()}`} className="hover:text-moon">
+                    <a href={`/vaults?q=${s.vault.toBase58()}`} className="hover:text-teal">
                       {short(s.vault.toBase58(), 5)}
                     </a>
                     <span className="text-dim">slot {s.slot.toLocaleString("en-US")}</span>
@@ -278,7 +278,7 @@ function LookupResult({ q }: { q: string }) {
           <div className="flex flex-col gap-4">
             <div className="flex flex-wrap items-center gap-3">
               <Status kind={state.spent ? "spent" : state.assets.lamports > 0 || state.assets.tokens.length ? "sealed" : "empty"} />
-              <a href={explorerUrl(state.vault.toBase58())} target="_blank" rel="noreferrer" className="break-all text-[13px] hover:text-moon">
+              <a href={explorerUrl(state.vault.toBase58())} target="_blank" rel="noreferrer" className="break-all text-[13px] hover:text-teal">
                 {state.vault.toBase58()}
               </a>
               <Copy value={state.vault.toBase58()} />
@@ -304,7 +304,7 @@ function LookupResult({ q }: { q: string }) {
             {state.spent && (
               <div className="text-[12px] text-mute">
                 Unlocked at slot {state.spent.slot.toLocaleString("en-US")}. Anything still here, or sent later, can be swept to{" "}
-                <a className="text-bone hover:text-moon" href={`/vaults?q=${state.spent.successor.toBase58()}`}>
+                <a className="text-bone hover:text-teal" href={`/vaults?q=${state.spent.successor.toBase58()}`}>
                   {short(state.spent.successor.toBase58(), 6)}
                 </a>
                 .

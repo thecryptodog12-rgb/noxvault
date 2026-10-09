@@ -37,7 +37,7 @@ export default function SecretInput({
   return (
     <div className="flex flex-col gap-3">
       {stored && (
-        <div className="flex flex-wrap items-center justify-between gap-2 border border-moon-dim bg-moon/[0.05] px-3 py-2 text-[12px]">
+        <div className="flex flex-wrap items-center justify-between gap-2 border border-teal-dim bg-teal/[0.05] px-3 py-2 text-[12px]">
           <span className="text-mute">
             Words remembered in <span className="text-bone">{stored}</span>.
           </span>
@@ -71,8 +71,8 @@ export default function SecretInput({
       </div>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-4 text-[11px] text-dim">
-          <span className={count === 24 ? "text-moon" : ""}>{count}/24 words</span>
-          <button type="button" className="uppercase tracking-[0.18em] hover:text-moon" onClick={() => setHidden((h) => !h)}>
+          <span className={count === 24 ? "text-teal" : ""}>{count}/24 words</span>
+          <button type="button" className="uppercase tracking-[0.18em] hover:text-teal" onClick={() => setHidden((h) => !h)}>
             [{hidden ? "show" : "hide"}]
           </button>
         </div>

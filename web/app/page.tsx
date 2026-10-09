@@ -1,184 +1,172 @@
 import Link from "next/link";
-import KeygenConsole from "@/components/KeygenConsole";
-import { Panel } from "@/components/ui";
-import { NETWORK } from "@/lib/config";
-
-const STATS = [
-  { k: "scheme", v: "WOTS+", s: "tweaked Winternitz one-time signature" },
-  { k: "hash", v: "SHA-256", s: "full 32-byte chain values" },
-  { k: "rule", v: "1 KEY = 1 USE", s: "spent keys are marked on-chain" },
-  { k: "network", v: NETWORK.toUpperCase(), s: "test SOL only, for now" },
-];
+import { ArrowRight, Boxes, Check, FileSignature, FlaskConical, Lock, RefreshCw } from "lucide-react";
+import BootLines from "@/components/home/BootLines";
+import ConsolePanel from "@/components/home/ConsolePanel";
 
 const STEPS = [
-  { n: "01", t: "Make a secret", d: "Your browser draws 32 random bytes and shows them as 24 words. Nothing is sent anywhere. From those words come vault #0, #1, #2…" },
-  { n: "02", t: "Fill the vault", d: "The vault is an address derived from a hash root. Any wallet can send SOL or tokens to it. No elliptic-curve key can take them out." },
-  { n: "03", t: "Sign once", d: "To withdraw, the browser signs the exact payout (asset, amount, destination, next vault) with the one-time key. A couple of transactions verify it on-chain." },
-  { n: "04", t: "Move to dawn", d: "The program pays out, sends the rest to your next fresh vault and marks the old key as spent. It can never sign again." },
+  {
+    n: "01",
+    t: "GENERATE",
+    Icon: Boxes,
+    href: "/create",
+    d: "Create a 24-word secret and derive one-time keys in your browser. Keys never leave your device.",
+  },
+  {
+    n: "02",
+    t: "SEAL",
+    Icon: Lock,
+    href: "/create",
+    d: "Lock SOL or tokens in a vault whose address comes from the root hash of your key chains.",
+  },
+  {
+    n: "03",
+    t: "UNLOCK",
+    Icon: FileSignature,
+    href: "/mine",
+    d: "Withdraw with a one-time WOTS+ signature, verified on-chain. Each key can be used once.",
+  },
+  {
+    n: "04",
+    t: "ROTATE",
+    Icon: RefreshCw,
+    href: "/docs#after",
+    d: "Whatever you don't withdraw moves to your next fresh vault, with a new unused key.",
+  },
 ];
 
 const ROWS: [string, string, string][] = [
-  ["what guards the funds", "one ed25519 key (elliptic curve)", "a WOTS+ one-time signature over SHA-256"],
-  ["large quantum computer", "Shor's algorithm recovers the key", "no known shortcut; hash security only weakened, not broken"],
-  ["signature", "64 bytes", "1,088 bytes (34 chains × 32 B) + 32-byte pk_seed"],
-  ["parameters", "—", "w = 256, n = 32, 32 message + 2 checksum chains"],
-  ["hash tweaks", "—", "every hash call keyed by pk_seed, chain and step"],
-  ["key reuse", "unlimited", "never; a Spent marker blocks a second use"],
-  ["assets", "SOL, SPL", "SOL, SPL and Token-2022"],
-  ["a withdrawal", "1 transaction", "usually 2 transactions (sign + write, then verify + pay out)"],
-  ["your wallet's role", "holds the key", "only pays fees and deposits; cannot open a vault"],
-  ["audited", "depends", "no, not yet"],
+  ["Security basis", "Elliptic curve (Ed25519)", "Hash-based (WOTS+, SHA-256)"],
+  ["Quantum resistance", "Vulnerable (long term)", "Built to resist quantum attacks"],
+  ["Public key exposure", "Public key always visible", "Only a hash root"],
+  ["Key reuse", "Same key used repeatedly", "One-time keys (1 use only)"],
+  ["Signature size", "64 bytes", "1,088 B (34 chains) + 32 B seed"],
+  ["Assets", "SOL, SPL", "SOL, SPL, Token-2022"],
+  ["Withdrawal", "1 transaction", "~2 txs, retry-safe"],
 ];
 
 const ROADMAP = [
-  { t: "Build", s: "program, SDK, web app", state: "done" },
-  { t: "Devnet", s: "public test with free SOL", state: "now" },
-  { t: "Review / audit", s: "external review of program + SDK. Not started.", state: "next" },
-  { t: "Mainnet", s: "only after review; upgrade authority burned", state: "later" },
-];
-
-const CARDS = [
-  { href: "/keylab", k: "try", t: "Key lab", d: "Generate a key, watch the 34 chains, sign, tamper, and see why a second signature leaks the key." },
-  { href: "/docs", k: "read", t: "How it works", d: "The whole protocol in plain words: keys, chains, the message, and the on-chain flow." },
-  { href: "/risks", k: "know", t: "Risks", d: "Unaudited code, you hold the only secret, browser signing. Read this before you lock anything." },
+  { n: "01", t: "BUILD", state: "done", items: ["Protocol spec", "Anchor program", "Browser key generation"] },
+  { n: "02", t: "DEVNET", state: "now", items: ["Public devnet", "Community testing", "SDK & web app"] },
+  { n: "03", t: "AUDIT", state: "next", items: ["Third-party audit", "Bug bounty", "Not started yet"] },
+  { n: "04", t: "MAINNET", state: "next", items: ["Mainnet launch", "Authority burned", "Integrations"] },
 ];
 
 export default function Home() {
   return (
-    <div className="flex flex-col gap-16 md:gap-24">
+    <div className="flex flex-col gap-8">
       {/* hero */}
-      <section className="grid [&>*]:min-w-0 items-start gap-10 xl:grid-cols-[1.05fr_1fr]">
+      <section className="grid items-center gap-8 lg:grid-cols-[0.84fr_1.16fr] xl:gap-12 [&>*]:min-w-0">
         <div>
-          <div className="label mb-5 flex items-center gap-2">
-            <span className="inline-block h-1.5 w-1.5 bg-moon" />
-            post-quantum vault // solana {NETWORK}
-          </div>
-          <h1 className="font-display text-[40px] leading-[1.14] sm:text-[64px] md:text-[76px]">
-            Keys that
+          <BootLines />
+          <h1 className="mt-5 text-[44px] font-bold leading-[1.02] tracking-[-0.02em] sm:text-[58px] xl:text-[58px] 2xl:text-[76px]">
+            Lock your SOL
             <br />
-            survive <span className="inv">the</span>
-            <br />
-            <span className="inv">night.</span>
+            behind <span className="text-teal">hashes.</span>
           </h1>
-          <p className="mt-7 max-w-xl text-[14.5px] text-mute">
-            Quantum-proof vaults for Solana. Lock SOL and tokens behind a hash-based one-time
-            signature that your browser makes from 24 words. Your wallet sends deposits and pays
-            fees. It cannot open the vault. Nothing can, except that signature.
+          <p className="mt-6 max-w-[600px] text-[14.5px] leading-7 text-bone/85 sm:text-[16px]">
+            A hash-based vault for Solana. Withdrawals are authorized by one-time WOTS+ signatures instead of standard wallet
+            keys.
           </p>
-          <div className="mt-8 flex flex-wrap gap-3">
-            <Link href="/create" className="btn">
-              create a vault →
+          <div className="mt-8 flex flex-wrap gap-4">
+            <Link href="/create" className="btn !px-10 !py-3.5 !text-[14px]">
+              Create a Vault <ArrowRight size={17} />
             </Link>
-            <Link href="/keylab" className="btn ghost">
-              open the key lab
+            <Link href="/keylab" className="btn ghost !border-bone/50 !px-9 !py-3.5 !text-[14px]">
+              <FlaskConical size={17} strokeWidth={1.6} /> Try the Key Lab
             </Link>
           </div>
         </div>
-        <KeygenConsole />
+        <ConsolePanel />
       </section>
 
-      {/* stats */}
-      <section className="grid [&>*]:min-w-0 grid-cols-2 gap-3 md:grid-cols-4">
-        {STATS.map((s) => (
-          <Panel key={s.k} className="p-4">
-            <div className="label">{s.k}</div>
-            <div className="font-display mt-3 text-[19px] sm:text-[22px]">{s.v}</div>
-            <div className="mt-2 text-[11.5px] text-dim">{s.s}</div>
-          </Panel>
-        ))}
-      </section>
-
-      {/* how */}
-      <section>
-        <SectionHead kicker="how a vault works" title={<>Four steps, <span className="inv">one</span> key.</>} />
-        <div className="grid [&>*]:min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-4">
-          {STEPS.map((s) => (
-            <Panel key={s.n} className="p-5">
-              <div className="font-display text-[28px] text-moon">{s.n}</div>
-              <div className="font-display mt-4 text-[16px]">{s.t}</div>
-              <p className="mt-3 text-[12.5px] text-mute">{s.d}</p>
-            </Panel>
-          ))}
-        </div>
-      </section>
-
-      {/* compare */}
-      <section>
-        <SectionHead kicker="side by side" title={<>A normal wallet <span className="inv">vs</span> Noxvault</>} />
-        <Panel className="overflow-x-auto">
-          <table className="tbl min-w-[560px]">
-            <thead>
-              <tr>
-                <th className="w-[26%]"></th>
-                <th>normal wallet</th>
-                <th className="!text-moon">noxvault</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ROWS.map(([k, a, b]) => (
-                <tr key={k}>
-                  <td className="text-dim">{k}</td>
-                  <td className="text-mute">{a}</td>
-                  <td>{b}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Panel>
-      </section>
-
-      {/* roadmap */}
-      <section>
-        <SectionHead kicker="roadmap" title={<>Where we <span className="inv">are</span></>} />
-        <div className="grid [&>*]:min-w-0 gap-3 md:grid-cols-4">
-          {ROADMAP.map((r, i) => (
-            <Panel key={r.t} lit={r.state === "now"} className="p-5">
-              <div className="flex items-center justify-between">
-                <span className="label">phase {i + 1}</span>
-                <span
-                  className={`text-[10px] uppercase tracking-[0.18em] ${
-                    r.state === "now" ? "bg-moon px-1.5 text-ink" : r.state === "done" ? "text-bone" : "text-dim"
-                  }`}
-                >
-                  {r.state}
-                </span>
-              </div>
-              <div className={`font-display mt-4 text-[18px] ${r.state === "later" || r.state === "next" ? "text-mute" : ""}`}>
-                {r.t}
-              </div>
-              <p className="mt-2 text-[12px] text-dim">{r.s}</p>
-            </Panel>
-          ))}
-        </div>
-        <p className="mt-4 text-[12px] text-dim">
-          Nothing here has been audited. Use devnet SOL you do not care about.
-        </p>
-      </section>
-
-      {/* cards */}
-      <section className="grid [&>*]:min-w-0 gap-3 md:grid-cols-3">
-        {CARDS.map((c) => (
-          <Link key={c.href} href={c.href} className="group">
-            <Panel className="h-full p-5 transition-colors group-hover:border-moon-dim">
-              <div className="label">{c.k}</div>
-              <div className="font-display mt-4 flex items-center justify-between text-[20px]">
-                {c.t}
-                <span className="text-dim transition-transform group-hover:translate-x-1 group-hover:text-moon">→</span>
-              </div>
-              <p className="mt-3 text-[12.5px] text-mute">{c.d}</p>
-            </Panel>
+      {/* steps */}
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 [&>*]:min-w-0">
+        {STEPS.map(({ n, t, Icon, href, d }) => (
+          <Link key={n} href={href} className="panel group flex gap-5 p-5 transition-colors hover:border-teal/50 sm:p-6">
+            <div className="flex shrink-0 flex-col gap-5">
+              <span className="text-[18px] font-medium text-teal">{n}</span>
+              <Icon size={40} strokeWidth={1.25} className="text-teal" />
+            </div>
+            <div className="flex min-w-0 flex-1 flex-col">
+              <div className="text-[15px] font-medium tracking-[0.12em]">{t}</div>
+              <p className="mt-3 text-[12.5px] leading-6 text-mute">{d}</p>
+              <ArrowRight size={16} className="mt-auto self-end text-teal transition-transform group-hover:translate-x-1" />
+            </div>
           </Link>
         ))}
       </section>
-    </div>
-  );
-}
 
-function SectionHead({ kicker, title }: { kicker: string; title: React.ReactNode }) {
-  return (
-    <div className="mb-6">
-      <div className="label mb-3">{`// ${kicker}`}</div>
-      <h2 className="font-display text-[28px] leading-[1.08] sm:text-[38px]">{title}</h2>
+      {/* compare + roadmap */}
+      <section className="grid gap-3 xl:grid-cols-[1.12fr_0.88fr] [&>*]:min-w-0">
+        <div className="panel overflow-hidden">
+          <div className="border-b border-line-2 px-6 py-4 text-[16px] font-medium tracking-[0.16em]">WALLET vs NOXVAULT</div>
+          <div className="overflow-x-auto">
+            <table className="tbl min-w-[600px] whitespace-nowrap text-[12px] [&_td]:!px-3.5 [&_td]:!py-[9px] [&_th]:!px-3.5">
+              <thead>
+                <tr>
+                  <th>Feature</th>
+                  <th>Standard wallet</th>
+                  <th className="!text-teal">Noxvault (this protocol)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ROWS.map(([k, a, b]) => (
+                  <tr key={k}>
+                    <td className="text-mute">{k}</td>
+                    <td className="text-mute">{a}</td>
+                    <td className="text-teal">{b}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="panel flex flex-col overflow-hidden">
+          <div className="flex items-center justify-between border-b border-line-2 px-6 py-4">
+            <span className="text-[16px] font-medium tracking-[0.16em]">WHERE WE ARE</span>
+            <span className="text-[10.5px] tracking-[0.14em] text-dim">{"ROADMAP // v1.0"}</span>
+          </div>
+          <div className="flex flex-1 items-center overflow-x-auto">
+            <ol className="grid w-full min-w-[520px] grid-cols-4 px-6 py-6">
+              {ROADMAP.map((r, i) => (
+                <li key={r.n} className="relative">
+                  {i < ROADMAP.length - 1 && (
+                    <span
+                      className={`absolute left-9 right-1 top-[13px] border-t border-dashed ${r.state === "done" ? "border-teal" : "border-line-2"}`}
+                    />
+                  )}
+                  <span
+                    className={`relative flex h-[28px] w-[28px] items-center justify-center rounded-full border text-[11px] ${
+                      r.state === "now"
+                        ? "border-teal bg-teal font-bold text-ink shadow-[0_0_18px_rgba(46,230,214,0.55)]"
+                        : r.state === "done"
+                          ? "border-teal text-teal"
+                          : "border-line-2 text-mute"
+                    }`}
+                  >
+                    {r.n}
+                  </span>
+                  <div className={`mt-4 flex items-center gap-2 text-[14px] font-medium tracking-[0.12em] ${r.state === "next" ? "text-mute" : ""}`}>
+                    {r.t}
+                    {r.state === "done" && <Check size={15} className="text-teal" />}
+                    {r.state === "now" && <span className="rounded-sm bg-teal px-1.5 text-[9.5px] font-bold text-ink">NOW</span>}
+                  </div>
+                  <ul className="mt-3 flex flex-col gap-1.5 pr-3 text-[11.5px] text-mute">
+                    {r.items.map((it) => (
+                      <li key={it} className="flex gap-2">
+                        <span className="text-dim">•</span>
+                        {it}
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+            </ol>
+          </div>
+          <p className="border-t border-line px-6 py-3 text-[11px] text-dim">Nothing has been audited yet. Use devnet SOL only.</p>
+        </div>
+      </section>
     </div>
   );
 }

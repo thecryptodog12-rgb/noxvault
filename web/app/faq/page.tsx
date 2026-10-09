@@ -61,14 +61,14 @@ export default function Faq() {
         kicker="06 // faq"
         title={
           <>
-            Questions <span className="inv">after</span> dark
+            Frequently asked <span className="inv">questions</span>
           </>
         }
       />
       <div className="flex max-w-[820px] flex-col border-t border-line">
         {QA.map(([q, a], i) => (
           <details key={i} className="group border-b border-line" open={i === 0}>
-            <summary className="flex cursor-pointer list-none items-start gap-4 py-4 text-[14px] hover:text-moon [&::-webkit-details-marker]:hidden">
+            <summary className="flex cursor-pointer list-none items-start gap-4 py-4 text-[14px] hover:text-teal [&::-webkit-details-marker]:hidden">
               <span className="pt-0.5 text-[10px] text-dim">{String(i + 1).padStart(2, "0")}</span>
               <span className="flex-1">{q}</span>
               <span className="text-dim group-open:rotate-45 transition-transform">+</span>

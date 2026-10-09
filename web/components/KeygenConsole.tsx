@@ -48,7 +48,7 @@ function runDemo(): Line[] {
   return out;
 }
 
-export default function KeygenConsole() {
+export default function KeygenConsole({ bare = false }: { bare?: boolean }) {
   const [lines, setLines] = useState<Line[]>([]);
   const [shown, setShown] = useState(0);
   const [running, setRunning] = useState(false);
@@ -82,35 +82,47 @@ export default function KeygenConsole() {
   }, [run]);
 
   const color = (k?: Line["k"]) =>
-    k === "cmd" ? "text-bone" : k === "ok" ? "text-moon" : k === "moon" ? "text-moon/90" : k === "dim" ? "text-dim" : "text-mute";
+    k === "cmd" ? "text-bone" : k === "ok" ? "text-teal" : k === "moon" ? "text-teal/90" : k === "dim" ? "text-dim" : "text-mute";
+
+  const body = (
+    <div className={`${bare ? "h-full min-h-[280px]" : "h-[312px]"} overflow-hidden px-4 py-3 text-[11.5px] leading-[1.75] sm:text-[12px]`}>
+      {lines.slice(0, shown).map((l, i) => (
+        <div key={i} className={`truncate ${color(l.k)}`}>
+          {l.t}
+        </div>
+      ))}
+      <div className="flex items-center justify-between text-bone">
+        <span>
+          {running ? "" : "$ "}
+          <span className="blink">▍</span>
+        </span>
+        {bare && (
+          <button className="text-[10px] uppercase tracking-[0.18em] text-dim hover:text-teal disabled:opacity-40" onClick={run} disabled={running}>
+            [{running ? "running" : "run again"}]
+          </button>
+        )}
+      </div>
+    </div>
+  );
+  if (bare) return body;
 
   return (
     <Panel
       title={
         <span className="flex items-center gap-2">
-          <span className="inline-block h-2 w-2 bg-line-2" />
-          <span className="inline-block h-2 w-2 bg-line-2" />
-          <span className="inline-block h-2 w-2 bg-moon" />
+          <span className="inline-block h-2 w-2 rounded-full bg-line-2" />
+          <span className="inline-block h-2 w-2 rounded-full bg-line-2" />
+          <span className="inline-block h-2 w-2 rounded-full bg-teal" />
           <span className="ml-2">console // runs in your browser</span>
         </span>
       }
       right={
-        <button className="text-[10px] uppercase tracking-[0.18em] text-dim hover:text-moon disabled:opacity-40" onClick={run} disabled={running}>
+        <button className="text-[10px] uppercase tracking-[0.18em] text-dim hover:text-teal disabled:opacity-40" onClick={run} disabled={running}>
           [{running ? "running" : "run again"}]
         </button>
       }
     >
-      <div className="h-[312px] overflow-hidden px-4 py-3 text-[11.5px] leading-[1.75] sm:text-[12px]">
-        {lines.slice(0, shown).map((l, i) => (
-          <div key={i} className={`truncate ${color(l.k)}`}>
-            {l.t}
-          </div>
-        ))}
-        <div className="text-bone">
-          {running ? "" : "$ "}
-          <span className="blink">▍</span>
-        </div>
-      </div>
+      {body}
     </Panel>
   );
 }

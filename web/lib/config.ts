@@ -17,3 +17,6 @@ export function explorerUrl(value: string, kind: "address" | "tx" = "address"): 
         : `?cluster=${NETWORK}`;
   return `https://explorer.solana.com/${kind}/${value}${cluster}`;
 }
+
+/** Project X/Twitter link shown in the nav. */
+export const X_URL = "https://x.com";
