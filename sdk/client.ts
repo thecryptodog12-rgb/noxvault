@@ -9,8 +9,12 @@ import {
 } from "@solana/web3.js";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
+  ExtensionType,
   TOKEN_PROGRAM_ID,
+  getAccount,
   getAssociatedTokenAddressSync,
+  getExtensionTypes,
+  getMint,
 } from "@solana/spl-token";
 import { entropyToMnemonic, mnemonicToEntropy, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english";
@@ -117,6 +121,78 @@ export function verifyRanges(costs: number[], budget: number): [number, number][
   }
   ranges.push([from, costs.length]);
   return ranges;
+}
+
+// ---------- preflight ----------
+
+/**
+ * Checks an unlock BEFORE it is signed. A one-time key must sign exactly one message, so a
+ * message that can never be paid out (empty destination below rent, a frozen token account,
+ * a fee on transfer…) would leave the user choosing between a stuck vault and a weakened key.
+ * `errors` must be empty before signing; `warnings` need the user's explicit consent.
+ */
+export async function preflightUnlock(
+  p: Omit<UnlockParams, "hashesPerTx">
+): Promise<{ errors: string[]; warnings: string[] }> {
+  const conn = p.program.provider.connection;
+  const programId = p.program.programId;
+  const mint = p.mint ?? SOL_MINT;
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  if (p.amount <= 0n) errors.push("Amount must be greater than zero.");
+  if (p.dest.equals(p.key.vault)) errors.push("The destination cannot be the vault itself.");
+  if (p.next.equals(p.key.vault)) errors.push("The next vault cannot be the vault being opened.");
+
+  const [spent, nextSpent, nextInfo, vaultInfo, destInfo] = await conn.getMultipleAccountsInfo([
+    spentPda(p.key.vault, programId),
+    spentPda(p.next, programId),
+    p.next,
+    p.key.vault,
+    p.dest,
+  ]);
+  if (spent) errors.push("This vault's key is already used. Its funds are forwarded with a sweep, not an unlock.");
+  if (nextSpent) errors.push("The next vault's key is already used. Pick a fresh vault.");
+  if (nextInfo && nextInfo.lamports > 0) warnings.push("The next vault already holds SOL; make sure it is yours and unused.");
+  const rentMin = await conn.getMinimumBalanceForRentExemption(0);
+
+  if (mint.equals(SOL_MINT)) {
+    const balance = BigInt(vaultInfo?.lamports ?? 0);
+    if (p.amount > balance) errors.push("The vault holds less than this amount.");
+    const destLamports = destInfo?.lamports ?? 0;
+    const rest = balance - p.amount;
+    const payout = rest > 0n && rest < BigInt(rentMin) && !nextInfo?.lamports ? balance : p.amount;
+    if (destLamports === 0 && payout < BigInt(rentMin))
+      errors.push(`The destination is empty, so it must receive at least ${rentMin / 1e9} SOL.`);
+    return { errors, warnings };
+  }
+
+  const tokenProgram = p.tokenProgram ?? TOKEN_PROGRAM_ID;
+  const vaultAta = getAssociatedTokenAddressSync(mint, p.key.vault, true, tokenProgram);
+  try {
+    const acct = await getAccount(conn, vaultAta, "confirmed", tokenProgram);
+    if (p.amount > acct.amount) errors.push("The vault holds less of this token than this amount.");
+    if (acct.isFrozen) errors.push("The vault's token account is frozen by the token's issuer.");
+  } catch {
+    errors.push("The vault has no account for this token.");
+  }
+  try {
+    const m = await getMint(conn, mint, "confirmed", tokenProgram);
+    if (m.freezeAuthority)
+      warnings.push("This token has a freeze authority: its issuer could freeze the vault and block the unlock.");
+    const blocking = [
+      ExtensionType.TransferFeeConfig,
+      ExtensionType.TransferHook,
+      ExtensionType.NonTransferable,
+      ExtensionType.PermanentDelegate,
+      ExtensionType.ConfidentialTransferMint,
+    ];
+    const exts = getExtensionTypes(m.tlvData).filter((e) => blocking.includes(e));
+    if (exts.length)
+      errors.push(`This token uses Token-2022 extensions Noxvault does not support (${exts.map((e) => ExtensionType[e]).join(", ")}).`);
+  } catch {
+    errors.push("Could not read this token's mint.");
+  }
+  return { errors, warnings };
 }
 
 export async function planUnlock(p: UnlockParams): Promise<UnlockPlan> {

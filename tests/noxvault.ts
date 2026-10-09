@@ -25,6 +25,7 @@ import {
   verifyRanges,
   newMasterSecret,
   planUnlock,
+  preflightUnlock,
   recordPda,
   scanVaults,
   secretToWords,
@@ -230,6 +231,20 @@ describe("noxvault", () => {
         .instruction(),
     ]);
     expect(await conn.getBalance(k1.vault)).to.eq(0);
+  });
+
+  it("refuses to plan an unlock that could never be paid out", async () => {
+    const k2 = key(2);
+    const base = { program, payer, key: k2, next: key(3).vault };
+    const empty = Keypair.generate().publicKey;
+    const tooSmall = await preflightUnlock({ ...base, dest: empty, amount: 1000n });
+    expect(tooSmall.errors.join()).to.contain("destination is empty");
+    const tooMuch = await preflightUnlock({ ...base, dest: payer, amount: BigInt(1000 * LAMPORTS_PER_SOL) });
+    expect(tooMuch.errors.join()).to.contain("less than this amount");
+    const used = await preflightUnlock({ ...base, key: key(0), dest: payer, amount: 1000n });
+    expect(used.errors.join()).to.contain("already used");
+    const ok = await preflightUnlock({ ...base, dest: payer, amount: 1000n });
+    expect(ok.errors).to.deep.eq([]);
   });
 
   it("finds the user's vaults again from the secret alone", async () => {
