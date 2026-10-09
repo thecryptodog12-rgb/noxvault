@@ -19,7 +19,7 @@ const RISKS = [
   },
   {
     t: "Never reuse a key",
-    d: "A WOTS+ key may sign one message, ever. This site enforces that (it freezes the message before sending and resumes with the same one), and the program refuses a second unlock. Do not try to work around it with other tools.",
+    d: "A WOTS+ key may sign one message, ever. Before signing, the app reads the vault's whole history; if this key ever published part of a signature, only that same withdrawal can be completed. If the history cannot be read, it refuses to sign. Other tools may not do this: do not sign with your words anywhere else.",
   },
   {
     t: `${NETWORK === "mainnet-beta" ? "Early mainnet" : "Devnet first"}`,

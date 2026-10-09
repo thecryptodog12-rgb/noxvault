@@ -111,7 +111,7 @@ describe("noxvault", () => {
   it("round-trips the secret through 24 words", () => {
     const words = secretToWords(master);
     expect(words.split(" ").length).to.eq(24);
-    expect(Buffer.from(wordsToSecret(words)).equals(Buffer.from(master))).to.eq(true);
+    expect(wots.equal(wordsToSecret(words), master)).to.eq(true);
   });
 
   it("registers a vault for the explorer", async () => {
@@ -274,7 +274,7 @@ describe("noxvault", () => {
     await cancel(k.vault);
     let signed = await findSignedMessages(program, k);
     expect(signed.length).to.eq(1);
-    expect(Buffer.from(signed[0].digest).equals(Buffer.from(plan1.digest))).to.eq(true);
+    expect(wots.equal(signed[0].digest, plan1.digest)).to.eq(true);
     expect(signed[0].chains.length).to.eq(17);
 
     // Any other message is refused, from this payer or from another wallet.
@@ -298,7 +298,7 @@ describe("noxvault", () => {
     await provider.sendAndConfirm(new Transaction().add(open, copy), [other], { commitment: "confirmed" });
     signed = await findSignedMessages(program, k);
     expect(signed.length).to.eq(1);
-    expect(Buffer.from(signed[0].digest).equals(Buffer.from(plan1.digest))).to.eq(true);
+    expect(wots.equal(signed[0].digest, plan1.digest)).to.eq(true);
 
     // The original message can still be completed.
     expect((await preflightUnlock(m1)).errors).to.deep.eq([]);

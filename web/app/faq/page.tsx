@@ -24,9 +24,9 @@ const QA: [string, React.ReactNode][] = [
   [
     "What happens if my browser closes in the middle of an unlock?",
     <>
-      Come back to <Link href="/mine">my vaults</Link> with the same words. The page remembers the frozen message (and reads it
-      back from the chain if needed) and continues with exactly the same parameters. It will never sign a different message with
-      that key.
+      Come back to <Link href="/mine">my vaults</Link> with the same words. Before signing, the app reads the vault&apos;s whole
+      history; if this key ever published part of a signature, only that same withdrawal can be completed. So it resumes with
+      exactly the same parameters, even on another device, and never signs a different message with that key.
     </>,
   ],
   [

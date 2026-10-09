@@ -1,35 +1,54 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { PublicKey, type TransactionInstruction } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
-import { SOL_MINT, planUnlock, preflightUnlock, unlockPda, vaultKey, type UnlockPlan } from "@nox/sdk/client";
+import {
+  SOL_MINT,
+  findSignedMessages,
+  planUnlock,
+  preflightUnlock,
+  unlockPda,
+  vaultKey,
+  type SignedMessage,
+} from "@nox/sdk/client";
 import { messageDigest } from "@nox/sdk/wots";
 import { Label, Note, Panel } from "@/components/ui";
 import { useNox } from "@/lib/hooks";
 import { errMsg, fromBaseUnits, hex, short, sol, toBaseUnits } from "@/lib/format";
 import { explorerUrl } from "@/lib/config";
 import {
-  bufferMatches,
+  cancelUnlockIx,
+  clearFinished,
   clearPending,
   decodeUnlock,
-  findOpenBuffers,
   isSol,
   isSpent,
   loadPending,
+  markAttempted,
+  mintTokenProgram,
   savePending,
   sendIxs,
-  remainingIxs,
+  sendSteps,
   sweepIx,
   sweepTokenIx,
   vaultAssets,
+  wasAttempted,
   type PendingUnlock,
-  type UnlockBuffer,
+  type SendStep,
   type VaultAssets,
 } from "@/lib/unlock";
 import type { VaultRow } from "./MyVaults";
 
 type StepState = "todo" | "sending" | "done" | "failed";
-type Remaining = (TransactionInstruction[] | null)[];
+type History =
+  | { kind: "loading" }
+  | { kind: "error"; msg: string }
+  | { kind: "none" }
+  | { kind: "one"; m: SignedMessage }
+  | { kind: "many"; ms: SignedMessage[] };
+
+const fmtAmount = (m: { mint: PublicKey; amount: bigint }) =>
+  isSol(m.mint) ? `${sol(m.amount, 9)} SOL` : `${m.amount.toString()} base units of ${short(m.mint.toBase58(), 4)}`;
 
 export default function UnlockFlow({
   master,
@@ -51,11 +70,12 @@ export default function UnlockFlow({
   const key = useMemo(() => vaultKey(master, row.index, program.programId), [master, row.index, program]);
   const freshNext = useMemo(() => vaultKey(master, nextFresh, program.programId).vault, [master, nextFresh, program]);
 
-  // frozen message (from this browser or from the chain)
+  // what this key has already signed, read from the vault's whole history
+  const [history, setHistory] = useState<History>({ kind: "loading" });
   const [pending, setPending] = useState<PendingUnlock | null>(null);
   const [lockSource, setLockSource] = useState<"local" | "chain" | null>(null);
   const [chainNote, setChainNote] = useState<string | null>(null);
-  const [checking, setChecking] = useState(true);
+  const [attempted, setAttempted] = useState(true);
 
   // form
   const tokens = row.assets?.tokens.filter((t) => t.amount > 0n) ?? [];
@@ -73,8 +93,7 @@ export default function UnlockFlow({
   const [rentMin, setRentMin] = useState(890_880);
 
   // plan / progress
-  const [plan, setPlan] = useState<UnlockPlan | null>(null);
-  const [todo, setTodo] = useState<Remaining>([]);
+  const [plan, setPlan] = useState<SendStep[] | null>(null);
   const [steps, setSteps] = useState<StepState[]>([]);
   const [sigs, setSigs] = useState<(string | null)[]>([]);
   const [stepErr, setStepErr] = useState<string | null>(null);
@@ -91,63 +110,66 @@ export default function UnlockFlow({
     connection.getMinimumBalanceForRentExemption(0).then(setRentMin).catch(() => {});
   }, [connection]);
 
-  // ---- find any frozen message for this vault ----
+  const pendingFrom = useCallback(
+    (m: SignedMessage, createdAt = Date.now()): PendingUnlock => ({
+      v: 1,
+      vault: vaultStr,
+      index: row.index,
+      mint: m.mint.toBase58(),
+      dest: m.dest.toBase58(),
+      next: m.next.toBase58(),
+      amount: m.amount.toString(),
+      digest: hex(m.digest),
+      createdAt,
+      done: [],
+    }),
+    [vaultStr, row.index]
+  );
+
+  // ---- source of truth: every message this key ever published signature values for ----
+  const loadHistory = useCallback(async () => {
+    setHistory({ kind: "loading" });
+    setChainNote(null);
+    setAttempted(wasAttempted(vaultStr));
+    const local = loadPending(vaultStr);
+    let signed: SignedMessage[];
+    try {
+      signed = await findSignedMessages(program, key);
+    } catch (e) {
+      setHistory({ kind: "error", msg: errMsg(e) });
+      setPending(null);
+      return;
+    }
+    if (signed.length > 1) {
+      setHistory({ kind: "many", ms: signed });
+      setPending(null);
+      return;
+    }
+    if (signed.length === 1) {
+      const p = pendingFrom(signed[0], local?.createdAt);
+      if (local && local.digest !== p.digest)
+        setChainNote(
+          "This browser remembered a different withdrawal, but the chain shows the key already published part of a signature for the one below. Only that one can ever be completed."
+        );
+      savePending(p);
+      setPending(p);
+      setLockSource("chain");
+      setHistory({ kind: "one", m: signed[0] });
+      return;
+    }
+    setHistory({ kind: "none" });
+    if (local) {
+      setPending(local);
+      setLockSource("local");
+    } else {
+      setPending(null);
+      setLockSource(null);
+    }
+  }, [program, key, vaultStr, pendingFrom]);
+
   useEffect(() => {
-    let live = true;
-    (async () => {
-      setChecking(true);
-      const local = loadPending(vaultStr);
-      let bufs: UnlockBuffer[] = [];
-      try {
-        bufs = await findOpenBuffers(connection, program.programId, vault);
-      } catch (e) {
-        if (live) setChainNote(`Could not look for open unlocks on chain (${errMsg(e)}).`);
-      }
-      const revealed = bufs.find((b) => b.frozen || b.written > 0n);
-      if (!live) return;
-      if (revealed) {
-        let tokenProgram = local?.tokenProgram;
-        if (!isSol(revealed.mint)) {
-          tokenProgram ??= row.assets?.tokens.find((t) => t.mint.equals(revealed.mint))?.program.toBase58();
-          tokenProgram ??= (await connection.getAccountInfo(revealed.mint).catch(() => null))?.owner.toBase58();
-        }
-        const p: PendingUnlock = {
-          v: 1,
-          vault: vaultStr,
-          index: row.index,
-          mint: revealed.mint.toBase58(),
-          dest: revealed.dest.toBase58(),
-          next: revealed.next.toBase58(),
-          amount: revealed.amount.toString(),
-          tokenProgram,
-          digest: hex(
-            messageDigest({
-              programId: program.programId.toBytes(),
-              vault: vault.toBytes(),
-              mint: revealed.mint.toBytes(),
-              dest: revealed.dest.toBytes(),
-              nextVault: revealed.next.toBytes(),
-              amount: revealed.amount,
-            })
-          ),
-          createdAt: local?.createdAt ?? Date.now(),
-          done: [],
-        };
-        if (local && !bufferMatches(revealed, local))
-          setChainNote("The chain holds an unlock for this vault with different parameters than this browser remembered. The chain wins: that is the message already signed.");
-        savePending(p);
-        setPending(p);
-        setLockSource("chain");
-      } else if (local) {
-        setPending(local);
-        setLockSource("local");
-      }
-      setChecking(false);
-    })();
-    return () => {
-      live = false;
-    };
-  }, [connection, program, vault, vaultStr, row.index, row.assets]);
+    loadHistory();
+  }, [loadHistory]);
 
   const holding = isSol(asset) ? null : tokens.find((t) => t.mint.toBase58() === asset) ?? null;
   const decimals = holding ? holding.decimals : 9;
@@ -155,10 +177,12 @@ export default function UnlockFlow({
 
   // ---- build the plan for the frozen message ----
   const buildPlan = useCallback(
-    async (p: PendingUnlock): Promise<{ pl: UnlockPlan; st: StepState[]; rem: Remaining } | null> => {
+    async (p: PendingUnlock): Promise<{ list: SendStep[]; st: StepState[] } | null> => {
       if (!wallet.publicKey) return null;
       setStepErr(null);
       const payer = wallet.publicKey;
+      const mint = isSol(p.mint) ? undefined : new PublicKey(p.mint);
+      const tokenProgram = mint ? await mintTokenProgram(connection, mint) : undefined; // from chain, not storage
       const pl = await planUnlock({
         program,
         payer,
@@ -166,23 +190,24 @@ export default function UnlockFlow({
         next: new PublicKey(p.next),
         dest: new PublicKey(p.dest),
         amount: BigInt(p.amount),
-        mint: isSol(p.mint) ? undefined : new PublicKey(p.mint),
-        tokenProgram: p.tokenProgram ? new PublicKey(p.tokenProgram) : undefined,
+        mint,
+        tokenProgram,
       });
       if (hex(pl.digest) !== p.digest) throw new Error("Plan digest does not match the frozen message. Refusing to sign.");
-      const [bufInfo, spent] = await Promise.all([
-        connection.getAccountInfo(unlockPda(vault, payer, program.programId)).catch(() => null),
-        isSpent(connection, program.programId, vault).catch(() => false),
+      const unlock = unlockPda(vault, payer, program.programId);
+      const [bufInfo, spent, cancel] = await Promise.all([
+        connection.getAccountInfo(unlock, "confirmed"),
+        isSpent(connection, program.programId, vault),
+        cancelUnlockIx(program, payer, vault),
       ]);
-      const buf = bufInfo ? decodeUnlock(unlockPda(vault, payer, program.programId), bufInfo.data) : null;
-      const rem = remainingIxs(pl, buf, spent);
-      const st: StepState[] = rem.map((r) => (r ? "todo" : "done"));
-      setTodo(rem);
-      setPlan(pl);
+      const buf = bufInfo ? decodeUnlock(unlock, bufInfo.data) : null;
+      const list = sendSteps(pl, buf, spent, p, key.pkSeed, cancel);
+      const st: StepState[] = list.map((r) => (r.ixs ? "todo" : "done"));
+      setPlan(list);
       setSteps(st);
-      setSigs((old) => (old.length === st.length ? old : pl.transactions.map(() => null)));
+      setSigs((old) => (old.length === st.length ? old : list.map(() => null)));
       if (spent) markFinished();
-      return { pl, st, rem };
+      return { list, st };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [wallet.publicKey, program, key, connection, vault]
@@ -194,7 +219,7 @@ export default function UnlockFlow({
 
   const markFinished = async () => {
     setFinished(true);
-    clearPending(vaultStr);
+    clearFinished(vaultStr);
     try {
       setLeft(await vaultAssets(connection, vault));
     } catch {}
@@ -216,7 +241,17 @@ export default function UnlockFlow({
       }
       if (destPk.equals(vault)) throw new Error("Destination cannot be the vault itself");
       const mint = isSol(asset) ? SOL_MINT : new PublicKey(asset);
-      // Preflight BEFORE signing: a one-time key gets one message, so it must be payable.
+      const tokenProgram = isSol(asset) ? undefined : await mintTokenProgram(connection, mint);
+      const digest = messageDigest({
+        programId: program.programId.toBytes(),
+        vault: vault.toBytes(),
+        mint: mint.toBytes(),
+        dest: destPk.toBytes(),
+        nextVault: freshNext.toBytes(),
+        amount: units,
+      });
+      // Preflight BEFORE signing: a one-time key gets one message, so it must be payable
+      // and must not conflict with anything this key already published.
       const preKey = [mint.toBase58(), destPk.toBase58(), freshNext.toBase58(), units.toString()].join("|");
       setCheckingPre(true);
       let res: { errors: string[]; warnings: string[] };
@@ -229,24 +264,26 @@ export default function UnlockFlow({
           dest: destPk,
           amount: units,
           mint: isSol(asset) ? undefined : mint,
-          tokenProgram: holding?.program,
+          tokenProgram,
         });
+        // Re-read the history right before freezing (it may have changed since the page loaded).
+        const signed = await findSignedMessages(program, key);
+        if (signed.length > 1) res.errors.push("This vault's key already signed two different messages.");
+        else if (signed.length === 1 && hex(signed[0].digest) !== hex(digest))
+          res.errors.push(`This key already signed a different withdrawal (${fmtAmount(signed[0])} to ${short(signed[0].dest.toBase58(), 4)}). Only that one can be completed.`);
+      } catch (e) {
+        res = { errors: [`Could not read this vault's history, so it is not safe to sign (${errMsg(e)}).`], warnings: [] };
       } finally {
         setCheckingPre(false);
       }
       const sameAsShown = pre?.key === preKey;
       setPre({ ...res, key: preKey });
       if (!sameAsShown) setConsent(false);
-      if (res.errors.length) return;
+      if (res.errors.length) {
+        if (res.errors.some((e) => /already signed/.test(e))) loadHistory();
+        return;
+      }
       if (res.warnings.length && !(sameAsShown && consent)) return;
-      const digest = messageDigest({
-        programId: program.programId.toBytes(),
-        vault: vault.toBytes(),
-        mint: mint.toBytes(),
-        dest: destPk.toBytes(),
-        nextVault: freshNext.toBytes(),
-        amount: units,
-      });
       const p: PendingUnlock = {
         v: 1,
         vault: vaultStr,
@@ -255,7 +292,6 @@ export default function UnlockFlow({
         dest: destPk.toBase58(),
         next: freshNext.toBase58(),
         amount: units.toString(),
-        tokenProgram: holding?.program.toBase58(),
         digest: hex(digest),
         createdAt: Date.now(),
         done: [],
@@ -268,14 +304,21 @@ export default function UnlockFlow({
     }
   };
 
-  const discard = () => {
-    if (lockSource === "chain") return;
-    if (
-      !window.confirm(
-        "Discard this withdrawal? Only do this if you never approved any of its transactions. If a signature chain was already published, signing a different message would expose your key."
-      )
-    )
+  const discard = async () => {
+    if (lockSource !== "local" || wasAttempted(vaultStr)) return;
+    let signed: SignedMessage[];
+    try {
+      signed = await findSignedMessages(program, key);
+    } catch (e) {
+      setChainNote(`Cannot discard: the vault's history could not be read (${errMsg(e)}).`);
       return;
+    }
+    if (signed.length) {
+      setChainNote("Cannot discard: the chain shows this key already published part of a signature.");
+      loadHistory();
+      return;
+    }
+    if (!window.confirm("Discard this withdrawal? Nothing was sent for it, so you can choose a different one.")) return;
     clearPending(vaultStr);
     setPending(null);
     setPlan(null);
@@ -284,26 +327,26 @@ export default function UnlockFlow({
   };
 
   // ---- send the steps ----
-  const run = async (fresh?: { pl: UnlockPlan; st: StepState[]; rem: Remaining }) => {
-    const plan_ = fresh?.pl ?? plan;
-    if (!plan_ || !wallet.publicKey || !pending) return;
+  const run = async (fresh?: { list: SendStep[]; st: StepState[] }) => {
+    const list = fresh?.list ?? plan;
+    if (!list || !wallet.publicKey || !pending) return;
     if (finished) return;
     setRunning(true);
     setStepErr(null);
     const payer = wallet.publicKey;
     const st = [...(fresh?.st ?? steps)];
-    const rem = fresh?.rem ?? todo;
-    for (let i = 0; i < plan_.transactions.length; i++) {
-      if (st[i] === "done") continue;
+    for (let i = 0; i < list.length; i++) {
+      const ixs = list[i].ixs;
+      if (st[i] === "done" || !ixs) continue;
       st[i] = "sending";
       setSteps([...st]);
+      markAttempted(vaultStr); // before anything can reach the network
+      setAttempted(true);
       try {
-        const sig = await sendIxs(connection, payer, wallet.sendTransaction, rem[i] ?? plan_.transactions[i].instructions);
+        const sig = await sendIxs(connection, payer, wallet.sendTransaction, ixs);
         st[i] = "done";
         setSteps([...st]);
         setSigs((s) => s.map((v, k) => (k === i ? sig : v)));
-        const p = { ...pending, done: [...new Set([...pending.done, i])] };
-        savePending(p);
       } catch (e) {
         st[i] = "failed";
         setSteps([...st]);
@@ -362,9 +405,33 @@ export default function UnlockFlow({
       <div className="grid [&>*]:min-w-0 gap-0 lg:grid-cols-2">
         {/* left: message */}
         <div className="flex flex-col gap-4 border-b border-line p-4 sm:p-5 lg:border-b-0 lg:border-r">
-          {checking ? (
+          {history.kind === "loading" ? (
             <div className="text-[13px] text-mute">
-              checking for an unfinished unlock<span className="blink">…</span>
+              reading this vault&apos;s full history<span className="blink">…</span>
+            </div>
+          ) : history.kind === "error" ? (
+            <div className="flex flex-col items-start gap-3">
+              <Note kind="bad">
+                Could not read this vault&apos;s transaction history ({history.msg}). Signing is blocked: without the history the app
+                cannot prove this key never signed something else.
+              </Note>
+              <button className="btn ghost sm" onClick={loadHistory}>
+                try again
+              </button>
+            </div>
+          ) : history.kind === "many" ? (
+            <div className="flex flex-col gap-3">
+              <Note kind="bad">
+                <strong>This key already signed two different messages.</strong> Its one-time security is weakened, so this app will
+                not sign anything more with it.
+              </Note>
+              <ul className="flex flex-col gap-1 text-[12px] text-mute">
+                {history.ms.map((m) => (
+                  <li key={hex(m.digest)}>
+                    • {fmtAmount(m)} → {short(m.dest.toBase58(), 4)} ({m.chains.length}/34 chains published)
+                  </li>
+                ))}
+              </ul>
             </div>
           ) : p ? (
             <>
@@ -392,11 +459,12 @@ export default function UnlockFlow({
               </dl>
               {chainNote && <Note kind="warn">{chainNote}</Note>}
               <Note>
-                This message is locked. A WOTS+ key may sign <strong>one</strong> message, ever. Each signature reveals points
-                along the 34 chains; two different messages together reveal enough to forge a third. So if this page closes
-                halfway, it resumes with exactly these parameters, and signing them again is harmless (signing is deterministic).
+                This message is locked. A WOTS+ key may sign <strong>one</strong> message, ever: two different messages together
+                reveal enough to forge a third. Before signing, the app reads the vault&apos;s whole history; if this key ever
+                published part of a signature, only that same withdrawal can be completed. Re-signing it is harmless (signing is
+                deterministic).
               </Note>
-              {lockSource === "local" && !finished && doneCount === 0 && (
+              {lockSource === "local" && !attempted && !finished && (
                 <button className="self-start text-[11px] uppercase tracking-[0.18em] text-dim hover:text-bad" onClick={discard}>
                   [discard — only if nothing was sent]
                 </button>
@@ -499,11 +567,11 @@ export default function UnlockFlow({
             <Label>transactions</Label>
             {plan && (
               <span className="text-[11px] text-dim">
-                {doneCount}/{plan.transactions.length}
+                {doneCount}/{plan.length}
               </span>
             )}
           </div>
-          {!p ? (
+          {!p || history.kind === "many" || history.kind === "error" ? (
             <p className="text-[12.5px] text-dim">
               Freeze a message to see the plan. A normal unlock is about two transactions: open the buffer and write the 1,088-byte
               signature, then verify the 34 chains on-chain, check the root and pay out. Your wallet approves each one.
@@ -522,7 +590,7 @@ export default function UnlockFlow({
           ) : (
             <>
               <ol className="flex flex-col">
-                {plan.transactions.map((t, i) => (
+                {plan.map((t, i) => (
                   <li key={i} className="flex items-center gap-3 border-b border-dashed border-line py-2.5 text-[12.5px] last:border-b-0">
                     <StepDot s={steps[i]} />
                     <span className="w-5 text-[10px] text-dim">{String(i + 1).padStart(2, "0")}</span>

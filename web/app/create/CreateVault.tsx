@@ -259,20 +259,20 @@ function ReadyVault({ master, words, onForget }: { master: Uint8Array; words: st
 
   const key: VaultKey | null = useMemo(() => (scan ? vaultKey(master, scan.nextFresh, program.programId) : null), [scan, master, program]);
 
+  const [scanTry, setScanTry] = useState(0);
   useEffect(() => {
     let live = true;
+    setScanErr(null);
+    setScan(null);
+    // No fallback to index 0: funding a vault whose index was not checked could reuse a key.
     scanVaults(program, master)
       .then((r) => live && setScan({ nextFresh: r.nextFresh, used: r.vaults.length }))
-      .catch((e) => {
-        if (!live) return;
-        setScanErr(errMsg(e));
-        setScan({ nextFresh: 0, used: 0 });
-      });
+      .catch((e) => live && setScanErr(errMsg(e)));
     connection.getMinimumBalanceForRentExemption(0).then((v) => live && setRentMin(v)).catch(() => {});
     return () => {
       live = false;
     };
-  }, [program, master, connection]);
+  }, [program, master, connection, scanTry]);
 
   const refresh = async () => {
     if (!key) return;
@@ -293,10 +293,11 @@ function ReadyVault({ master, words, onForget }: { master: Uint8Array; words: st
     else saveWords(words, remember);
   }, [remember, words]);
 
-  const canDeposit = deployed || ack;
+  const scanned = !!scan && !scanErr;
+  const canDeposit = scanned && (deployed || ack);
 
   const deposit = async () => {
-    if (!key || !wallet.publicKey) return;
+    if (!key || !wallet.publicKey || !canDeposit) return;
     setMsg(null);
     try {
       const lamports = toBaseUnits(amount, 9);
@@ -317,7 +318,7 @@ function ReadyVault({ master, words, onForget }: { master: Uint8Array; words: st
   };
 
   const register = async () => {
-    if (!key || !wallet.publicKey) return;
+    if (!key || !wallet.publicKey || !scanned) return;
     setMsg(null);
     setBusy("register");
     try {
@@ -345,7 +346,17 @@ function ReadyVault({ master, words, onForget }: { master: Uint8Array; words: st
     <>
       <Panel lit title="step 2 // your next fresh vault" right={<span className="text-[10px] uppercase tracking-[0.18em] text-teal">sealed</span>}>
         <div className="flex flex-col gap-4 p-4 sm:p-5">
-          {!scan ? (
+          {scanErr ? (
+            <div className="flex flex-col items-start gap-3">
+              <Note kind="bad">
+                Could not scan the chain for your vaults ({scanErr}). Depositing is disabled until the scan works, so a used key is
+                never funded again.
+              </Note>
+              <button className="btn ghost sm" onClick={() => setScanTry((n) => n + 1)}>
+                retry scan
+              </button>
+            </div>
+          ) : !scan ? (
             <div className="text-[13px] text-mute">
               scanning your vaults<span className="blink">…</span>
             </div>
@@ -383,7 +394,6 @@ function ReadyVault({ master, words, onForget }: { master: Uint8Array; words: st
                 <Label>root (sha-256 of the 34 chain ends)</Label>
                 <div className="mt-1 break-all text-[11.5px] text-dim">{key && hex(key.root)}</div>
               </div>
-              {scanErr && <Note kind="warn">Could not scan the chain ({scanErr}). Showing index 0; check again before funding.</Note>}
               {scan.used > 0 && (
                 <Note>
                   These words already have {scan.used} vault{scan.used > 1 ? "s" : ""}. Manage them in{" "}
@@ -478,7 +488,7 @@ function ReadyVault({ master, words, onForget }: { master: Uint8Array; words: st
                   )}
                 </div>
                 {!registered && (
-                  <button className="btn ghost sm" onClick={register} disabled={!key || !!busy || !deployed}>
+                  <button className="btn ghost sm" onClick={register} disabled={!key || !scanned || !!busy || !deployed}>
                     {busy === "register" ? "sending…" : "register(root)"}
                   </button>
                 )}

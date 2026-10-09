@@ -1,5 +1,5 @@
 // Noxvault client: addresses, keys and the transaction plan for an unlock. See docs/SPEC.md.
-import { BN, Program } from "@coral-xyz/anchor";
+import { BN, BorshInstructionCoder, Program } from "@coral-xyz/anchor";
 import {
   ComputeBudgetProgram,
   Connection,
@@ -388,7 +388,7 @@ export async function findSignedMessages(
       const opensHere = new Map<string, Args>();
       for (const ix of msg.compiledInstructions) {
         if (!keys.get(ix.programIdIndex)?.equals(programId)) continue;
-        const decoded = program.coder.instruction.decode(Buffer.from(ix.data));
+        const decoded = (program.coder.instruction as BorshInstructionCoder).decode(Buffer.from(ix.data));
         if (!decoded) continue;
         const acct = (n: number) => keys.get(ix.accountKeyIndexes[n]);
         if (decoded.name === "openUnlock" || decoded.name === "open_unlock") {

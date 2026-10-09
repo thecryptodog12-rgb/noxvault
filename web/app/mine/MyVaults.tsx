@@ -82,7 +82,8 @@ export default function MyVaults() {
               <p className="p-4 text-mute">
                 For each index the browser builds the 34 chains (8,670 SHA-256 calls), hashes the ends into a root and derives the
                 vault address. It stops after three empty, never-used vaults in a row. Only the public addresses are queried on
-                the RPC.
+                the RPC. Before any unlock, the app also reads the vault&apos;s whole history; if this key ever published part of a
+                signature, only that same withdrawal can be completed.
               </p>
             </Panel>
             <Note>

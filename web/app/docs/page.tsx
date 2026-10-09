@@ -119,6 +119,11 @@ export default function Docs() {
             Every step can be retried safely and none can redirect funds: the destination and amounts are fixed inside the signed
             message. Your wallet only pays the fees.
           </p>
+          <p>
+            <strong>One key, one message.</strong> Before signing, the app reads the vault&apos;s whole history (failed and
+            cancelled transactions included); if this key ever published part of a signature, only that same withdrawal can be
+            completed. If the history cannot be read, the app refuses to sign.
+          </p>
 
           <h2 id="after">After an unlock</h2>
           <p>

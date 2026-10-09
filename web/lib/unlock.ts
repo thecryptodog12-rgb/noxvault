@@ -3,8 +3,7 @@
 import type { Program } from "@coral-xyz/anchor";
 import { Connection, PublicKey, Transaction, type TransactionInstruction } from "@solana/web3.js";
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from "@solana/spl-token";
-import bs58 from "bs58";
-import { SIGS_PER_TX, SOL_MINT, spentPda, type Noxvault, type UnlockPlan } from "@nox/sdk/client";
+import { SIGS_PER_TX, SOL_MINT, spentPda, unlockPda, type Noxvault, type UnlockPlan } from "@nox/sdk/client";
 import { LEN } from "@nox/sdk/wots";
 
 // ---------- pending unlock (the frozen message parameters) ----------
@@ -21,6 +20,24 @@ export interface PendingUnlock {
   digest: string; // hex, for display / sanity
   createdAt: number;
   done: number[]; // step indexes confirmed by this browser
+}
+
+// "attempted": set BEFORE the first transaction of an unlock is sent. Once set, this browser
+// never offers to discard the frozen message (a send may have published signature values).
+const attKey = (vault: string) => `nox.attempted.${vault}`;
+
+export function markAttempted(vault: string) {
+  try {
+    localStorage.setItem(attKey(vault), String(Date.now()));
+  } catch {}
+}
+
+export function wasAttempted(vault: string): boolean {
+  try {
+    return localStorage.getItem(attKey(vault)) !== null;
+  } catch {
+    return true; // unknown: be safe
+  }
 }
 
 const pendKey = (vault: string) => `nox.pending.${vault}`;
@@ -46,6 +63,23 @@ export function clearPending(vault: string) {
   } catch {}
 }
 
+/** Called only when the vault is spent (the unlock finished): drops message + attempted flag. */
+export function clearFinished(vault: string) {
+  clearPending(vault);
+  try {
+    localStorage.removeItem(attKey(vault));
+  } catch {}
+}
+
+/** A token mint's program, read from the mint account's owner on chain (never from storage). */
+export async function mintTokenProgram(conn: Connection, mint: PublicKey): Promise<PublicKey> {
+  const info = await conn.getAccountInfo(mint, "confirmed");
+  if (!info) throw new Error(`Mint ${mint.toBase58()} not found`);
+  if (!info.owner.equals(TOKEN_PROGRAM_ID) && !info.owner.equals(TOKEN_2022_PROGRAM_ID))
+    throw new Error(`Mint ${mint.toBase58()} is not owned by a token program`);
+  return info.owner;
+}
+
 // ---------- on-chain Unlock buffer ----------
 
 export interface UnlockBuffer {
@@ -55,13 +89,12 @@ export interface UnlockBuffer {
   verified: bigint;
   vault: PublicKey;
   payer: PublicKey;
+  pkSeed: Uint8Array;
   mint: PublicKey;
   dest: PublicKey;
   next: PublicKey;
   frozen: boolean;
 }
-
-const UNLOCK_DISC = Uint8Array.from([187, 122, 21, 254, 7, 157, 241, 10]);
 
 /** Manual decode of the zero-copy `Unlock` account (repr(C), offsets after the 8-byte discriminator). */
 export function decodeUnlock(address: PublicKey, data: Uint8Array): UnlockBuffer {
@@ -74,6 +107,7 @@ export function decodeUnlock(address: PublicKey, data: Uint8Array): UnlockBuffer
     verified: dv.getBigUint64(24, true),
     vault: pk(32),
     payer: pk(64),
+    pkSeed: data.slice(96, 128),
     mint: pk(128),
     dest: pk(160),
     next: pk(192),
@@ -81,23 +115,15 @@ export function decodeUnlock(address: PublicKey, data: Uint8Array): UnlockBuffer
   };
 }
 
-/** Every open Unlock buffer for a vault, from any payer. */
-export async function findOpenBuffers(conn: Connection, programId: PublicKey, vault: PublicKey): Promise<UnlockBuffer[]> {
-  const res = await conn.getProgramAccounts(programId, {
-    filters: [
-      { memcmp: { offset: 0, bytes: bs58.encode(UNLOCK_DISC) } },
-      { memcmp: { offset: 32, bytes: vault.toBase58() } },
-    ],
-  });
-  return res.map((r) => decodeUnlock(r.pubkey, r.account.data));
-}
-
-export function bufferMatches(b: UnlockBuffer, p: PendingUnlock): boolean {
+/** True only if the buffer holds exactly this message AND was opened with this key's pk_seed. */
+export function bufferMatches(b: UnlockBuffer, p: PendingUnlock, pkSeed: Uint8Array): boolean {
   return (
     b.mint.toBase58() === p.mint &&
     b.dest.toBase58() === p.dest &&
     b.next.toBase58() === p.next &&
-    b.amount.toString() === p.amount
+    b.amount.toString() === p.amount &&
+    b.pkSeed.length === pkSeed.length &&
+    b.pkSeed.every((x, i) => x === pkSeed[i])
   );
 }
 
@@ -126,17 +152,42 @@ export function stepDoneOnChain(label: string, buf: UnlockBuffer | null, spent: 
   return false; // pay out: done only when Spent exists
 }
 
+export interface SendStep {
+  label: string;
+  /** Instructions still to send, or null when already done on chain. */
+  ixs: TransactionInstruction[] | null;
+}
+
 /**
- * For each packed transaction, the instructions still to send (compute budget kept),
- * or null when every step in it is already on chain. Steps are matched by instruction identity.
+ * The transactions still to send for a frozen message, given this payer's Unlock buffer.
+ * A buffer only counts as progress if it holds this exact message and this key's pk_seed.
+ * If the payer's buffer holds anything else it is stale: it is closed first (cancel_unlock),
+ * and the whole plan runs from a fresh buffer.
  */
-export function remainingIxs(plan: UnlockPlan, buf: UnlockBuffer | null, spent: boolean): (TransactionInstruction[] | null)[] {
-  const done = new Map(plan.steps.map((s) => [s.ix, stepDoneOnChain(s.label, buf, spent)]));
-  return plan.transactions.map((t) => {
+export function sendSteps(
+  plan: UnlockPlan,
+  buf: UnlockBuffer | null,
+  spent: boolean,
+  pending: PendingUnlock,
+  pkSeed: Uint8Array,
+  cancelIx: TransactionInstruction
+): SendStep[] {
+  if (spent) return plan.transactions.map((t) => ({ label: t.label, ixs: null }));
+  const stale = !!buf && !bufferMatches(buf, pending, pkSeed);
+  const progress = stale ? null : buf;
+  const done = new Map(plan.steps.map((s) => [s.ix, stepDoneOnChain(s.label, progress, false)]));
+  const steps: SendStep[] = plan.transactions.map((t) => {
     const work = t.instructions.filter((ix) => done.has(ix) && !done.get(ix));
-    if (work.length === 0) return null;
-    return t.instructions.filter((ix) => !done.has(ix) || !done.get(ix));
+    return { label: t.label, ixs: work.length ? t.instructions.filter((ix) => !done.has(ix) || !done.get(ix)) : null };
   });
+  return stale ? [{ label: "close stale buffer (different message)", ixs: [cancelIx] }, ...steps] : steps;
+}
+
+export async function cancelUnlockIx(program: Program<Noxvault>, payer: PublicKey, vault: PublicKey) {
+  return program.methods
+    .cancelUnlock()
+    .accountsPartial({ payer, unlock: unlockPda(vault, payer, program.programId) })
+    .instruction();
 }
 
 // ---------- vault reading ----------
