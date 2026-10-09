@@ -1,0 +1,69 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "es2020"
+    ],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "baseUrl": ".",
+    "types": [
+      "node"
+    ],
+    "typeRoots": [
+      "./node_modules/@types"
+    ],
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": [
+        "./*"
+      ],
+      "@nox/sdk/*": [
+        "../sdk/*"
+      ],
+      "@solana/web3.js": [
+        "./node_modules/@solana/web3.js"
+      ],
+      "@coral-xyz/anchor": [
+        "./node_modules/@coral-xyz/anchor"
+      ],
+      "@solana/spl-token": [
+        "./node_modules/@solana/spl-token"
+      ],
+      "@noble/hashes/*": [
+        "./node_modules/@noble/hashes/*"
+      ],
+      "@scure/bip39": [
+        "./node_modules/@scure/bip39"
+      ],
+      "@scure/bip39/*": [
+        "./node_modules/@scure/bip39/*"
+      ]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    "../sdk/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}

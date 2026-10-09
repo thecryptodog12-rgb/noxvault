@@ -247,10 +247,17 @@ describe("noxvault", () => {
     expect(ok.errors).to.deep.eq([]);
   });
 
-  it("finds the user's vaults again from the secret alone", async () => {
+  it("finds the user's vaults again from the secret alone, including token-only vaults", async () => {
+    // Vault 4 holds only a token and no SOL; vault 3 stays empty in between.
+    const wallet = (provider.wallet as anchor.Wallet).payer;
+    const mint = await createMint(conn, wallet, payer, null, 0);
+    const ata = await getOrCreateAssociatedTokenAccount(conn, wallet, mint, key(4).vault, true);
+    await mintTo(conn, wallet, mint, ata.address, wallet, 7);
+    expect(await conn.getBalance(key(4).vault)).to.eq(0);
+
     const { vaults, nextFresh } = await scanVaults(program, master);
-    expect(vaults.map((v) => v.index)).to.deep.eq([0, 1, 2]);
+    expect(vaults.map((v) => v.index)).to.deep.eq([0, 1, 2, 4]);
     expect(vaults[0].spent && vaults[1].spent && !vaults[2].spent).to.eq(true);
-    expect(nextFresh).to.eq(3);
+    expect(nextFresh).to.eq(5);
   });
 });

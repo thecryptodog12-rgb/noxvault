@@ -2,6 +2,7 @@
 import { BN, Program } from "@coral-xyz/anchor";
 import {
   ComputeBudgetProgram,
+  Connection,
   PublicKey,
   SystemProgram,
   Transaction,
@@ -10,6 +11,7 @@ import {
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   ExtensionType,
+  TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
   getAccount,
   getAssociatedTokenAddressSync,
@@ -317,6 +319,14 @@ export interface VaultState {
   successor?: PublicKey;
 }
 
+async function holdsTokens(conn: Connection, owner: PublicKey): Promise<boolean> {
+  for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+    const { value } = await conn.getTokenAccountsByOwner(owner, { programId });
+    if (value.length) return true;
+  }
+  return false;
+}
+
 /**
  * Finds a user's vaults from the secret alone: walks indexes until `gap` consecutive
  * vaults are empty and unused. Returns them all plus the first fresh index.
@@ -338,7 +348,8 @@ export async function scanVaults(
       const spentInfo = infos[gap + k];
       const spent = spentInfo ? program.coder.accounts.decode("spent", spentInfo.data) : null;
       const lamports = acct?.lamports ?? 0;
-      if (!spent && lamports === 0) {
+      // A vault can hold tokens with 0 SOL: its token accounts' rent is paid by the depositor.
+      if (!spent && lamports === 0 && !(await holdsTokens(conn, keys[k]))) {
         empty++;
         continue;
       }

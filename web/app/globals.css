@@ -1,0 +1,195 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #08080a;
+  --color-ink-2: #0e0e12;
+  --color-ink-3: #15151b;
+  --color-line: #2a2a31;
+  --color-line-2: #3a3a44;
+  --color-dim: #6d6d78;
+  --color-mute: #9a9aa6;
+  --color-bone: #e9e6df;
+  --color-moon: #b8a6ff;
+  --color-moon-dim: #4b4170;
+  --color-warn: #ffb86b;
+  --color-bad: #ff6b7a;
+  --font-display: var(--font-silkscreen), ui-monospace, monospace;
+  --font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: var(--color-ink);
+  color: var(--color-bone);
+  font-family: var(--font-mono);
+}
+
+body {
+  min-height: 100dvh;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* faint dotted grid behind everything */
+.nox-bg {
+  background-color: var(--color-ink);
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(233, 230, 223, 0.07) 1px, transparent 0),
+    linear-gradient(to right, rgba(233, 230, 223, 0.025) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(233, 230, 223, 0.025) 1px, transparent 1px);
+  background-size: 16px 16px, 128px 128px, 128px 128px;
+}
+
+::selection {
+  background: var(--color-moon);
+  color: var(--color-ink);
+}
+
+:focus-visible {
+  outline: 1px solid var(--color-moon);
+  outline-offset: 2px;
+}
+
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: 0.01em;
+  line-height: 1.02;
+}
+
+/* inverted word block in headings. inline-block keeps the block inside its own line box:
+   as a plain inline its background covers the pixel font's tall ascent and bleeds into the
+   line above when the heading wraps. */
+.inv {
+  display: inline-block;
+  background: var(--color-bone);
+  color: var(--color-ink);
+  line-height: 1;
+  padding: 0.04em 0.12em 0.02em;
+}
+.inv-moon {
+  background: var(--color-moon);
+  color: var(--color-ink);
+  padding: 0 0.12em;
+}
+
+.label {
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--color-dim);
+}
+
+/* panel with square corner markers */
+.panel {
+  position: relative;
+  min-width: 0;
+  border: 1px solid var(--color-line);
+  background: rgba(14, 14, 18, 0.72);
+}
+.panel > .c {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  background: var(--color-line-2);
+  pointer-events: none;
+}
+.panel > .c.tl { top: -3px; left: -3px; }
+.panel > .c.tr { top: -3px; right: -3px; }
+.panel > .c.bl { bottom: -3px; left: -3px; }
+.panel > .c.br { bottom: -3px; right: -3px; }
+.panel.lit { border-color: var(--color-moon-dim); }
+.panel.lit > .c { background: var(--color-moon); }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 1px solid var(--color-bone);
+  background: var(--color-bone);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 0.6rem 1rem;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  white-space: nowrap;
+}
+.btn:hover:not(:disabled) { background: var(--color-moon); border-color: var(--color-moon); }
+.btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.btn.ghost { background: transparent; color: var(--color-bone); border-color: var(--color-line-2); }
+.btn.ghost:hover:not(:disabled) { border-color: var(--color-moon); color: var(--color-moon); background: transparent; }
+.btn.sm { padding: 0.35rem 0.6rem; font-size: 10.5px; }
+
+.field {
+  width: 100%;
+  background: var(--color-ink);
+  border: 1px solid var(--color-line-2);
+  color: var(--color-bone);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 0.55rem 0.7rem;
+  border-radius: 0;
+}
+.field::placeholder { color: var(--color-dim); }
+.field:focus { outline: none; border-color: var(--color-moon); box-shadow: 0 0 0 1px var(--color-moon); }
+
+.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.tbl th {
+  text-align: left;
+  font-weight: 400;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--color-dim);
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--color-line);
+}
+.tbl td { padding: 0.6rem 0.75rem; border-bottom: 1px dashed var(--color-line); vertical-align: top; }
+.tbl tr:last-child td { border-bottom: 0; }
+
+.blink { animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+.prose-nox p { color: var(--color-mute); margin: 0.75rem 0; }
+.prose-nox h2 { font-family: var(--font-display); font-size: 1.35rem; margin-top: 2.25rem; margin-bottom: 0.5rem; }
+.prose-nox code { color: var(--color-bone); background: var(--color-ink-3); padding: 0 0.3em; border: 1px solid var(--color-line); font-size: 0.92em; }
+.prose-nox ul { margin: 0.75rem 0; color: var(--color-mute); }
+.prose-nox li { padding-left: 1.25rem; position: relative; margin: 0.35rem 0; }
+.prose-nox li::before { content: "▪"; position: absolute; left: 0.2rem; color: var(--color-moon); }
+.prose-nox strong { color: var(--color-bone); font-weight: 600; }
+
+/* boot screen */
+html[data-booted] .boot { display: none !important; }
+
+/* wallet-adapter modal, re-skinned */
+.wallet-adapter-modal-wrapper {
+  background: var(--color-ink-2) !important;
+  border: 1px solid var(--color-line-2) !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  font-family: var(--font-mono) !important;
+}
+.wallet-adapter-modal-title { font-family: var(--font-display) !important; font-size: 20px !important; color: var(--color-bone) !important; }
+.wallet-adapter-modal-overlay { background: rgba(4, 4, 6, 0.82) !important; }
+.wallet-adapter-modal-button-close { border-radius: 0 !important; background: var(--color-ink-3) !important; }
+.wallet-adapter-modal-list .wallet-adapter-button {
+  font-family: var(--font-mono) !important;
+  font-size: 13px !important;
+  border-radius: 0 !important;
+  border: 1px solid var(--color-line) !important;
+  margin-bottom: 6px;
+}
+.wallet-adapter-modal-list .wallet-adapter-button:hover { border-color: var(--color-moon) !important; background: var(--color-ink-3) !important; }
+.wallet-adapter-modal-list-more { font-family: var(--font-mono) !important; color: var(--color-mute) !important; }
+.wallet-adapter-dropdown-list { border-radius: 0 !important; background: var(--color-ink-2) !important; border: 1px solid var(--color-line-2) !important; font-family: var(--font-mono) !important; }
+.wallet-adapter-dropdown-list-item { border-radius: 0 !important; font-family: var(--font-mono) !important; font-size: 12px !important; }
