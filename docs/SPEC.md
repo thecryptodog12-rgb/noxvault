@@ -95,3 +95,15 @@ too small to open an empty `next_vault`, it is added to the payment to `dest` (d
 - used keys are marked on-chain, so nothing can ever be unlocked twice with the same key;
 - SPL / Token-2022 tokens, not only SOL;
 - the program is upgradeable only until mainnet launch, then the authority is burned.
+
+## Client rules
+
+A one-time key signs exactly one message, ever. Clients therefore:
+
+- run `preflightUnlock` before signing and refuse messages that could never be paid out
+  (amount above balance, empty destination below rent, frozen or fee-on-transfer tokens,
+  a used next vault);
+- remember the parameters of a pending unlock and, after a failure, resend the **same**
+  message (WOTS signing is deterministic, so this reveals nothing new);
+- always pick `next_vault` after every index ever used (`scanVaults().nextFresh`);
+- use `confirmed` commitment and retry a step on an expired blockhash; every step is retry-safe.
