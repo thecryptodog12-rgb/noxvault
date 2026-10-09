@@ -323,7 +323,11 @@ pub struct OpenUnlock<'info> {
 #[derive(Accounts)]
 pub struct WriteSigs<'info> {
     pub payer: Signer<'info>,
-    #[account(mut, has_one = payer)]
+    /// CHECK: equals unlock.vault (has_one). Listed so every transaction that publishes
+    /// signature bytes shows up in the vault's history, where clients look for an earlier
+    /// signature before ever signing (docs/SPEC.md, client rules).
+    pub vault: UncheckedAccount<'info>,
+    #[account(mut, has_one = payer, has_one = vault)]
     pub unlock: AccountLoader<'info, Unlock>,
 }
 

@@ -67,7 +67,8 @@ retry and none of them can redirect funds: the parameters are fixed in the signe
 
 1. `open_unlock(vault, pk_seed, mint, dest, next_vault, amount)` — payer creates an
    `Unlock` buffer PDA `["unlock", vault, payer]`.
-2. `write_sigs(start, sigs[])` — payer fills chains `start..start+len`. Only the payer can write.
+2. `write_sigs(start, sigs[])` — payer fills chains `start..start+len`. Only the payer can write;
+   the vault is passed as an account so the write shows up in the vault's history.
 3. `verify(from, to)` — permissionless. On the first call the buffer freezes (no more writes),
    computes the digits once and then walks chains `from..to` to their ends.
 4. `finish_unlock` — permissionless once all 34 chains are verified. Rebuilds `root`, checks
@@ -100,6 +101,11 @@ too small to open an empty `next_vault`, it is added to the payment to `dest` (d
 
 A one-time key signs exactly one message, ever. Clients therefore:
 
+- before signing, read the vault's **whole transaction history** (`findSignedMessages`): if this
+  key ever published signature values for a message — in any buffer, from any payer, in a failed
+  or cancelled attempt — only that message may ever be completed. `write_sigs` names the vault
+  account precisely so that every transaction carrying signature bytes appears in that history.
+  If the history cannot be read, do not sign;
 - run `preflightUnlock` before signing and refuse messages that could never be paid out
   (amount above balance, empty destination below rent, frozen or fee-on-transfer tokens,
   a used next vault);

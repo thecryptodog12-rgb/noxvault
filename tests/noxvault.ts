@@ -24,6 +24,7 @@ import {
   UnlockPlan,
   verifyRanges,
   newMasterSecret,
+  findSignedMessages,
   planUnlock,
   preflightUnlock,
   recordPda,
@@ -181,7 +182,7 @@ describe("noxvault", () => {
     const a3 = wots.digits(plan.digest)[3];
     const forged = wots.F(k1.pkSeed, 3, a3, plan.signature[3]);
     const unlock = unlockPda(k1.vault, payer, program.programId);
-    const forge = await program.methods.writeSigs(3, [Array.from(forged)]).accountsPartial({ payer, unlock }).instruction();
+    const forge = await program.methods.writeSigs(3, [Array.from(forged)]).accountsPartial({ payer, vault: k1.vault, unlock }).instruction();
     const steps = plan.steps;
     const verifyAt = steps.findIndex((s) => s.label.startsWith("verify"));
     for (const s of steps.slice(0, verifyAt)) await send([s.ix]);
@@ -259,5 +260,52 @@ describe("noxvault", () => {
     expect(vaults.map((v) => v.index)).to.deep.eq([0, 1, 2, 4]);
     expect(vaults[0].spent && vaults[1].spent && !vaults[2].spent).to.eq(true);
     expect(nextFresh).to.eq(5);
+  });
+
+  it("remembers a signed message for good: cancel, another payer or copied values cannot get a second one signed", async () => {
+    const k = key(10);
+    const next = key(11).vault;
+    await fund(k.vault, 0.2);
+    const m1 = { program, payer, key: k, next, dest: payer, amount: 1000n };
+    const plan1 = await planUnlock(m1);
+
+    // Half of M1's signature lands, then the buffer is cancelled (time-out + discard, closed tab...).
+    await send([plan1.steps[0].ix, plan1.steps[1].ix]);
+    await cancel(k.vault);
+    let signed = await findSignedMessages(program, k);
+    expect(signed.length).to.eq(1);
+    expect(Buffer.from(signed[0].digest).equals(Buffer.from(plan1.digest))).to.eq(true);
+    expect(signed[0].chains.length).to.eq(17);
+
+    // Any other message is refused, from this payer or from another wallet.
+    const other = Keypair.generate();
+    await fund(other.publicKey, 0.1);
+    const m2 = await preflightUnlock({ ...m1, amount: 2000n });
+    expect(m2.errors.join()).to.contain("already signed");
+    const m2b = await preflightUnlock({ ...m1, payer: other.publicKey, dest: other.publicKey });
+    expect(m2b.errors.join()).to.contain("already signed");
+
+    // Someone copies the published values into a buffer with their own message: it does not count.
+    const theirs = unlockPda(k.vault, other.publicKey, program.programId);
+    const open = await program.methods
+      .openUnlock({ pkSeed: Array.from(k.pkSeed), mint: PublicKey.default, dest: other.publicKey, nextVault: next, amount: new anchor.BN(999) })
+      .accountsPartial({ payer: other.publicKey, vault: k.vault, unlock: theirs })
+      .instruction();
+    const copy = await program.methods
+      .writeSigs(0, plan1.signature.slice(0, 17).map((v) => Array.from(v)))
+      .accountsPartial({ payer: other.publicKey, vault: k.vault, unlock: theirs })
+      .instruction();
+    await provider.sendAndConfirm(new Transaction().add(open, copy), [other], { commitment: "confirmed" });
+    signed = await findSignedMessages(program, k);
+    expect(signed.length).to.eq(1);
+    expect(Buffer.from(signed[0].digest).equals(Buffer.from(plan1.digest))).to.eq(true);
+
+    // The original message can still be completed.
+    expect((await preflightUnlock(m1)).errors).to.deep.eq([]);
+    const before = await conn.getBalance(payer);
+    await run(await planUnlock(m1));
+    expect(await conn.getAccountInfo(spentPda(k.vault, program.programId))).to.not.eq(null);
+    expect((await findSignedMessages(program, k))[0].chains.length).to.eq(34);
+    expect(await conn.getBalance(payer)).to.be.lessThan(before + 1000 + 1); // fees paid, 1000 received
   });
 });

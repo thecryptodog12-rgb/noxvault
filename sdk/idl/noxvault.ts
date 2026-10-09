@@ -788,6 +788,16 @@ export type Noxvault = {
           ]
         },
         {
+          "name": "vault",
+          "docs": [
+            "signature bytes shows up in the vault's history, where clients look for an earlier",
+            "signature before ever signing (docs/SPEC.md, client rules)."
+          ],
+          "relations": [
+            "unlock"
+          ]
+        },
+        {
           "name": "unlock",
           "writable": true
         }

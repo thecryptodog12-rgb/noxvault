@@ -1,7 +1,7 @@
 // End-to-end check against a live cluster: fund a fresh vault, register it, unlock part of it.
 import * as anchor from "@coral-xyz/anchor";
 import { LAMPORTS_PER_SOL, SystemProgram, Transaction } from "@solana/web3.js";
-import { idl, newMasterSecret, planUnlock, recordPda, scanVaults, vaultKey, Noxvault } from "../sdk/client";
+import { findSignedMessages, idl, newMasterSecret, planUnlock, preflightUnlock, recordPda, scanVaults, vaultKey, Noxvault } from "../sdk/client";
 
 async function main() {
   // "confirmed" blockhashes: a "processed" one is often unknown to the node that simulates.
@@ -34,9 +34,16 @@ async function main() {
   ));
   console.log("vault", k0.vault.toBase58(), "funded + registered");
 
-  const plan = await planUnlock({ program, payer, key: k0, next: k1.vault, dest: payer, amount: BigInt(0.01 * LAMPORTS_PER_SOL) });
+  const params = { program, payer, key: k0, next: k1.vault, dest: payer, amount: BigInt(0.01 * LAMPORTS_PER_SOL) };
+  const pre = await preflightUnlock(params);
+  if (pre.errors.length) throw new Error(pre.errors.join("; "));
+  const plan = await planUnlock(params);
   for (const t of plan.transactions) console.log(t.label, await send(new Transaction().add(...t.instructions)));
 
+  const signed = await findSignedMessages(program, k0);
+  console.log(`history: ${signed.length} signed message(s), ${signed[0]?.chains.length} chains published`);
+  const again = await preflightUnlock({ ...params, amount: 1n });
+  console.log("second message refused:", again.errors.some((e) => /already signed|already used/.test(e)));
   const { vaults } = await scanVaults(program, master);
   for (const v of vaults) console.log(`#${v.index} ${v.vault.toBase58()} ${v.lamports / LAMPORTS_PER_SOL} SOL ${v.spent ? "spent" : "sealed"}`);
 }

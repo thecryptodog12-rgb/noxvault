@@ -23,7 +23,7 @@ import { wordlist } from "@scure/bip39/wordlists/english";
 import { randomBytes } from "@noble/hashes/utils";
 import type { Noxvault } from "./idl/noxvault";
 import idl from "./idl/noxvault.json";
-import { LEN, OneTimeKey, deriveKey, messageDigest, sign, verifyCost } from "./wots";
+import { LEN, OneTimeKey, deriveKey, equal, messageDigest, sign, verifyCost } from "./wots";
 
 export { idl };
 export type { Noxvault };
@@ -145,6 +145,28 @@ export async function preflightUnlock(
   if (p.dest.equals(p.key.vault)) errors.push("The destination cannot be the vault itself.");
   if (p.next.equals(p.key.vault)) errors.push("The next vault cannot be the vault being opened.");
 
+  // The one rule that matters most: this key may only ever sign one message.
+  try {
+    const digest = messageDigest({
+      programId: programId.toBytes(),
+      vault: p.key.vault.toBytes(),
+      mint: mint.toBytes(),
+      dest: p.dest.toBytes(),
+      nextVault: p.next.toBytes(),
+      amount: p.amount,
+    });
+    const signed = await findSignedMessages(p.program, p.key);
+    if (signed.length > 1)
+      errors.push("This vault's key has already signed two different messages. Move nothing more with it; contact support.");
+    else if (signed.length === 1 && !equal(signed[0].digest, digest))
+      errors.push(
+        `This vault's key already signed a withdrawal of ${signed[0].amount} to ${signed[0].dest.toBase58()}. ` +
+          "It can only ever complete that one; finish it instead."
+      );
+  } catch (e) {
+    errors.push(`Could not read this vault's history, so it is not safe to sign (${(e as Error).message}).`);
+  }
+
   const [spent, nextSpent, nextInfo, vaultInfo, destInfo] = await conn.getMultipleAccountsInfo([
     spentPda(p.key.vault, programId),
     spentPda(p.next, programId),
@@ -230,7 +252,7 @@ export async function planUnlock(p: UnlockParams): Promise<UnlockPlan> {
     writes.push(
       await m
         .writeSigs(s, signature.slice(s, s + SIGS_PER_TX).map(toArr))
-        .accountsPartial({ payer: p.payer, unlock })
+        .accountsPartial({ payer: p.payer, vault, unlock })
         .instruction()
     );
   }
@@ -307,6 +329,113 @@ export function txSize(payer: PublicKey, ixs: TransactionInstruction[]): number 
   } catch {
     return Infinity;
   }
+}
+
+// ---------- signature history ----------
+
+export interface SignedMessage {
+  mint: PublicKey;
+  dest: PublicKey;
+  next: PublicKey;
+  amount: bigint;
+  digest: Uint8Array;
+  /** Chain indexes whose signature values have been published for this message. */
+  chains: number[];
+  /** Unlock buffers that held this message (one per payer that tried it). */
+  buffers: PublicKey[];
+  /** Transactions that published them, oldest first. */
+  txs: string[];
+}
+
+/**
+ * Every message this vault's one-time key has ever signed, read from the vault's full
+ * transaction history (failed transactions included: their bytes are public too).
+ *
+ * This is the source of truth before signing: if it returns a message, the key is committed
+ * to it and the client must only ever resend that message; if it returns two, the key is
+ * already weakened. Values someone copied into a buffer with a different message do not
+ * count: a write counts only if its values equal what this key signs for that buffer's message.
+ * Throws if the history cannot be read; callers must then refuse to sign.
+ */
+export async function findSignedMessages(
+  program: Program<Noxvault>,
+  key: VaultKey
+): Promise<SignedMessage[]> {
+  const conn = program.provider.connection;
+  const programId = program.programId;
+  const vault = key.vault;
+
+  const sigs: string[] = [];
+  for (let before: string | undefined; ; ) {
+    const page = await conn.getSignaturesForAddress(vault, { before, limit: 1000 }, "confirmed");
+    sigs.push(...page.map((s) => s.signature));
+    if (page.length < 1000) break;
+    before = page[page.length - 1].signature;
+  }
+  sigs.reverse(); // oldest first
+
+  type Args = { mint: PublicKey; dest: PublicKey; nextVault: PublicKey; amount: BN; pkSeed: number[] };
+  const lastOpen = new Map<string, Args>(); // buffer address → latest message opened in it
+  const found = new Map<string, SignedMessage>();
+
+  for (let i = 0; i < sigs.length; i += 25) {
+    const batch = sigs.slice(i, i + 25);
+    const txs = await conn.getTransactions(batch, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+    txs.forEach((tx, t) => {
+      if (!tx) throw new Error(`Could not load transaction ${batch[t]}`);
+      const msg = tx.transaction.message;
+      const keys = msg.getAccountKeys({ accountKeysFromLookups: tx.meta?.loadedAddresses });
+      const opensHere = new Map<string, Args>();
+      for (const ix of msg.compiledInstructions) {
+        if (!keys.get(ix.programIdIndex)?.equals(programId)) continue;
+        const decoded = program.coder.instruction.decode(Buffer.from(ix.data));
+        if (!decoded) continue;
+        const acct = (n: number) => keys.get(ix.accountKeyIndexes[n]);
+        if (decoded.name === "openUnlock" || decoded.name === "open_unlock") {
+          if (!acct(1)?.equals(vault)) continue;
+          const args = (decoded.data as { args: Args }).args;
+          const buf = acct(2)!.toBase58();
+          opensHere.set(buf, args);
+          lastOpen.set(buf, args);
+        } else if (decoded.name === "writeSigs" || decoded.name === "write_sigs") {
+          if (!acct(1)?.equals(vault)) continue;
+          const buf = acct(2)!.toBase58();
+          const args = opensHere.get(buf) ?? lastOpen.get(buf);
+          if (!args || !equal(Uint8Array.from(args.pkSeed), key.pkSeed)) continue;
+          const { start, sigs: values } = decoded.data as { start: number; sigs: number[][] };
+          const digest = messageDigest({
+            programId: programId.toBytes(),
+            vault: vault.toBytes(),
+            mint: args.mint.toBytes(),
+            dest: args.dest.toBytes(),
+            nextVault: args.nextVault.toBytes(),
+            amount: BigInt(args.amount.toString()),
+          });
+          const expected = sign(key, digest);
+          const ours = values.every((v, k) => start + k < LEN && equal(Uint8Array.from(v), expected[start + k]));
+          if (!ours || !values.length) continue;
+          const id = Buffer.from(digest).toString("hex");
+          const m =
+            found.get(id) ??
+            ({
+              mint: args.mint,
+              dest: args.dest,
+              next: args.nextVault,
+              amount: BigInt(args.amount.toString()),
+              digest,
+              chains: [],
+              buffers: [],
+              txs: [],
+            } as SignedMessage);
+          for (let k = 0; k < values.length; k++) if (!m.chains.includes(start + k)) m.chains.push(start + k);
+          if (!m.buffers.some((b) => b.toBase58() === buf)) m.buffers.push(new PublicKey(buf));
+          if (!m.txs.includes(batch[t])) m.txs.push(batch[t]);
+          found.set(id, m);
+        }
+      }
+    });
+  }
+  return [...found.values()];
 }
 
 // ---------- reading ----------
