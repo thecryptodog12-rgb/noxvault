@@ -166,3 +166,23 @@ tree is in no vault yet (`findVaultsFor` returns nothing), and are never reused.
 As v2: pick a leaf unused on chain and without published signature values in the vault's history
 (`findSignedMessages`); refuse to sign when history cannot be read; preflight before signing;
 resend the same message after a failure; `confirmed` commitment; every step is retry-safe.
+
+## 10. Protocol parameters and $NOX tiers
+
+```
+Protocol = PDA(["protocol"]) { admin, params: { nox_mint, guardian, sentinel, create_fee, treasury }, frozen }
+```
+
+- `init_protocol` (only `PROTOCOL_ADMIN`), `update_protocol`, `set_protocol_admin`, `freeze_protocol`
+  (admin). Frozen parameters never change again. Admin moves to a team multisig, then governance.
+- A vault's **tier** = the $NOX (`nox_mint`) balance of a token account the vault owns, passed as
+  the optional `nox_account`: ≥ `sentinel` → Sentinel, ≥ `guardian` → Guardian, else Free.
+  `nox_mint` = default key → tiers off (everything open).
+- Checked by the program:
+  - `init_vault`: more than one signer tree → Sentinel; a testament → Guardian; a Free vault pays
+    `create_fee` lamports from the payer to `treasury`.
+  - `execute_create_schedule`, `execute_create_budget` → Guardian.
+- Never gated: recovery, whitelist, delays, instant limit, the Escape Hatch, withdrawals, staking,
+  migration, and anything already created (heirs and co-signers are never locked out).
+- Off-chain, by convention: relayers serve Sentinel vaults free; keepers evacuate linked wallets
+  in order of their vault's tier, then $NOX held.
