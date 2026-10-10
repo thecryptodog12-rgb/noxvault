@@ -158,6 +158,11 @@ inbox sweeps, canary checks and escape broadcasts. Neither can change anything t
 
 ## 9. Client rules
 
+**One tree, one vault.** A tree must sit in exactly one vault: the message digest includes the
+vault, so a tree placed in two vaults would let one leaf sign two different messages. Owners get a
+fresh tree per vault number; co-signer and recovery codes are derived for a vault number whose
+tree is in no vault yet (`findVaultsFor` returns nothing), and are never reused.
+
 As v2: pick a leaf unused on chain and without published signature values in the vault's history
 (`findSignedMessages`); refuse to sign when history cannot be read; preflight before signing;
 resend the same message after a failure; `confirmed` commitment; every step is retry-safe.
