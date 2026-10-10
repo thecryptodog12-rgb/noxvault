@@ -1,5 +1,4 @@
-//! WOTS+ verification, mirroring sdk/wots.ts. See docs/SPEC.md.
-use anchor_lang::prelude::*;
+//! WOTS+ chains and the Merkle tree over them, mirroring sdk/wots.ts. See docs/SPEC.md §3.
 use anchor_lang::solana_program::hash::hashv;
 
 pub const N: usize = 32;
@@ -7,22 +6,16 @@ pub const LEN1: usize = 32;
 pub const LEN: usize = 34;
 pub const STEPS: u8 = 255;
 pub const ALL_CHAINS: u64 = (1u64 << LEN) - 1;
+pub const MAX_HEIGHT: usize = 8;
 
-pub fn message_digest(
-    vault: &Pubkey,
-    mint: &Pubkey,
-    dest: &Pubkey,
-    next_vault: &Pubkey,
-    amount: u64,
-) -> [u8; N] {
+pub fn message_digest(vault: &[u8], tree: u8, leaf: u16, action: &[u8]) -> [u8; N] {
     hashv(&[
-        b"nox/msg/v1",
+        b"nox2/msg",
         crate::ID.as_ref(),
-        vault.as_ref(),
-        mint.as_ref(),
-        dest.as_ref(),
-        next_vault.as_ref(),
-        &amount.to_le_bytes(),
+        vault,
+        &[tree],
+        &leaf.to_le_bytes(),
+        action,
     ])
     .to_bytes()
 }
@@ -36,22 +29,46 @@ pub fn digits(digest: &[u8; N]) -> [u8; LEN] {
     a
 }
 
-/// Walks chain `j` from position `start` to the end (position 255).
-pub fn chain_to_end(pk_seed: &[u8; N], j: u8, mut v: [u8; N], start: u8) -> [u8; N] {
+/// Walks chain `j` of leaf `leaf` from position `start` to the end (position 255).
+pub fn chain_to_end(pk_seed: &[u8; N], leaf: u16, j: u8, mut v: [u8; N], start: u8) -> [u8; N] {
+    let l = leaf.to_le_bytes();
     let mut k = start;
     while k < STEPS {
-        v = hashv(&[pk_seed, &[j, k], &v]).to_bytes();
+        v = hashv(&[pk_seed, &l, &[j, k], &v]).to_bytes();
         k += 1;
     }
     v
 }
 
-pub fn root_from_ends(pk_seed: &[u8; N], ends: &[[u8; N]; LEN]) -> [u8; N] {
-    let mut parts: [&[u8]; LEN + 2] = [&[]; LEN + 2];
-    parts[0] = b"nox/root";
+pub fn leaf_hash(pk_seed: &[u8; N], leaf: u16, ends: &[[u8; N]; LEN]) -> [u8; N] {
+    let l = leaf.to_le_bytes();
+    let mut parts: [&[u8]; LEN + 3] = [&[]; LEN + 3];
+    parts[0] = b"nox2/leaf";
     parts[1] = pk_seed;
+    parts[2] = &l;
     for (i, e) in ends.iter().enumerate() {
-        parts[i + 2] = e;
+        parts[i + 3] = e;
     }
     hashv(&parts).to_bytes()
+}
+
+/// Climbs from a leaf hash to the tree root along its auth path (siblings, bottom to top).
+pub fn root_from_path(pk_seed: &[u8; N], leaf: u16, leaf_hash: [u8; N], path: &[[u8; N]]) -> [u8; N] {
+    let mut cur = leaf_hash;
+    let mut idx = leaf as u32;
+    for (i, sib) in path.iter().enumerate() {
+        let h = (i + 1) as u8;
+        let parent = ((idx >> 1) as u16).to_le_bytes();
+        cur = if idx & 1 == 0 {
+            hashv(&[b"nox2/node", pk_seed, &[h], &parent, &cur, sib]).to_bytes()
+        } else {
+            hashv(&[b"nox2/node", pk_seed, &[h], &parent, sib, &cur]).to_bytes()
+        };
+        idx >>= 1;
+    }
+    cur
+}
+
+pub fn config_hash(config_bytes: &[u8]) -> [u8; N] {
+    hashv(&[b"nox2/config", config_bytes]).to_bytes()
 }

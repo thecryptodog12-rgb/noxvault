@@ -39,40 +39,23 @@
       "args": []
     },
     {
-      "name": "finish_unlock",
+      "name": "execute_pending",
       "docs": [
-        "Pays out SOL once the signature rebuilds the vault. Permissionless."
+        "Pays out the pending SOL withdrawal once its delay has passed. Permissionless."
       ],
       "discriminator": [
-        46,
-        111,
-        83,
-        152,
-        117,
-        133,
-        10,
-        247
+        207,
+        36,
+        5,
+        220,
+        230,
+        106,
+        57,
+        181
       ],
       "accounts": [
         {
-          "name": "payer",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "unlock",
-          "writable": true
-        },
-        {
-          "name": "rent_receiver",
-          "writable": true
-        },
-        {
-          "name": "vault",
-          "writable": true
-        },
-        {
-          "name": "spent",
+          "name": "state",
           "writable": true,
           "pda": {
             "seeds": [
@@ -80,10 +63,10 @@
                 "kind": "const",
                 "value": [
                   115,
-                  112,
-                  101,
-                  110,
-                  116
+                  116,
+                  97,
+                  116,
+                  101
                 ]
               },
               {
@@ -94,11 +77,14 @@
           }
         },
         {
-          "name": "dest",
-          "writable": true
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "state"
+          ]
         },
         {
-          "name": "next_vault",
+          "name": "dest",
           "writable": true
         },
         {
@@ -109,19 +95,19 @@
       "args": []
     },
     {
-      "name": "finish_unlock_token",
+      "name": "execute_pending_token",
       "docs": [
-        "Pays out an SPL / Token-2022 token once the signature rebuilds the vault. Permissionless."
+        "Pays out the pending token withdrawal once its delay has passed. Permissionless."
       ],
       "discriminator": [
-        118,
-        131,
-        96,
-        200,
+        154,
+        74,
+        76,
+        145,
+        26,
         82,
-        15,
-        170,
-        19
+        200,
+        60
       ],
       "accounts": [
         {
@@ -130,18 +116,7 @@
           "signer": true
         },
         {
-          "name": "unlock",
-          "writable": true
-        },
-        {
-          "name": "rent_receiver",
-          "writable": true
-        },
-        {
-          "name": "vault"
-        },
-        {
-          "name": "spent",
+          "name": "state",
           "writable": true,
           "pda": {
             "seeds": [
@@ -149,10 +124,10 @@
                 "kind": "const",
                 "value": [
                   115,
-                  112,
-                  101,
-                  110,
-                  116
+                  116,
+                  97,
+                  116,
+                  101
                 ]
               },
               {
@@ -161,6 +136,12 @@
               }
             ]
           }
+        },
+        {
+          "name": "vault",
+          "relations": [
+            "state"
+          ]
         },
         {
           "name": "mint"
@@ -283,67 +264,6 @@
           }
         },
         {
-          "name": "next_vault",
-          "writable": true
-        },
-        {
-          "name": "next_ata",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "next_vault"
-              },
-              {
-                "kind": "account",
-                "path": "token_program"
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
-        },
-        {
           "name": "token_program"
         },
         {
@@ -358,168 +278,42 @@
       "args": []
     },
     {
-      "name": "open_unlock",
+      "name": "finish_admin",
+      "docs": [
+        "Cancel (drops the pending withdrawal) and Ping (proves the owner is alive)."
+      ],
       "discriminator": [
-        197,
-        205,
-        244,
-        64,
-        180,
-        220,
-        149,
-        55
+        59,
+        221,
+        148,
+        135,
+        221,
+        17,
+        113,
+        147
       ],
       "accounts": [
-        {
-          "name": "payer",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "vault"
-        },
         {
           "name": "unlock",
+          "writable": true
+        },
+        {
+          "name": "rent_receiver",
+          "writable": true
+        },
+        {
+          "name": "state",
           "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  117,
-                  110,
-                  108,
-                  111,
-                  99,
-                  107
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              },
-              {
-                "kind": "account",
-                "path": "payer"
-              }
-            ]
-          }
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "args",
-          "type": {
-            "defined": {
-              "name": "OpenArgs"
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "register",
-      "docs": [
-        "Lists a vault in the public explorer. Anyone can do it; it proves nothing but the address."
-      ],
-      "discriminator": [
-        211,
-        124,
-        67,
-        15,
-        211,
-        194,
-        178,
-        240
-      ],
-      "accounts": [
-        {
-          "name": "payer",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "vault"
-        },
-        {
-          "name": "record",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  114,
-                  101,
-                  99,
-                  111,
-                  114,
-                  100
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ]
-          }
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "root",
-          "type": {
-            "array": [
-              "u8",
-              32
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "sweep",
-      "docs": [
-        "Forwards all SOL in a spent vault to its successor. Permissionless."
-      ],
-      "discriminator": [
-        40,
-        23,
-        234,
-        175,
-        14,
-        61,
-        154,
-        177
-      ],
-      "accounts": [
-        {
-          "name": "vault",
-          "writable": true,
-          "relations": [
-            "spent"
-          ]
-        },
-        {
-          "name": "spent",
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
                   115,
-                  112,
-                  101,
-                  110,
-                  116
+                  116,
+                  97,
+                  116,
+                  101
                 ]
               },
               {
@@ -530,11 +324,15 @@
           }
         },
         {
-          "name": "successor",
+          "name": "vault",
           "writable": true,
           "relations": [
-            "spent"
+            "state"
           ]
+        },
+        {
+          "name": "fee_payee",
+          "writable": true
         },
         {
           "name": "system_program",
@@ -544,44 +342,42 @@
       "args": []
     },
     {
-      "name": "sweep_token",
+      "name": "finish_collect_stake",
       "docs": [
-        "Forwards all of one token in a spent vault to its successor and closes the vault's ATA."
+        "Moves everything in a deactivated stake account back into the vault."
       ],
       "discriminator": [
-        197,
-        177,
-        210,
-        55,
-        42,
-        183,
-        103,
-        83
+        11,
+        112,
+        175,
+        231,
+        205,
+        225,
+        187,
+        113
       ],
       "accounts": [
         {
-          "name": "payer",
+          "name": "unlock",
+          "writable": true
+        },
+        {
+          "name": "rent_receiver",
+          "writable": true
+        },
+        {
+          "name": "state",
           "writable": true,
-          "signer": true
-        },
-        {
-          "name": "vault",
-          "relations": [
-            "spent"
-          ]
-        },
-        {
-          "name": "spent",
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
                   115,
-                  112,
-                  101,
-                  110,
-                  116
+                  116,
+                  97,
+                  116,
+                  101
                 ]
               },
               {
@@ -590,6 +386,337 @@
               }
             ]
           }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "stake",
+          "writable": true
+        },
+        {
+          "name": "fee_payee",
+          "writable": true
+        },
+        {
+          "name": "clock",
+          "address": "SysvarC1ock11111111111111111111111111111111"
+        },
+        {
+          "name": "stake_history",
+          "address": "SysvarStakeHistory1111111111111111111111111"
+        },
+        {
+          "name": "stake_program",
+          "address": "Stake11111111111111111111111111111111111111"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "finish_stake",
+      "docs": [
+        "Opens a stake account owned by the vault and delegates it. Permissionless once verified."
+      ],
+      "discriminator": [
+        96,
+        239,
+        26,
+        63,
+        103,
+        215,
+        246,
+        139
+      ],
+      "accounts": [
+        {
+          "name": "unlock",
+          "writable": true
+        },
+        {
+          "name": "rent_receiver",
+          "writable": true
+        },
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "stake",
+          "writable": true
+        },
+        {
+          "name": "vote"
+        },
+        {
+          "name": "fee_payee",
+          "writable": true
+        },
+        {
+          "name": "clock",
+          "address": "SysvarC1ock11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "stake_history",
+          "address": "SysvarStakeHistory1111111111111111111111111"
+        },
+        {
+          "name": "stake_config",
+          "address": "StakeConfig11111111111111111111111111111111"
+        },
+        {
+          "name": "stake_program",
+          "address": "Stake11111111111111111111111111111111111111"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "finish_unstake",
+      "docs": [
+        "Deactivates one of the vault's stake accounts. Permissionless once verified."
+      ],
+      "discriminator": [
+        36,
+        39,
+        141,
+        104,
+        51,
+        93,
+        247,
+        144
+      ],
+      "accounts": [
+        {
+          "name": "unlock",
+          "writable": true
+        },
+        {
+          "name": "rent_receiver",
+          "writable": true
+        },
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "stake",
+          "writable": true
+        },
+        {
+          "name": "fee_payee",
+          "writable": true
+        },
+        {
+          "name": "clock",
+          "address": "SysvarC1ock11111111111111111111111111111111"
+        },
+        {
+          "name": "stake_history",
+          "address": "SysvarStakeHistory1111111111111111111111111"
+        },
+        {
+          "name": "stake_program",
+          "address": "Stake11111111111111111111111111111111111111"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "finish_withdraw",
+      "docs": [
+        "Withdraws SOL (or queues it as the pending withdrawal). Permissionless once verified."
+      ],
+      "discriminator": [
+        225,
+        43,
+        3,
+        149,
+        27,
+        183,
+        245,
+        27
+      ],
+      "accounts": [
+        {
+          "name": "unlock",
+          "writable": true
+        },
+        {
+          "name": "rent_receiver",
+          "writable": true
+        },
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "dest",
+          "writable": true
+        },
+        {
+          "name": "fee_payee",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "finish_withdraw_token",
+      "docs": [
+        "Withdraws an SPL / Token-2022 token (or queues it). Permissionless once verified."
+      ],
+      "discriminator": [
+        6,
+        225,
+        56,
+        120,
+        204,
+        57,
+        216,
+        186
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "unlock",
+          "writable": true
+        },
+        {
+          "name": "rent_receiver",
+          "writable": true
+        },
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "state"
+          ]
         },
         {
           "name": "mint"
@@ -652,20 +779,16 @@
           }
         },
         {
-          "name": "successor",
-          "writable": true,
-          "relations": [
-            "spent"
-          ]
+          "name": "dest"
         },
         {
-          "name": "successor_ata",
+          "name": "dest_ata",
           "writable": true,
           "pda": {
             "seeds": [
               {
                 "kind": "account",
-                "path": "successor"
+                "path": "dest"
               },
               {
                 "kind": "account",
@@ -716,6 +839,10 @@
           }
         },
         {
+          "name": "fee_payee",
+          "writable": true
+        },
+        {
           "name": "token_program"
         },
         {
@@ -728,6 +855,185 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "init_vault",
+      "docs": [
+        "Creates the state of a vault from its config. Permissionless: the vault address is the",
+        "hash of the config, so nobody can register different rules for it."
+      ],
+      "discriminator": [
+        77,
+        79,
+        85,
+        150,
+        33,
+        217,
+        52,
+        106
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "vault"
+        },
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "config",
+          "type": {
+            "defined": {
+              "name": "Config"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "open_unlock",
+      "discriminator": [
+        197,
+        205,
+        244,
+        64,
+        180,
+        220,
+        149,
+        55
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "vault",
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "unlock",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  110,
+                  108,
+                  111,
+                  99,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "account",
+                "path": "payer"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "tree",
+          "type": "u8"
+        },
+        {
+          "name": "leaf",
+          "type": "u16"
+        },
+        {
+          "name": "pk_seed",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "auth_path",
+          "type": {
+            "vec": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        },
+        {
+          "name": "action",
+          "type": {
+            "defined": {
+              "name": "Action"
+            }
+          }
+        }
+      ]
     },
     {
       "name": "verify",
@@ -784,8 +1090,7 @@
         {
           "name": "vault",
           "docs": [
-            "signature bytes shows up in the vault's history, where clients look for an earlier",
-            "signature before ever signing (docs/SPEC.md, client rules)."
+            "signature bytes shows up in the vault's history (docs/SPEC.md §8)."
           ],
           "relations": [
             "unlock"
@@ -817,32 +1122,6 @@
   ],
   "accounts": [
     {
-      "name": "Record",
-      "discriminator": [
-        254,
-        233,
-        117,
-        252,
-        76,
-        166,
-        146,
-        139
-      ]
-    },
-    {
-      "name": "Spent",
-      "discriminator": [
-        54,
-        176,
-        134,
-        161,
-        102,
-        243,
-        161,
-        234
-      ]
-    },
-    {
       "name": "Unlock",
       "discriminator": [
         187,
@@ -854,6 +1133,19 @@
         241,
         10
       ]
+    },
+    {
+      "name": "VaultState",
+      "discriminator": [
+        228,
+        196,
+        82,
+        165,
+        98,
+        210,
+        235,
+        152
+      ]
     }
   ],
   "errors": [
@@ -864,123 +1156,252 @@
     },
     {
       "code": 6001,
-      "name": "NextIsSelf",
-      "msg": "The next vault cannot be the vault itself"
+      "name": "BadConfig",
+      "msg": "Invalid vault config"
     },
     {
       "code": 6002,
-      "name": "DestIsSelf",
-      "msg": "The destination cannot be the vault itself"
+      "name": "BadTree",
+      "msg": "Unknown tree, wrong auth path length or leaf out of range"
     },
     {
       "code": 6003,
+      "name": "KeyUsed",
+      "msg": "This one-time key has already been used"
+    },
+    {
+      "code": 6004,
+      "name": "DestIsVault",
+      "msg": "The destination cannot be the vault itself"
+    },
+    {
+      "code": 6005,
       "name": "ZeroAmount",
       "msg": "Amount must be greater than zero"
     },
     {
-      "code": 6004,
+      "code": 6006,
+      "name": "BadAction",
+      "msg": "Action too large"
+    },
+    {
+      "code": 6007,
       "name": "Frozen",
       "msg": "The signature can no longer change: verification has started"
     },
     {
-      "code": 6005,
+      "code": 6008,
       "name": "ChainOutOfRange",
       "msg": "Chain index out of range"
     },
     {
-      "code": 6006,
+      "code": 6009,
       "name": "SignatureIncomplete",
       "msg": "Not every chain of the signature has been written"
     },
     {
-      "code": 6007,
+      "code": 6010,
       "name": "NotVerified",
       "msg": "Not every chain has been verified"
     },
     {
-      "code": 6008,
+      "code": 6011,
       "name": "BadSignature",
-      "msg": "The signature does not rebuild this vault"
+      "msg": "The signature does not match this vault's keys"
     },
     {
-      "code": 6009,
+      "code": 6012,
       "name": "WrongPayer",
       "msg": "Rent receiver must be the account that opened the unlock"
     },
     {
-      "code": 6010,
-      "name": "WrongDest",
-      "msg": "Destination does not match the signed message"
-    },
-    {
-      "code": 6011,
-      "name": "WrongNext",
-      "msg": "Next vault does not match the signed message"
-    },
-    {
-      "code": 6012,
-      "name": "WrongMint",
-      "msg": "Asset does not match the signed message"
-    },
-    {
       "code": 6013,
-      "name": "InsufficientFunds",
-      "msg": "The vault holds less than the signed amount"
+      "name": "WrongAction",
+      "msg": "This instruction cannot execute the signed action"
     },
     {
       "code": 6014,
-      "name": "DustTooSmall",
-      "msg": "Too little SOL to open the successor vault"
+      "name": "WrongDest",
+      "msg": "Destination does not match the signed action"
+    },
+    {
+      "code": 6015,
+      "name": "WrongFeePayee",
+      "msg": "Fee payee does not match the signed action"
+    },
+    {
+      "code": 6016,
+      "name": "WrongStake",
+      "msg": "Stake account does not match the signed action"
+    },
+    {
+      "code": 6017,
+      "name": "InsufficientFunds",
+      "msg": "The vault holds less than this needs"
+    },
+    {
+      "code": 6018,
+      "name": "RentDust",
+      "msg": "The vault would be left with less SOL than the rent minimum"
+    },
+    {
+      "code": 6019,
+      "name": "RecoveryLocked",
+      "msg": "The recovery key may only cancel until the owner has been inactive long enough"
+    },
+    {
+      "code": 6020,
+      "name": "NotWhitelisted",
+      "msg": "This destination is not on the vault's whitelist"
+    },
+    {
+      "code": 6021,
+      "name": "PendingExists",
+      "msg": "A withdrawal is already pending"
+    },
+    {
+      "code": 6022,
+      "name": "NoPending",
+      "msg": "No withdrawal is pending"
+    },
+    {
+      "code": 6023,
+      "name": "NotYet",
+      "msg": "The pending withdrawal's delay has not passed yet"
     }
   ],
   "types": [
     {
-      "name": "OpenArgs",
+      "name": "Action",
+      "docs": [
+        "What one one-time key authorizes. Signed as borsh bytes (docs/SPEC.md §5)."
+      ],
       "type": {
-        "kind": "struct",
-        "fields": [
+        "kind": "enum",
+        "variants": [
           {
-            "name": "pk_seed",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
+            "name": "Withdraw",
+            "fields": [
+              {
+                "name": "mint",
+                "type": "pubkey"
+              },
+              {
+                "name": "dest",
+                "type": "pubkey"
+              },
+              {
+                "name": "amount",
+                "type": "u64"
+              },
+              {
+                "name": "fee",
+                "type": "u64"
+              },
+              {
+                "name": "fee_payee",
+                "type": "pubkey"
+              }
+            ]
           },
           {
-            "name": "mint",
-            "type": "pubkey"
+            "name": "Stake",
+            "fields": [
+              {
+                "name": "seed",
+                "type": "u8"
+              },
+              {
+                "name": "vote",
+                "type": "pubkey"
+              },
+              {
+                "name": "amount",
+                "type": "u64"
+              },
+              {
+                "name": "fee",
+                "type": "u64"
+              },
+              {
+                "name": "fee_payee",
+                "type": "pubkey"
+              }
+            ]
           },
           {
-            "name": "dest",
-            "type": "pubkey"
+            "name": "Unstake",
+            "fields": [
+              {
+                "name": "seed",
+                "type": "u8"
+              },
+              {
+                "name": "fee",
+                "type": "u64"
+              },
+              {
+                "name": "fee_payee",
+                "type": "pubkey"
+              }
+            ]
           },
           {
-            "name": "next_vault",
-            "type": "pubkey"
+            "name": "CollectStake",
+            "fields": [
+              {
+                "name": "seed",
+                "type": "u8"
+              },
+              {
+                "name": "fee",
+                "type": "u64"
+              },
+              {
+                "name": "fee_payee",
+                "type": "pubkey"
+              }
+            ]
           },
           {
-            "name": "amount",
-            "type": "u64"
+            "name": "Cancel",
+            "fields": [
+              {
+                "name": "fee",
+                "type": "u64"
+              },
+              {
+                "name": "fee_payee",
+                "type": "pubkey"
+              }
+            ]
+          },
+          {
+            "name": "Ping",
+            "fields": [
+              {
+                "name": "fee",
+                "type": "u64"
+              },
+              {
+                "name": "fee_payee",
+                "type": "pubkey"
+              }
+            ]
           }
         ]
       }
     },
     {
-      "name": "Record",
+      "name": "Config",
       "docs": [
-        "Optional public listing of a vault, for the explorer."
+        "The rules of a vault. Its hash is part of the vault address, so it can never change."
       ],
       "type": {
         "kind": "struct",
         "fields": [
           {
-            "name": "vault",
-            "type": "pubkey"
-          },
-          {
-            "name": "root",
+            "name": "primary_root",
             "type": {
               "array": [
                 "u8",
@@ -989,44 +1410,47 @@
             }
           },
           {
-            "name": "created_at",
+            "name": "primary_height",
+            "type": "u8"
+          },
+          {
+            "name": "recovery_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "recovery_height",
+            "type": "u8"
+          },
+          {
+            "name": "recovery_delay",
+            "type": "i64"
+          },
+          {
+            "name": "whitelist",
+            "type": {
+              "array": [
+                "pubkey",
+                4
+              ]
+            }
+          },
+          {
+            "name": "slow_delay",
             "type": "i64"
           }
         ]
       }
     },
     {
-      "name": "Spent",
-      "docs": [
-        "Marks a vault key as used. Its existence is what stops a key from ever signing twice."
-      ],
+      "name": "Pending",
       "type": {
         "kind": "struct",
         "fields": [
-          {
-            "name": "vault",
-            "type": "pubkey"
-          },
-          {
-            "name": "root",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "vault_bump",
-            "type": "u8"
-          },
-          {
-            "name": "successor",
-            "docs": [
-              "Where everything left in (or later sent to) this vault is forwarded."
-            ],
-            "type": "pubkey"
-          },
           {
             "name": "mint",
             "type": "pubkey"
@@ -1040,8 +1464,12 @@
             "type": "u64"
           },
           {
-            "name": "slot",
-            "type": "u64"
+            "name": "executable_at",
+            "type": "i64"
+          },
+          {
+            "name": "leaf",
+            "type": "u16"
           }
         ]
       }
@@ -1049,7 +1477,7 @@
     {
       "name": "Unlock",
       "docs": [
-        "A signed withdrawal being assembled and verified over several transactions.",
+        "A signed action being assembled and verified over several transactions.",
         "Zero-copy: the signature and chain ends are too big for the BPF stack."
       ],
       "serialization": "bytemuck",
@@ -1059,10 +1487,6 @@
       "type": {
         "kind": "struct",
         "fields": [
-          {
-            "name": "amount",
-            "type": "u64"
-          },
           {
             "name": "written",
             "docs": [
@@ -1095,16 +1519,54 @@
             }
           },
           {
-            "name": "mint",
-            "type": "pubkey"
+            "name": "auth_path",
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                },
+                8
+              ]
+            }
           },
           {
-            "name": "dest",
-            "type": "pubkey"
+            "name": "action",
+            "type": {
+              "array": [
+                "u8",
+                160
+              ]
+            }
           },
           {
-            "name": "next_vault",
-            "type": "pubkey"
+            "name": "action_len",
+            "type": "u16"
+          },
+          {
+            "name": "leaf",
+            "type": "u16"
+          },
+          {
+            "name": "tree",
+            "type": "u8"
+          },
+          {
+            "name": "height",
+            "type": "u8"
+          },
+          {
+            "name": "frozen",
+            "docs": [
+              "1 once verification started: the message and signature can no longer change."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
           },
           {
             "name": "digits",
@@ -1119,22 +1581,11 @@
             }
           },
           {
-            "name": "frozen",
-            "docs": [
-              "1 once verification started: the message and signature can no longer change."
-            ],
-            "type": "u8"
-          },
-          {
-            "name": "bump",
-            "type": "u8"
-          },
-          {
             "name": "_pad",
             "type": {
               "array": [
                 "u8",
-                4
+                6
               ]
             }
           },
@@ -1164,6 +1615,82 @@
                 },
                 34
               ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "VaultState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault_bump",
+            "type": "u8"
+          },
+          {
+            "name": "config_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "config",
+            "type": {
+              "defined": {
+                "name": "Config"
+              }
+            }
+          },
+          {
+            "name": "used_primary",
+            "docs": [
+              "Bit l set once leaf l of the tree has been used."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "used_recovery",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "last_active",
+            "type": "i64"
+          },
+          {
+            "name": "created_at",
+            "type": "i64"
+          },
+          {
+            "name": "actions",
+            "type": "u32"
+          },
+          {
+            "name": "pending",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "Pending"
+                }
+              }
             }
           }
         ]

@@ -9,68 +9,79 @@ import {
   Transaction,
   TransactionInstruction,
 } from "@solana/web3.js";
-import {
-  createMint,
-  getAccount,
-  getAssociatedTokenAddressSync,
-  getOrCreateAssociatedTokenAccount,
-  mintTo,
-} from "@solana/spl-token";
+import { createMint, getAccount, getAssociatedTokenAddressSync, getOrCreateAssociatedTokenAccount, mintTo } from "@solana/spl-token";
 import { expect } from "chai";
 import { Noxvault } from "../target/types/noxvault";
 import * as wots from "../sdk/wots";
 import {
+  ActionPlan,
   HASHES_PER_TX,
-  UnlockPlan,
-  verifyRanges,
-  newMasterSecret,
+  Signer,
+  TREE_PRIMARY,
+  TREE_RECOVERY,
+  executePendingIx,
+  fetchState,
   findSignedMessages,
-  planUnlock,
-  preflightUnlock,
-  recordPda,
-  scanVaults,
+  findVaultsFor,
+  initVaultIx,
+  leafUsed,
+  makeConfig,
+  makeSigner,
+  newMasterSecret,
+  pickLeaf,
+  planAction,
+  preflightAction,
   secretToWords,
-  spentPda,
+  stakePda,
   unlockPda,
-  vaultKey,
+  vaultOf,
+  verifyRanges,
   wordsToSecret,
 } from "../sdk/client";
 
-describe("noxvault", () => {
+const SOL = (n: number) => BigInt(Math.round(n * LAMPORTS_PER_SOL));
+const ZERO = new Uint8Array(32);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+describe("noxvault v2", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
   const program = anchor.workspace.noxvault as Program<Noxvault>;
   const conn = provider.connection;
   const payer = provider.wallet.publicKey;
-  const master = newMasterSecret();
-  const key = (i: number) => vaultKey(master, i, program.programId);
+  const wallet = (provider.wallet as anchor.Wallet).payer;
   const budget = ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 });
 
-  async function send(ixs: TransactionInstruction[]) {
-    const sig = await provider.sendAndConfirm(new Transaction().add(...ixs), [], { commitment: "confirmed" });
+  const master = newMasterSecret();
+  let primary: Signer;
+  let vault: PublicKey;
+
+  async function send(ixs: TransactionInstruction[], signers: Keypair[] = []) {
+    const sig = await provider.sendAndConfirm(new Transaction().add(...ixs), signers, { commitment: "confirmed" });
     const tx = await conn.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
     return tx?.meta?.computeUnitsConsumed ?? 0;
   }
 
-  async function run(plan: UnlockPlan) {
-    console.log(`      ${wots.verifyCost(plan.digest).reduce((a, b) => a + b, 0)} hashes to verify`);
+  /** Sends a plan; with `as`, that keypair is the fee payer (a relayer). */
+  async function run(plan: ActionPlan, as?: Keypair, log = false) {
     for (const t of plan.transactions) {
-      const cu = await send(t.instructions);
-      console.log(`      ${t.label}: ${cu} CU`);
+      if (as) {
+        const tx = new Transaction().add(...t.instructions);
+        tx.feePayer = as.publicKey;
+        await anchor.web3.sendAndConfirmTransaction(conn, tx, [as], { commitment: "confirmed" });
+      } else {
+        const cu = await send(t.instructions);
+        if (log) console.log(`      ${t.label}: ${cu} CU`);
+      }
     }
   }
 
   async function fund(to: PublicKey, sol: number) {
-    await send([SystemProgram.transfer({ fromPubkey: payer, toPubkey: to, lamports: sol * LAMPORTS_PER_SOL })]);
+    await send([SystemProgram.transfer({ fromPubkey: payer, toPubkey: to, lamports: Number(SOL(sol)) })]);
   }
 
-  async function cancel(vault: PublicKey) {
-    await send([
-      await program.methods
-        .cancelUnlock()
-        .accountsPartial({ payer, unlock: unlockPda(vault, payer, program.programId) })
-        .instruction(),
-    ]);
+  async function cancel(v: PublicKey, who = payer) {
+    await send([await program.methods.cancelUnlock().accountsPartial({ payer: who, unlock: unlockPda(v, who, program.programId) }).instruction()]);
   }
 
   async function expectError(p: Promise<unknown>, code: string) {
@@ -83,229 +94,260 @@ describe("noxvault", () => {
     expect.fail(`expected ${code}`);
   }
 
-  it("signs and verifies off-chain; tampering fails", () => {
-    const k = wots.deriveKey(master, 99);
-    const d = wots.messageDigest({
-      programId: program.programId.toBytes(),
-      vault: new Uint8Array(32),
-      mint: new Uint8Array(32),
-      dest: new Uint8Array(32).fill(1),
-      nextVault: new Uint8Array(32).fill(2),
-      amount: 5n,
-    });
-    const sig = wots.sign(k, d);
-    expect(sig.length).to.eq(34);
-    expect(wots.verify(k.root, k.pkSeed, d, sig)).to.eq(true);
+  const withdraw = (dest: PublicKey, amount: bigint, fee = 0n, feePayee = payer): wots.Action => ({
+    kind: "withdraw",
+    mint: ZERO,
+    dest: dest.toBytes(),
+    amount,
+    fee,
+    feePayee: feePayee.toBytes(),
+  });
+
+  async function act(signer: Signer, v: PublicKey, action: wots.Action, opts: { leaf?: number; as?: Keypair; log?: boolean } = {}) {
+    const state = (await fetchState(program, v))!;
+    const leaf = opts.leaf ?? pickLeaf(state, signer, await findSignedMessages(program, v, signer)).leaf;
+    const plan = await planAction({ program, payer: opts.as?.publicKey ?? payer, vault: v, signer, leaf, action });
+    await run(plan, opts.as, opts.log);
+    return { plan, leaf };
+  }
+
+  before(async () => {
+    primary = makeSigner(master, 0, TREE_PRIMARY);
+    vault = vaultOf(makeConfig(primary), program.programId);
+  });
+
+  it("builds trees whose signatures rebuild the root, and nothing else does", () => {
+    const leaf = 37;
+    const d = wots.messageDigest(program.programId.toBytes(), vault.toBytes(), 0, leaf, wots.encodeAction(withdraw(payer, 5n)));
+    const sig = wots.sign(primary.seeds, leaf, d);
+    const path = wots.authPath(primary.pub, leaf);
+    expect(wots.equal(wots.recoverRoot(primary.seeds.pkSeed, leaf, d, sig, path), primary.pub.root)).to.eq(true);
     const d2 = d.slice();
-    d2[0] ^= 1;
-    expect(wots.verify(k.root, k.pkSeed, d2, sig)).to.eq(false);
+    d2[5] ^= 1;
+    expect(wots.equal(wots.recoverRoot(primary.seeds.pkSeed, leaf, d2, sig, path), primary.pub.root)).to.eq(false);
+    expect(wots.equal(wots.recoverRoot(primary.seeds.pkSeed, leaf + 1, d, sig, path), primary.pub.root)).to.eq(false);
+    expect(wots.encodeConfig(makeConfig(primary)).length).to.eq(210);
   });
 
   it("splits even the worst-case signature into transactions that fit the compute limit", () => {
-    const worst = wots.verifyCost(new Uint8Array(32)); // all-zero digest: every chain walks 255 steps
-    const ranges = verifyRanges(worst, HASHES_PER_TX);
-    for (const [from, to] of ranges) expect(worst.slice(from, to).reduce((a, b) => a + b, 0)).to.be.at.most(HASHES_PER_TX);
-    expect(ranges[ranges.length - 1][1]).to.eq(34);
+    const worst = wots.verifyCost(new Uint8Array(32));
+    for (const [from, to] of verifyRanges(worst, HASHES_PER_TX))
+      expect(worst.slice(from, to).reduce((a, b) => a + b, 0)).to.be.at.most(HASHES_PER_TX);
   });
 
-  it("round-trips the secret through 24 words", () => {
-    const words = secretToWords(master);
-    expect(words.split(" ").length).to.eq(24);
-    expect(wots.equal(wordsToSecret(words), master)).to.eq(true);
+  it("round-trips a phrase through 24 words", () => {
+    expect(wots.equal(wordsToSecret(secretToWords(master)), master)).to.eq(true);
   });
 
-  it("registers a vault for the explorer", async () => {
-    const k = key(0);
-    await send([
-      await program.methods
-        .register(Array.from(k.root))
-        .accountsPartial({ payer, vault: k.vault, record: recordPda(k.vault, program.programId) })
-        .instruction(),
-    ]);
-    const r = await program.account.record.fetch(recordPda(k.vault, program.programId));
-    expect(r.vault.equals(k.vault)).to.eq(true);
+  it("initializes a vault from its config; the address commits to the rules", async () => {
+    await send([await initVaultIx(program, payer, makeConfig(primary))]);
+    const st = (await fetchState(program, vault))!;
+    expect(wots.equal(st.config.primaryRoot, primary.pub.root)).to.eq(true);
+    const other = makeConfig(primary, { whitelist: [payer], slowDelaySecs: 60 });
+    expect(vaultOf(other, program.programId).equals(vault)).to.eq(false);
   });
 
-  it("unlocks SOL: pays dest, forwards the rest to the next vault, marks the key spent", async () => {
-    const k0 = key(0);
-    const k1 = key(1);
+  it("withdraws SOL and keeps the same vault address", async () => {
+    await fund(vault, 4);
     const dest = Keypair.generate().publicKey;
-    await fund(k0.vault, 2);
-
-    const plan = await planUnlock({
-      program,
-      payer,
-      key: k0,
-      next: k1.vault,
-      dest,
-      amount: BigInt(0.5 * LAMPORTS_PER_SOL),
-    });
-    await run(plan);
-
-    expect(await conn.getBalance(dest)).to.eq(0.5 * LAMPORTS_PER_SOL);
-    expect(await conn.getBalance(k0.vault)).to.eq(0);
-    expect(await conn.getBalance(k1.vault)).to.eq(1.5 * LAMPORTS_PER_SOL);
-    const spent = await program.account.spent.fetch(spentPda(k0.vault, program.programId));
-    expect(spent.successor.equals(k1.vault)).to.eq(true);
-    expect(await conn.getAccountInfo(unlockPda(k0.vault, payer, program.programId))).to.eq(null);
+    await act(primary, vault, withdraw(dest, SOL(0.5)), { log: true });
+    await act(primary, vault, withdraw(dest, SOL(0.25)));
+    expect(await conn.getBalance(dest)).to.eq(Number(SOL(0.75)));
+    expect(await conn.getBalance(vault)).to.eq(Number(SOL(3.25)));
+    const st = (await fetchState(program, vault))!;
+    expect(leafUsed(st, 0, 0) && leafUsed(st, 0, 1) && !leafUsed(st, 0, 2)).to.eq(true);
   });
 
-  it("never lets a spent key sign again", async () => {
-    const k0 = key(0);
-    await fund(k0.vault, 0.1);
-    const plan = await planUnlock({ program, payer, key: k0, next: key(2).vault, dest: payer, amount: 1000n });
-    const txs = plan.transactions;
-    for (const t of txs.slice(0, -1)) await send(t.instructions);
-    await expectError(send(txs[txs.length - 1].instructions), "already in use");
-    await cancel(k0.vault);
+  it("lets a relayer send everything and get paid by the vault", async () => {
+    const relayer = Keypair.generate();
+    await fund(relayer.publicKey, 0.1);
+    const before = await conn.getBalance(relayer.publicKey);
+    const dest = Keypair.generate().publicKey;
+    const fee = SOL(0.002);
+    await act(primary, vault, withdraw(dest, SOL(0.1), fee, relayer.publicKey), { as: relayer });
+    expect(await conn.getBalance(dest)).to.eq(Number(SOL(0.1)));
+    const after = await conn.getBalance(relayer.publicKey);
+    expect(after - before).to.be.greaterThan(0);
+    expect(after - before).to.be.at.most(Number(fee));
   });
 
-  it("forwards SOL sent to a spent vault to its successor", async () => {
-    const k0 = key(0);
-    const k1 = key(1);
-    const before = await conn.getBalance(k1.vault);
-    const stray = await conn.getBalance(k0.vault);
-    await send([
-      await program.methods
-        .sweep()
-        .accountsPartial({ vault: k0.vault, spent: spentPda(k0.vault, program.programId), successor: k1.vault })
-        .instruction(),
-    ]);
-    expect(await conn.getBalance(k0.vault)).to.eq(0);
-    expect(await conn.getBalance(k1.vault)).to.eq(before + stray);
+  it("never accepts a used key", async () => {
+    const plan = await planAction({ program, payer, vault, signer: primary, leaf: 0, action: withdraw(payer, 1000n) });
+    await expectError(run(plan), "KeyUsed");
   });
 
   it("rejects a tampered signature and freezes it once verification starts", async () => {
-    const k1 = key(1);
-    const plan = await planUnlock({ program, payer, key: k1, next: key(2).vault, dest: payer, amount: 1000n });
-    // Walk chain 3 one step further than the signature reveals.
+    const st = (await fetchState(program, vault))!;
+    const { leaf } = pickLeaf(st, primary, []);
+    const plan = await planAction({ program, payer, vault, signer: primary, leaf, action: withdraw(payer, 1000n) });
     const a3 = wots.digits(plan.digest)[3];
-    const forged = wots.F(k1.pkSeed, 3, a3, plan.signature[3]);
-    const unlock = unlockPda(k1.vault, payer, program.programId);
-    const forge = await program.methods.writeSigs(3, [Array.from(forged)]).accountsPartial({ payer, vault: k1.vault, unlock }).instruction();
-    const steps = plan.steps;
-    const verifyAt = steps.findIndex((s) => s.label.startsWith("verify"));
-    for (const s of steps.slice(0, verifyAt)) await send([s.ix]);
+    const forged = wots.F(primary.seeds.pkSeed, leaf, 3, a3, plan.signature[3]);
+    const unlock = unlockPda(vault, payer, program.programId);
+    const forge = await program.methods.writeSigs(3, [Array.from(forged)]).accountsPartial({ payer, vault, unlock }).instruction();
+    const verifyAt = plan.steps.findIndex((s) => s.label.startsWith("verify"));
+    for (const s of plan.steps.slice(0, verifyAt)) await send([s.ix]);
     await send([forge]);
-    for (const s of steps.slice(verifyAt, -1)) await send([budget, s.ix]);
-    await expectError(send([steps[steps.length - 1].ix]), "BadSignature");
+    for (const s of plan.steps.slice(verifyAt, -1)) await send([budget, s.ix]);
+    await expectError(send([plan.steps[plan.steps.length - 1].ix]), "BadSignature");
     await expectError(send([forge]), "Frozen");
-    await cancel(k1.vault);
+    await cancel(vault);
   });
 
-  it("rejects a payout to anyone but the signed destination", async () => {
-    const k1 = key(1);
-    const dest = Keypair.generate().publicKey;
-    const plan = await planUnlock({ program, payer, key: k1, next: key(2).vault, dest, amount: 1000n });
-    const steps = plan.steps;
-    for (const s of steps.slice(0, -1)) await send([budget, s.ix]);
-    const finish = steps[steps.length - 1].ix;
-    const thief = Keypair.generate().publicKey;
-    const keys = finish.keys.map((k) => (k.pubkey.equals(dest) ? { ...k, pubkey: thief } : k));
-    await expectError(send([new TransactionInstruction({ ...finish, keys })]), "WrongDest");
-    await cancel(k1.vault);
-  });
+  it("remembers a signed message for good: cancel, another payer or copies cannot get a second one", async () => {
+    const st = (await fetchState(program, vault))!;
+    const { leaf } = pickLeaf(st, primary, await findSignedMessages(program, vault, primary));
+    const m1 = withdraw(payer, 1000n);
+    const plan1 = await planAction({ program, payer, vault, signer: primary, leaf, action: m1 });
+    await send(plan1.transactions[0].instructions);
+    await cancel(vault);
 
-  it("unlocks a token and forwards the rest of it to the next vault", async () => {
-    const k1 = key(1);
-    const k2 = key(2);
-    const wallet = (provider.wallet as anchor.Wallet).payer;
-    const mint = await createMint(conn, wallet, payer, null, 6);
-    const vaultAta = await getOrCreateAssociatedTokenAccount(conn, wallet, mint, k1.vault, true);
-    await mintTo(conn, wallet, mint, vaultAta.address, wallet, 1_000_000);
-    const dest = Keypair.generate().publicKey;
-
-    const plan = await planUnlock({ program, payer, key: k1, next: k2.vault, dest, amount: 250_000n, mint });
-    await run(plan);
-
-    const ata = (o: PublicKey) => getAssociatedTokenAddressSync(mint, o, true);
-    expect(Number((await getAccount(conn, ata(dest))).amount)).to.eq(250_000);
-    expect(Number((await getAccount(conn, ata(k2.vault))).amount)).to.eq(750_000);
-    expect(await conn.getAccountInfo(ata(k1.vault))).to.eq(null);
-
-    // k1's SOL is still there; the sweep moves it on to k2 without any new signature.
-    expect(await conn.getBalance(k1.vault)).to.be.greaterThan(0);
-    await send([
-      await program.methods
-        .sweep()
-        .accountsPartial({ vault: k1.vault, spent: spentPda(k1.vault, program.programId), successor: k2.vault })
-        .instruction(),
-    ]);
-    expect(await conn.getBalance(k1.vault)).to.eq(0);
-  });
-
-  it("refuses to plan an unlock that could never be paid out", async () => {
-    const k2 = key(2);
-    const base = { program, payer, key: k2, next: key(3).vault };
-    const empty = Keypair.generate().publicKey;
-    const tooSmall = await preflightUnlock({ ...base, dest: empty, amount: 1000n });
-    expect(tooSmall.errors.join()).to.contain("destination is empty");
-    const tooMuch = await preflightUnlock({ ...base, dest: payer, amount: BigInt(1000 * LAMPORTS_PER_SOL) });
-    expect(tooMuch.errors.join()).to.contain("less than this amount");
-    const used = await preflightUnlock({ ...base, key: key(0), dest: payer, amount: 1000n });
-    expect(used.errors.join()).to.contain("already used");
-    const ok = await preflightUnlock({ ...base, dest: payer, amount: 1000n });
-    expect(ok.errors).to.deep.eq([]);
-  });
-
-  it("finds the user's vaults again from the secret alone, including token-only vaults", async () => {
-    // Vault 4 holds only a token and no SOL; vault 3 stays empty in between.
-    const wallet = (provider.wallet as anchor.Wallet).payer;
-    const mint = await createMint(conn, wallet, payer, null, 0);
-    const ata = await getOrCreateAssociatedTokenAccount(conn, wallet, mint, key(4).vault, true);
-    await mintTo(conn, wallet, mint, ata.address, wallet, 7);
-    expect(await conn.getBalance(key(4).vault)).to.eq(0);
-
-    const { vaults, nextFresh } = await scanVaults(program, master);
-    expect(vaults.map((v) => v.index)).to.deep.eq([0, 1, 2, 4]);
-    expect(vaults[0].spent && vaults[1].spent && !vaults[2].spent).to.eq(true);
-    expect(nextFresh).to.eq(5);
-  });
-
-  it("remembers a signed message for good: cancel, another payer or copied values cannot get a second one signed", async () => {
-    const k = key(10);
-    const next = key(11).vault;
-    await fund(k.vault, 0.2);
-    const m1 = { program, payer, key: k, next, dest: payer, amount: 1000n };
-    const plan1 = await planUnlock(m1);
-
-    // Half of M1's signature lands, then the buffer is cancelled (time-out + discard, closed tab...).
-    await send([plan1.steps[0].ix, plan1.steps[1].ix]);
-    await cancel(k.vault);
-    let signed = await findSignedMessages(program, k);
+    const signed = (await findSignedMessages(program, vault, primary)).filter((m) => m.leaf === leaf);
     expect(signed.length).to.eq(1);
     expect(wots.equal(signed[0].digest, plan1.digest)).to.eq(true);
-    expect(signed[0].chains.length).to.eq(17);
+    expect(pickLeaf(st, primary, await findSignedMessages(program, vault, primary)).leaf).to.eq(leaf);
 
-    // Any other message is refused, from this payer or from another wallet.
     const other = Keypair.generate();
     await fund(other.publicKey, 0.1);
-    const m2 = await preflightUnlock({ ...m1, amount: 2000n });
-    expect(m2.errors.join()).to.contain("already signed");
-    const m2b = await preflightUnlock({ ...m1, payer: other.publicKey, dest: other.publicKey });
-    expect(m2b.errors.join()).to.contain("already signed");
+    const pre = await preflightAction({ program, payer: other.publicKey, vault, signer: primary, leaf, action: withdraw(payer, 2000n) });
+    expect(pre.errors.join()).to.contain("already signed");
 
-    // Someone copies the published values into a buffer with their own message: it does not count.
-    const theirs = unlockPda(k.vault, other.publicKey, program.programId);
-    const open = await program.methods
-      .openUnlock({ pkSeed: Array.from(k.pkSeed), mint: PublicKey.default, dest: other.publicKey, nextVault: next, amount: new anchor.BN(999) })
-      .accountsPartial({ payer: other.publicKey, vault: k.vault, unlock: theirs })
-      .instruction();
+    const theirs = unlockPda(vault, other.publicKey, program.programId);
+    const fake = await planAction({ program, payer: other.publicKey, vault, signer: primary, leaf, action: withdraw(other.publicKey, 999n) });
     const copy = await program.methods
-      .writeSigs(0, plan1.signature.slice(0, 17).map((v) => Array.from(v)))
-      .accountsPartial({ payer: other.publicKey, vault: k.vault, unlock: theirs })
+      .writeSigs(0, plan1.signature.slice(0, 12).map((v) => Array.from(v)))
+      .accountsPartial({ payer: other.publicKey, vault, unlock: theirs })
       .instruction();
-    await provider.sendAndConfirm(new Transaction().add(open, copy), [other], { commitment: "confirmed" });
-    signed = await findSignedMessages(program, k);
-    expect(signed.length).to.eq(1);
-    expect(wots.equal(signed[0].digest, plan1.digest)).to.eq(true);
+    await provider.sendAndConfirm(new Transaction().add(fake.steps[0].ix, copy), [other], { commitment: "confirmed" });
+    const again = (await findSignedMessages(program, vault, primary)).filter((m) => m.leaf === leaf);
+    expect(again.length).to.eq(1);
 
-    // The original message can still be completed.
-    expect((await preflightUnlock(m1)).errors).to.deep.eq([]);
-    const before = await conn.getBalance(payer);
-    await run(await planUnlock(m1));
-    expect(await conn.getAccountInfo(spentPda(k.vault, program.programId))).to.not.eq(null);
-    expect((await findSignedMessages(program, k))[0].chains.length).to.eq(34);
-    expect(await conn.getBalance(payer)).to.be.lessThan(before + 1000 + 1); // fees paid, 1000 received
+    expect((await preflightAction({ program, payer, vault, signer: primary, leaf, action: m1 })).errors).to.deep.eq([]);
+    await run(await planAction({ program, payer, vault, signer: primary, leaf, action: m1 }));
+    expect(leafUsed((await fetchState(program, vault))!, 0, leaf)).to.eq(true);
+  });
+
+  it("withdraws a token", async () => {
+    const mint = await createMint(conn, wallet, payer, null, 6);
+    const ata = await getOrCreateAssociatedTokenAccount(conn, wallet, mint, vault, true);
+    await mintTo(conn, wallet, mint, ata.address, wallet, 1_000_000);
+    const dest = Keypair.generate().publicKey;
+    await act(primary, vault, { kind: "withdraw", mint: mint.toBytes(), dest: dest.toBytes(), amount: 250_000n, fee: 0n, feePayee: payer.toBytes() });
+    expect(Number((await getAccount(conn, getAssociatedTokenAddressSync(mint, dest, true))).amount)).to.eq(250_000);
+    expect(Number((await getAccount(conn, ata.address)).amount)).to.eq(750_000);
+  });
+
+  it("refuses to sign what could never execute", async () => {
+    const st = (await fetchState(program, vault))!;
+    const { leaf } = pickLeaf(st, primary, await findSignedMessages(program, vault, primary));
+    const base = { program, payer, vault, signer: primary, leaf };
+    const empty = Keypair.generate().publicKey;
+    expect((await preflightAction({ ...base, action: withdraw(empty, 1000n) })).errors.join()).to.contain("destination is empty");
+    expect((await preflightAction({ ...base, action: withdraw(payer, SOL(1000)) })).errors.join()).to.contain("less SOL");
+    const bal = BigInt(await conn.getBalance(vault));
+    expect((await preflightAction({ ...base, action: withdraw(payer, bal - 1000n) })).errors.join()).to.contain("rent minimum");
+    expect((await preflightAction({ ...base, leaf: 0, action: withdraw(payer, 1000n) })).errors.join()).to.contain("already used");
+  });
+
+  describe("whitelist, delay and recovery", () => {
+    const heir = Keypair.generate().publicKey;
+    const friend = Keypair.generate().publicKey;
+    const stranger = Keypair.generate().publicKey;
+    let p2: Signer;
+    let rec: Signer;
+    let v2: PublicKey;
+
+    before(async () => {
+      p2 = makeSigner(master, 1, TREE_PRIMARY);
+      rec = makeSigner(newMasterSecret(), 0, TREE_RECOVERY);
+      const config = makeConfig(p2, { recoveryRoot: rec.pub.root, recoveryDelaySecs: 8, whitelist: [friend], slowDelaySecs: 3 });
+      v2 = vaultOf(config, program.programId);
+      await send([await initVaultIx(program, payer, config)]);
+      await fund(v2, 2);
+      await fund(friend, 0.01);
+      await fund(stranger, 0.01);
+      await fund(heir, 0.01);
+    });
+
+    it("pays a whitelisted address at once", async () => {
+      await act(p2, v2, withdraw(friend, SOL(0.1)));
+      expect(await conn.getBalance(friend)).to.eq(Number(SOL(0.11)));
+    });
+
+    it("holds anything else for the delay; the recovery key can cancel it", async () => {
+      await act(p2, v2, withdraw(stranger, SOL(0.2)));
+      let st = (await fetchState(program, v2))!;
+      expect(st.pending?.dest.equals(stranger)).to.eq(true);
+      await expectError(send([await executePendingIx(program, payer, v2, st)]), "NotYet");
+      await act(rec, v2, { kind: "cancel", fee: 0n, feePayee: payer.toBytes() });
+      st = (await fetchState(program, v2))!;
+      expect(st.pending).to.eq(null);
+      expect(await conn.getBalance(stranger)).to.eq(Number(SOL(0.01)));
+    });
+
+    it("pays the held withdrawal after the delay", async () => {
+      await act(p2, v2, withdraw(stranger, SOL(0.2)));
+      await sleep(4500);
+      await send([await executePendingIx(program, payer, v2, (await fetchState(program, v2))!)]);
+      expect(await conn.getBalance(stranger)).to.eq(Number(SOL(0.21)));
+    });
+
+    it("keeps the recovery key to cancelling while the owner is active", async () => {
+      const st = (await fetchState(program, v2))!;
+      const { leaf } = pickLeaf(st, rec, await findSignedMessages(program, v2, rec));
+      const pre = await preflightAction({ program, payer, vault: v2, signer: rec, leaf, action: withdraw(heir, SOL(0.1)) });
+      expect(pre.errors.join()).to.contain("can only cancel");
+      const plan = await planAction({ program, payer, vault: v2, signer: rec, leaf, action: withdraw(heir, SOL(0.1)) });
+      await expectError(run(plan), "RecoveryLocked");
+      await cancel(v2);
+    });
+
+    it("hands the vault to the recovery key after the owner is inactive", async () => {
+      await sleep(9000);
+      const st = (await fetchState(program, v2))!;
+      // The leaf whose withdrawal was refused above can only ever finish that same message.
+      const { leaf, resume } = pickLeaf(st, rec, await findSignedMessages(program, v2, rec));
+      expect(resume?.action.kind).to.eq("withdraw");
+      await run(await planAction({ program, payer, vault: v2, signer: rec, leaf, action: resume!.action }));
+      const rest = BigInt(await conn.getBalance(v2));
+      const { leaf: next } = pickLeaf((await fetchState(program, v2))!, rec, await findSignedMessages(program, v2, rec));
+      await run(await planAction({ program, payer, vault: v2, signer: rec, leaf: next, action: withdraw(heir, rest) }));
+      expect(await conn.getBalance(v2)).to.eq(0);
+      expect(await conn.getBalance(heir)).to.eq(Number(rest + SOL(0.11)));
+    });
+
+    it("refuses withdrawals outside a strict whitelist", async () => {
+      const p3 = makeSigner(master, 2, TREE_PRIMARY);
+      const config = makeConfig(p3, { whitelist: [friend], slowDelaySecs: 0 });
+      const v3 = vaultOf(config, program.programId);
+      await send([await initVaultIx(program, payer, config)]);
+      await fund(v3, 1);
+      const pre = await preflightAction({ program, payer, vault: v3, signer: p3, leaf: 0, action: withdraw(stranger, SOL(0.1)) });
+      expect(pre.errors.join()).to.contain("only pays out to its whitelist");
+      await expectError(run(await planAction({ program, payer, vault: v3, signer: p3, leaf: 0, action: withdraw(stranger, SOL(0.1)) })), "NotWhitelisted");
+    });
+  });
+
+  it("stakes from the vault, unstakes and collects", async function () {
+    this.timeout(300_000);
+    const votes = await conn.getVoteAccounts();
+    const vote = new PublicKey((votes.current[0] ?? votes.delinquent[0]).votePubkey);
+    const amount = SOL(1.5);
+    const before = await conn.getBalance(vault);
+    await act(primary, vault, { kind: "stake", seed: 0, vote: vote.toBytes(), amount, fee: 0n, feePayee: payer.toBytes() });
+    const stake = stakePda(vault, 0, program.programId);
+    expect(await conn.getBalance(stake)).to.eq(Number(amount));
+    expect(await conn.getBalance(vault)).to.eq(before - Number(amount));
+
+    await act(primary, vault, { kind: "unstake", seed: 0, fee: 0n, feePayee: payer.toBytes() });
+    const epoch = (await conn.getEpochInfo()).epoch;
+    while ((await conn.getEpochInfo()).epoch <= epoch + 1) await sleep(2000);
+    await act(primary, vault, { kind: "collectStake", seed: 0, fee: 0n, feePayee: payer.toBytes() });
+    expect(await conn.getAccountInfo(stake)).to.eq(null);
+    expect(await conn.getBalance(vault)).to.be.at.least(before);
+  });
+
+  it("finds a phrase's vaults on chain", async () => {
+    const found = await findVaultsFor(program, primary);
+    expect(found.map((s) => s.vault.toBase58())).to.deep.eq([vault.toBase58()]);
   });
 });

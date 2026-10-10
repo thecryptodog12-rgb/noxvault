@@ -45,40 +45,23 @@ export type Noxvault = {
       "args": []
     },
     {
-      "name": "finishUnlock",
+      "name": "executePending",
       "docs": [
-        "Pays out SOL once the signature rebuilds the vault. Permissionless."
+        "Pays out the pending SOL withdrawal once its delay has passed. Permissionless."
       ],
       "discriminator": [
-        46,
-        111,
-        83,
-        152,
-        117,
-        133,
-        10,
-        247
+        207,
+        36,
+        5,
+        220,
+        230,
+        106,
+        57,
+        181
       ],
       "accounts": [
         {
-          "name": "payer",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "unlock",
-          "writable": true
-        },
-        {
-          "name": "rentReceiver",
-          "writable": true
-        },
-        {
-          "name": "vault",
-          "writable": true
-        },
-        {
-          "name": "spent",
+          "name": "state",
           "writable": true,
           "pda": {
             "seeds": [
@@ -86,10 +69,10 @@ export type Noxvault = {
                 "kind": "const",
                 "value": [
                   115,
-                  112,
-                  101,
-                  110,
-                  116
+                  116,
+                  97,
+                  116,
+                  101
                 ]
               },
               {
@@ -100,11 +83,14 @@ export type Noxvault = {
           }
         },
         {
-          "name": "dest",
-          "writable": true
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "state"
+          ]
         },
         {
-          "name": "nextVault",
+          "name": "dest",
           "writable": true
         },
         {
@@ -115,19 +101,19 @@ export type Noxvault = {
       "args": []
     },
     {
-      "name": "finishUnlockToken",
+      "name": "executePendingToken",
       "docs": [
-        "Pays out an SPL / Token-2022 token once the signature rebuilds the vault. Permissionless."
+        "Pays out the pending token withdrawal once its delay has passed. Permissionless."
       ],
       "discriminator": [
-        118,
-        131,
-        96,
-        200,
+        154,
+        74,
+        76,
+        145,
+        26,
         82,
-        15,
-        170,
-        19
+        200,
+        60
       ],
       "accounts": [
         {
@@ -136,18 +122,7 @@ export type Noxvault = {
           "signer": true
         },
         {
-          "name": "unlock",
-          "writable": true
-        },
-        {
-          "name": "rentReceiver",
-          "writable": true
-        },
-        {
-          "name": "vault"
-        },
-        {
-          "name": "spent",
+          "name": "state",
           "writable": true,
           "pda": {
             "seeds": [
@@ -155,10 +130,10 @@ export type Noxvault = {
                 "kind": "const",
                 "value": [
                   115,
-                  112,
-                  101,
-                  110,
-                  116
+                  116,
+                  97,
+                  116,
+                  101
                 ]
               },
               {
@@ -167,6 +142,12 @@ export type Noxvault = {
               }
             ]
           }
+        },
+        {
+          "name": "vault",
+          "relations": [
+            "state"
+          ]
         },
         {
           "name": "mint"
@@ -289,67 +270,6 @@ export type Noxvault = {
           }
         },
         {
-          "name": "nextVault",
-          "writable": true
-        },
-        {
-          "name": "nextAta",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "nextVault"
-              },
-              {
-                "kind": "account",
-                "path": "tokenProgram"
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
-        },
-        {
           "name": "tokenProgram"
         },
         {
@@ -364,168 +284,42 @@ export type Noxvault = {
       "args": []
     },
     {
-      "name": "openUnlock",
+      "name": "finishAdmin",
+      "docs": [
+        "Cancel (drops the pending withdrawal) and Ping (proves the owner is alive)."
+      ],
       "discriminator": [
-        197,
-        205,
-        244,
-        64,
-        180,
-        220,
-        149,
-        55
+        59,
+        221,
+        148,
+        135,
+        221,
+        17,
+        113,
+        147
       ],
       "accounts": [
-        {
-          "name": "payer",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "vault"
-        },
         {
           "name": "unlock",
+          "writable": true
+        },
+        {
+          "name": "rentReceiver",
+          "writable": true
+        },
+        {
+          "name": "state",
           "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  117,
-                  110,
-                  108,
-                  111,
-                  99,
-                  107
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              },
-              {
-                "kind": "account",
-                "path": "payer"
-              }
-            ]
-          }
-        },
-        {
-          "name": "systemProgram",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "args",
-          "type": {
-            "defined": {
-              "name": "openArgs"
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "register",
-      "docs": [
-        "Lists a vault in the public explorer. Anyone can do it; it proves nothing but the address."
-      ],
-      "discriminator": [
-        211,
-        124,
-        67,
-        15,
-        211,
-        194,
-        178,
-        240
-      ],
-      "accounts": [
-        {
-          "name": "payer",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "vault"
-        },
-        {
-          "name": "record",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  114,
-                  101,
-                  99,
-                  111,
-                  114,
-                  100
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ]
-          }
-        },
-        {
-          "name": "systemProgram",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "root",
-          "type": {
-            "array": [
-              "u8",
-              32
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "sweep",
-      "docs": [
-        "Forwards all SOL in a spent vault to its successor. Permissionless."
-      ],
-      "discriminator": [
-        40,
-        23,
-        234,
-        175,
-        14,
-        61,
-        154,
-        177
-      ],
-      "accounts": [
-        {
-          "name": "vault",
-          "writable": true,
-          "relations": [
-            "spent"
-          ]
-        },
-        {
-          "name": "spent",
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
                   115,
-                  112,
-                  101,
-                  110,
-                  116
+                  116,
+                  97,
+                  116,
+                  101
                 ]
               },
               {
@@ -536,11 +330,15 @@ export type Noxvault = {
           }
         },
         {
-          "name": "successor",
+          "name": "vault",
           "writable": true,
           "relations": [
-            "spent"
+            "state"
           ]
+        },
+        {
+          "name": "feePayee",
+          "writable": true
         },
         {
           "name": "systemProgram",
@@ -550,44 +348,42 @@ export type Noxvault = {
       "args": []
     },
     {
-      "name": "sweepToken",
+      "name": "finishCollectStake",
       "docs": [
-        "Forwards all of one token in a spent vault to its successor and closes the vault's ATA."
+        "Moves everything in a deactivated stake account back into the vault."
       ],
       "discriminator": [
-        197,
-        177,
-        210,
-        55,
-        42,
-        183,
-        103,
-        83
+        11,
+        112,
+        175,
+        231,
+        205,
+        225,
+        187,
+        113
       ],
       "accounts": [
         {
-          "name": "payer",
+          "name": "unlock",
+          "writable": true
+        },
+        {
+          "name": "rentReceiver",
+          "writable": true
+        },
+        {
+          "name": "state",
           "writable": true,
-          "signer": true
-        },
-        {
-          "name": "vault",
-          "relations": [
-            "spent"
-          ]
-        },
-        {
-          "name": "spent",
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
                   115,
-                  112,
-                  101,
-                  110,
-                  116
+                  116,
+                  97,
+                  116,
+                  101
                 ]
               },
               {
@@ -596,6 +392,337 @@ export type Noxvault = {
               }
             ]
           }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "stake",
+          "writable": true
+        },
+        {
+          "name": "feePayee",
+          "writable": true
+        },
+        {
+          "name": "clock",
+          "address": "SysvarC1ock11111111111111111111111111111111"
+        },
+        {
+          "name": "stakeHistory",
+          "address": "SysvarStakeHistory1111111111111111111111111"
+        },
+        {
+          "name": "stakeProgram",
+          "address": "Stake11111111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "finishStake",
+      "docs": [
+        "Opens a stake account owned by the vault and delegates it. Permissionless once verified."
+      ],
+      "discriminator": [
+        96,
+        239,
+        26,
+        63,
+        103,
+        215,
+        246,
+        139
+      ],
+      "accounts": [
+        {
+          "name": "unlock",
+          "writable": true
+        },
+        {
+          "name": "rentReceiver",
+          "writable": true
+        },
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "stake",
+          "writable": true
+        },
+        {
+          "name": "vote"
+        },
+        {
+          "name": "feePayee",
+          "writable": true
+        },
+        {
+          "name": "clock",
+          "address": "SysvarC1ock11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "stakeHistory",
+          "address": "SysvarStakeHistory1111111111111111111111111"
+        },
+        {
+          "name": "stakeConfig",
+          "address": "StakeConfig11111111111111111111111111111111"
+        },
+        {
+          "name": "stakeProgram",
+          "address": "Stake11111111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "finishUnstake",
+      "docs": [
+        "Deactivates one of the vault's stake accounts. Permissionless once verified."
+      ],
+      "discriminator": [
+        36,
+        39,
+        141,
+        104,
+        51,
+        93,
+        247,
+        144
+      ],
+      "accounts": [
+        {
+          "name": "unlock",
+          "writable": true
+        },
+        {
+          "name": "rentReceiver",
+          "writable": true
+        },
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "stake",
+          "writable": true
+        },
+        {
+          "name": "feePayee",
+          "writable": true
+        },
+        {
+          "name": "clock",
+          "address": "SysvarC1ock11111111111111111111111111111111"
+        },
+        {
+          "name": "stakeHistory",
+          "address": "SysvarStakeHistory1111111111111111111111111"
+        },
+        {
+          "name": "stakeProgram",
+          "address": "Stake11111111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "finishWithdraw",
+      "docs": [
+        "Withdraws SOL (or queues it as the pending withdrawal). Permissionless once verified."
+      ],
+      "discriminator": [
+        225,
+        43,
+        3,
+        149,
+        27,
+        183,
+        245,
+        27
+      ],
+      "accounts": [
+        {
+          "name": "unlock",
+          "writable": true
+        },
+        {
+          "name": "rentReceiver",
+          "writable": true
+        },
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "dest",
+          "writable": true
+        },
+        {
+          "name": "feePayee",
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "finishWithdrawToken",
+      "docs": [
+        "Withdraws an SPL / Token-2022 token (or queues it). Permissionless once verified."
+      ],
+      "discriminator": [
+        6,
+        225,
+        56,
+        120,
+        204,
+        57,
+        216,
+        186
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "unlock",
+          "writable": true
+        },
+        {
+          "name": "rentReceiver",
+          "writable": true
+        },
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "state"
+          ]
         },
         {
           "name": "mint"
@@ -658,20 +785,16 @@ export type Noxvault = {
           }
         },
         {
-          "name": "successor",
-          "writable": true,
-          "relations": [
-            "spent"
-          ]
+          "name": "dest"
         },
         {
-          "name": "successorAta",
+          "name": "destAta",
           "writable": true,
           "pda": {
             "seeds": [
               {
                 "kind": "account",
-                "path": "successor"
+                "path": "dest"
               },
               {
                 "kind": "account",
@@ -722,6 +845,10 @@ export type Noxvault = {
           }
         },
         {
+          "name": "feePayee",
+          "writable": true
+        },
+        {
           "name": "tokenProgram"
         },
         {
@@ -734,6 +861,185 @@ export type Noxvault = {
         }
       ],
       "args": []
+    },
+    {
+      "name": "initVault",
+      "docs": [
+        "Creates the state of a vault from its config. Permissionless: the vault address is the",
+        "hash of the config, so nobody can register different rules for it."
+      ],
+      "discriminator": [
+        77,
+        79,
+        85,
+        150,
+        33,
+        217,
+        52,
+        106
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "vault"
+        },
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "config",
+          "type": {
+            "defined": {
+              "name": "config"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "openUnlock",
+      "discriminator": [
+        197,
+        205,
+        244,
+        64,
+        180,
+        220,
+        149,
+        55
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "vault",
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "unlock",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  110,
+                  108,
+                  111,
+                  99,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "account",
+                "path": "payer"
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "tree",
+          "type": "u8"
+        },
+        {
+          "name": "leaf",
+          "type": "u16"
+        },
+        {
+          "name": "pkSeed",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "authPath",
+          "type": {
+            "vec": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        },
+        {
+          "name": "action",
+          "type": {
+            "defined": {
+              "name": "action"
+            }
+          }
+        }
+      ]
     },
     {
       "name": "verify",
@@ -790,8 +1096,7 @@ export type Noxvault = {
         {
           "name": "vault",
           "docs": [
-            "signature bytes shows up in the vault's history, where clients look for an earlier",
-            "signature before ever signing (docs/SPEC.md, client rules)."
+            "signature bytes shows up in the vault's history (docs/SPEC.md §8)."
           ],
           "relations": [
             "unlock"
@@ -823,32 +1128,6 @@ export type Noxvault = {
   ],
   "accounts": [
     {
-      "name": "record",
-      "discriminator": [
-        254,
-        233,
-        117,
-        252,
-        76,
-        166,
-        146,
-        139
-      ]
-    },
-    {
-      "name": "spent",
-      "discriminator": [
-        54,
-        176,
-        134,
-        161,
-        102,
-        243,
-        161,
-        234
-      ]
-    },
-    {
       "name": "unlock",
       "discriminator": [
         187,
@@ -860,6 +1139,19 @@ export type Noxvault = {
         241,
         10
       ]
+    },
+    {
+      "name": "vaultState",
+      "discriminator": [
+        228,
+        196,
+        82,
+        165,
+        98,
+        210,
+        235,
+        152
+      ]
     }
   ],
   "errors": [
@@ -870,123 +1162,252 @@ export type Noxvault = {
     },
     {
       "code": 6001,
-      "name": "nextIsSelf",
-      "msg": "The next vault cannot be the vault itself"
+      "name": "badConfig",
+      "msg": "Invalid vault config"
     },
     {
       "code": 6002,
-      "name": "destIsSelf",
-      "msg": "The destination cannot be the vault itself"
+      "name": "badTree",
+      "msg": "Unknown tree, wrong auth path length or leaf out of range"
     },
     {
       "code": 6003,
+      "name": "keyUsed",
+      "msg": "This one-time key has already been used"
+    },
+    {
+      "code": 6004,
+      "name": "destIsVault",
+      "msg": "The destination cannot be the vault itself"
+    },
+    {
+      "code": 6005,
       "name": "zeroAmount",
       "msg": "Amount must be greater than zero"
     },
     {
-      "code": 6004,
+      "code": 6006,
+      "name": "badAction",
+      "msg": "Action too large"
+    },
+    {
+      "code": 6007,
       "name": "frozen",
       "msg": "The signature can no longer change: verification has started"
     },
     {
-      "code": 6005,
+      "code": 6008,
       "name": "chainOutOfRange",
       "msg": "Chain index out of range"
     },
     {
-      "code": 6006,
+      "code": 6009,
       "name": "signatureIncomplete",
       "msg": "Not every chain of the signature has been written"
     },
     {
-      "code": 6007,
+      "code": 6010,
       "name": "notVerified",
       "msg": "Not every chain has been verified"
     },
     {
-      "code": 6008,
+      "code": 6011,
       "name": "badSignature",
-      "msg": "The signature does not rebuild this vault"
+      "msg": "The signature does not match this vault's keys"
     },
     {
-      "code": 6009,
+      "code": 6012,
       "name": "wrongPayer",
       "msg": "Rent receiver must be the account that opened the unlock"
     },
     {
-      "code": 6010,
-      "name": "wrongDest",
-      "msg": "Destination does not match the signed message"
-    },
-    {
-      "code": 6011,
-      "name": "wrongNext",
-      "msg": "Next vault does not match the signed message"
-    },
-    {
-      "code": 6012,
-      "name": "wrongMint",
-      "msg": "Asset does not match the signed message"
-    },
-    {
       "code": 6013,
-      "name": "insufficientFunds",
-      "msg": "The vault holds less than the signed amount"
+      "name": "wrongAction",
+      "msg": "This instruction cannot execute the signed action"
     },
     {
       "code": 6014,
-      "name": "dustTooSmall",
-      "msg": "Too little SOL to open the successor vault"
+      "name": "wrongDest",
+      "msg": "Destination does not match the signed action"
+    },
+    {
+      "code": 6015,
+      "name": "wrongFeePayee",
+      "msg": "Fee payee does not match the signed action"
+    },
+    {
+      "code": 6016,
+      "name": "wrongStake",
+      "msg": "Stake account does not match the signed action"
+    },
+    {
+      "code": 6017,
+      "name": "insufficientFunds",
+      "msg": "The vault holds less than this needs"
+    },
+    {
+      "code": 6018,
+      "name": "rentDust",
+      "msg": "The vault would be left with less SOL than the rent minimum"
+    },
+    {
+      "code": 6019,
+      "name": "recoveryLocked",
+      "msg": "The recovery key may only cancel until the owner has been inactive long enough"
+    },
+    {
+      "code": 6020,
+      "name": "notWhitelisted",
+      "msg": "This destination is not on the vault's whitelist"
+    },
+    {
+      "code": 6021,
+      "name": "pendingExists",
+      "msg": "A withdrawal is already pending"
+    },
+    {
+      "code": 6022,
+      "name": "noPending",
+      "msg": "No withdrawal is pending"
+    },
+    {
+      "code": 6023,
+      "name": "notYet",
+      "msg": "The pending withdrawal's delay has not passed yet"
     }
   ],
   "types": [
     {
-      "name": "openArgs",
+      "name": "action",
+      "docs": [
+        "What one one-time key authorizes. Signed as borsh bytes (docs/SPEC.md §5)."
+      ],
       "type": {
-        "kind": "struct",
-        "fields": [
+        "kind": "enum",
+        "variants": [
           {
-            "name": "pkSeed",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
+            "name": "withdraw",
+            "fields": [
+              {
+                "name": "mint",
+                "type": "pubkey"
+              },
+              {
+                "name": "dest",
+                "type": "pubkey"
+              },
+              {
+                "name": "amount",
+                "type": "u64"
+              },
+              {
+                "name": "fee",
+                "type": "u64"
+              },
+              {
+                "name": "feePayee",
+                "type": "pubkey"
+              }
+            ]
           },
           {
-            "name": "mint",
-            "type": "pubkey"
+            "name": "stake",
+            "fields": [
+              {
+                "name": "seed",
+                "type": "u8"
+              },
+              {
+                "name": "vote",
+                "type": "pubkey"
+              },
+              {
+                "name": "amount",
+                "type": "u64"
+              },
+              {
+                "name": "fee",
+                "type": "u64"
+              },
+              {
+                "name": "feePayee",
+                "type": "pubkey"
+              }
+            ]
           },
           {
-            "name": "dest",
-            "type": "pubkey"
+            "name": "unstake",
+            "fields": [
+              {
+                "name": "seed",
+                "type": "u8"
+              },
+              {
+                "name": "fee",
+                "type": "u64"
+              },
+              {
+                "name": "feePayee",
+                "type": "pubkey"
+              }
+            ]
           },
           {
-            "name": "nextVault",
-            "type": "pubkey"
+            "name": "collectStake",
+            "fields": [
+              {
+                "name": "seed",
+                "type": "u8"
+              },
+              {
+                "name": "fee",
+                "type": "u64"
+              },
+              {
+                "name": "feePayee",
+                "type": "pubkey"
+              }
+            ]
           },
           {
-            "name": "amount",
-            "type": "u64"
+            "name": "cancel",
+            "fields": [
+              {
+                "name": "fee",
+                "type": "u64"
+              },
+              {
+                "name": "feePayee",
+                "type": "pubkey"
+              }
+            ]
+          },
+          {
+            "name": "ping",
+            "fields": [
+              {
+                "name": "fee",
+                "type": "u64"
+              },
+              {
+                "name": "feePayee",
+                "type": "pubkey"
+              }
+            ]
           }
         ]
       }
     },
     {
-      "name": "record",
+      "name": "config",
       "docs": [
-        "Optional public listing of a vault, for the explorer."
+        "The rules of a vault. Its hash is part of the vault address, so it can never change."
       ],
       "type": {
         "kind": "struct",
         "fields": [
           {
-            "name": "vault",
-            "type": "pubkey"
-          },
-          {
-            "name": "root",
+            "name": "primaryRoot",
             "type": {
               "array": [
                 "u8",
@@ -995,44 +1416,47 @@ export type Noxvault = {
             }
           },
           {
-            "name": "createdAt",
+            "name": "primaryHeight",
+            "type": "u8"
+          },
+          {
+            "name": "recoveryRoot",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "recoveryHeight",
+            "type": "u8"
+          },
+          {
+            "name": "recoveryDelay",
+            "type": "i64"
+          },
+          {
+            "name": "whitelist",
+            "type": {
+              "array": [
+                "pubkey",
+                4
+              ]
+            }
+          },
+          {
+            "name": "slowDelay",
             "type": "i64"
           }
         ]
       }
     },
     {
-      "name": "spent",
-      "docs": [
-        "Marks a vault key as used. Its existence is what stops a key from ever signing twice."
-      ],
+      "name": "pending",
       "type": {
         "kind": "struct",
         "fields": [
-          {
-            "name": "vault",
-            "type": "pubkey"
-          },
-          {
-            "name": "root",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "vaultBump",
-            "type": "u8"
-          },
-          {
-            "name": "successor",
-            "docs": [
-              "Where everything left in (or later sent to) this vault is forwarded."
-            ],
-            "type": "pubkey"
-          },
           {
             "name": "mint",
             "type": "pubkey"
@@ -1046,8 +1470,12 @@ export type Noxvault = {
             "type": "u64"
           },
           {
-            "name": "slot",
-            "type": "u64"
+            "name": "executableAt",
+            "type": "i64"
+          },
+          {
+            "name": "leaf",
+            "type": "u16"
           }
         ]
       }
@@ -1055,7 +1483,7 @@ export type Noxvault = {
     {
       "name": "unlock",
       "docs": [
-        "A signed withdrawal being assembled and verified over several transactions.",
+        "A signed action being assembled and verified over several transactions.",
         "Zero-copy: the signature and chain ends are too big for the BPF stack."
       ],
       "serialization": "bytemuck",
@@ -1065,10 +1493,6 @@ export type Noxvault = {
       "type": {
         "kind": "struct",
         "fields": [
-          {
-            "name": "amount",
-            "type": "u64"
-          },
           {
             "name": "written",
             "docs": [
@@ -1101,16 +1525,54 @@ export type Noxvault = {
             }
           },
           {
-            "name": "mint",
-            "type": "pubkey"
+            "name": "authPath",
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                },
+                8
+              ]
+            }
           },
           {
-            "name": "dest",
-            "type": "pubkey"
+            "name": "action",
+            "type": {
+              "array": [
+                "u8",
+                160
+              ]
+            }
           },
           {
-            "name": "nextVault",
-            "type": "pubkey"
+            "name": "actionLen",
+            "type": "u16"
+          },
+          {
+            "name": "leaf",
+            "type": "u16"
+          },
+          {
+            "name": "tree",
+            "type": "u8"
+          },
+          {
+            "name": "height",
+            "type": "u8"
+          },
+          {
+            "name": "frozen",
+            "docs": [
+              "1 once verification started: the message and signature can no longer change."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
           },
           {
             "name": "digits",
@@ -1125,22 +1587,11 @@ export type Noxvault = {
             }
           },
           {
-            "name": "frozen",
-            "docs": [
-              "1 once verification started: the message and signature can no longer change."
-            ],
-            "type": "u8"
-          },
-          {
-            "name": "bump",
-            "type": "u8"
-          },
-          {
             "name": "pad",
             "type": {
               "array": [
                 "u8",
-                4
+                6
               ]
             }
           },
@@ -1170,6 +1621,82 @@ export type Noxvault = {
                 },
                 34
               ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "vaultState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "vaultBump",
+            "type": "u8"
+          },
+          {
+            "name": "configHash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "config",
+            "type": {
+              "defined": {
+                "name": "config"
+              }
+            }
+          },
+          {
+            "name": "usedPrimary",
+            "docs": [
+              "Bit l set once leaf l of the tree has been used."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "usedRecovery",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "lastActive",
+            "type": "i64"
+          },
+          {
+            "name": "createdAt",
+            "type": "i64"
+          },
+          {
+            "name": "actions",
+            "type": "u32"
+          },
+          {
+            "name": "pending",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "pending"
+                }
+              }
             }
           }
         ]
