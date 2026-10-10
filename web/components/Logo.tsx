@@ -13,7 +13,7 @@ export function Wordmark({ className = "", meta = true }: { className?: string; 
   return (
     <span className={`flex items-baseline gap-3 ${className}`}>
       <span className="text-[19px] font-bold tracking-[0.22em] text-bone">NOXVAULT</span>
-      {meta && <span className="hidden text-[12px] tracking-[0.08em] text-dim xl:inline">{"// v1.0 // SOLANA"}</span>}
+      {meta && <span className="hidden text-[12px] tracking-[0.08em] text-dim 2xl:inline">{"// v2.0 // SOLANA"}</span>}
     </span>
   );
 }

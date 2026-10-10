@@ -9,39 +9,39 @@ const STEPS = [
     t: "GENERATE",
     Icon: Boxes,
     href: "/create",
-    d: "Create a 24-word secret and derive one-time keys in your browser. Keys never leave your device.",
+    d: "Create a 24-word phrase; your browser builds 256 one-time keys in a Merkle tree. Keys never leave your device.",
   },
   {
     n: "02",
     t: "SEAL",
     Icon: Lock,
     href: "/create",
-    d: "Lock SOL or tokens in a vault whose address comes from the root hash of your key chains.",
+    d: "One fixed vault address for SOL, tokens and stake. Its rules (whitelist, delays, recovery) are part of the address.",
   },
   {
     n: "03",
     t: "UNLOCK",
     Icon: FileSignature,
     href: "/mine",
-    d: "Withdraw with a one-time WOTS+ signature, verified on-chain. Each key can be used once.",
+    d: "Each withdrawal, stake or ping uses one WOTS+ key, verified on-chain. Gasless through a relayer if you like.",
   },
   {
     n: "04",
-    t: "ROTATE",
+    t: "RECOVER",
     Icon: RefreshCw,
-    href: "/docs#after",
-    d: "Whatever you don't withdraw moves to your next fresh vault, with a new unused key.",
+    href: "/recovery",
+    d: "Optional recovery key held by someone else: cancels suspicious withdrawals, takes over after long inactivity.",
   },
 ];
 
 const ROWS: [string, string, string][] = [
   ["Security basis", "Elliptic curve (Ed25519)", "Hash-based (WOTS+, SHA-256)"],
   ["Quantum resistance", "Vulnerable (long term)", "Built to resist quantum attacks"],
-  ["Public key exposure", "Public key always visible", "Only a hash root"],
+  ["Public key exposure", "Public key always visible", "Only a Merkle root"],
   ["Key reuse", "Same key used repeatedly", "One-time keys (1 use only)"],
-  ["Signature size", "64 bytes", "1,088 B (34 chains) + 32 B seed"],
-  ["Assets", "SOL, SPL", "SOL, SPL, Token-2022"],
-  ["Withdrawal", "1 transaction", "~2 txs, retry-safe"],
+  ["Signature size", "64 bytes", "1,376 B (34 chains + auth path)"],
+  ["Assets", "SOL, SPL", "SOL, SPL, Token-2022, stake"],
+  ["Key uses", "unlimited", "256 actions per vault"],
 ];
 
 const ROADMAP = [
@@ -125,7 +125,7 @@ export default function Home() {
         <div className="panel flex flex-col overflow-hidden">
           <div className="flex items-center justify-between border-b border-line-2 px-6 py-4">
             <span className="text-[16px] font-medium tracking-[0.16em]">WHERE WE ARE</span>
-            <span className="text-[10.5px] tracking-[0.14em] text-dim">{"ROADMAP // v1.0"}</span>
+            <span className="text-[10.5px] tracking-[0.14em] text-dim">{"ROADMAP // v2"}</span>
           </div>
           <div className="flex flex-1 items-center overflow-x-auto">
             <ol className="grid w-full min-w-[520px] grid-cols-4 px-6 py-6">

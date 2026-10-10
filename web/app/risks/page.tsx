@@ -7,35 +7,43 @@ export const metadata: Metadata = { title: "Risks — Noxvault" };
 const RISKS = [
   {
     t: "Unaudited",
-    d: "The program, SDK and this site have not been audited or formally reviewed. Bugs could lock or lose funds. Assume they exist.",
+    d: "The program, SDK, relayer and this site have not been audited or formally reviewed. Bugs could lock or lose funds. Assume they exist.",
   },
   {
-    t: "You hold the only secret",
-    d: "The 24 words are the vault. Lose them and nothing can recover the funds. Leak them and anyone can withdraw everything, in every vault they derive.",
+    t: `${NETWORK === "mainnet-beta" ? "Early mainnet" : "Devnet only"}`,
+    d: "Noxvault v2 runs on devnet. Devnet can be reset and devnet SOL has no value. The program is still upgradeable; the upgrade authority is to be burned only at mainnet launch.",
+  },
+  {
+    t: "Your words are the vault",
+    d: "Anyone with your primary words controls the vault, subject only to the whitelist delay and your recovery key. Without a recovery key, lost words mean lost funds.",
   },
   {
     t: "Browser signing",
-    d: "Keys are derived and used inside this web page. A malicious browser extension, a compromised device or a tampered copy of this site could steal the words. Only use it on a device you trust and on the real domain.",
+    d: "Keys are derived and used inside this web page. A malicious extension, a compromised device or a tampered copy of the site could steal the words. Use a trusted device and the real domain, or sign on an offline device with /offline.",
   },
   {
     t: "Never reuse a key",
-    d: "A WOTS+ key may sign one message, ever. Before signing, the app reads the vault's whole history; if this key ever published part of a signature, only that same withdrawal can be completed. If the history cannot be read, it refuses to sign. Other tools may not do this: do not sign with your words anywhere else.",
+    d: "A one-time key may sign one message, ever. The app reads the vault's whole history before signing and refuses if it cannot. Offline signing cannot read the chain: always take the leaf from a fresh prepare step, run the checks on /submit, and never sign a different action with the same leaf. Other tools may not follow this rule.",
   },
   {
-    t: `${NETWORK === "mainnet-beta" ? "Early mainnet" : "Devnet first"}`,
-    d: "Noxvault currently runs on devnet. Devnet can be reset, and devnet SOL has no value. The program is still upgradeable; the upgrade authority is to be burned only at mainnet launch.",
+    t: "Recovery key holder",
+    d: "Whoever holds the recovery phrase can cancel your pending withdrawals at any time, and takes full control if you stay inactive past the delay. Choose the holder and the delay with care, and ping if you go quiet for long.",
+  },
+  {
+    t: "The relayer is a convenience",
+    d: "It cannot change a signed action, so it is not a trust assumption for your funds. It can refuse, go offline or be slow; then submit the same signed action yourself. Its fee is paid by the vault when the action executes.",
+  },
+  {
+    t: "Backups are only as good as you keep them",
+    d: "An encrypted backup file is only as strong as its password. Shamir shares protect nothing if K of them end up in one place. Remembered words in this browser sit unencrypted in storage.",
   },
   {
     t: "Only the vault is post-quantum",
-    d: "Your wallet, the network's validators and other programs still use elliptic-curve cryptography. Noxvault protects what is locked inside a vault, not everything around it.",
-  },
-  {
-    t: "Remembered words",
-    d: "If you tick “remember in this browser”, the words sit unencrypted in session or local storage. Convenient, and readable by anything that can run script on this site.",
+    d: "Wallets, validators and other programs still use elliptic-curve cryptography. Noxvault protects what is locked inside a vault, not everything around it.",
   },
   {
     t: "Not financial advice",
-    d: "Nothing here is investment advice or an offer of anything. $NOX does not exist yet; ignore anyone selling it.",
+    d: "Nothing here is investment advice or an offer of anything. $NOX is planned but does not exist yet; ignore anyone selling it.",
   },
 ];
 

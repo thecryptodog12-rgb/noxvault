@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { AlertTriangle, ArrowRight, Menu, X as Close } from "lucide-react";
+import { AlertTriangle, ArrowRight, ChevronDown, Menu, X as Close } from "lucide-react";
 import { Mark, Wordmark } from "./Logo";
 import WalletButton from "./WalletButton";
 import { Copy } from "./ui";
@@ -13,6 +13,8 @@ const NAV = [
   { href: "/vaults", label: "Vaults" },
   { href: "/create", label: "Create Vault" },
   { href: "/mine", label: "My Vaults" },
+  { href: "/recovery", label: "Recovery" },
+  { href: "/stats", label: "Stats" },
   { href: "/keylab", label: "Key Lab" },
   { href: "/docs", label: "Docs" },
   { href: "/faq", label: "FAQ" },
@@ -26,6 +28,11 @@ function XIcon({ size = 16 }: { size?: number }) {
     </svg>
   );
 }
+
+const TOOLS = [
+  { href: "/offline", label: "Offline signing" },
+  { href: "/backup", label: "Backup" },
+];
 
 const isActive = (path: string, href: string) => (href === "/" ? path === "/" : path.startsWith(href));
 
@@ -48,6 +55,34 @@ function CaChip() {
   );
 }
 
+function ToolsMenu({ path }: { path: string }) {
+  const [open, setOpen] = useState(false);
+  const active = TOOLS.some((t) => isActive(path, t.href));
+  useEffect(() => setOpen(false), [path]);
+  return (
+    <div className="relative" onMouseLeave={() => setOpen(false)}>
+      <button
+        className={`relative flex items-center gap-1 px-2 py-2 text-[12.5px] 2xl:px-3 2xl:text-[13px] ${active ? "text-teal" : "text-mute hover:text-bone"}`}
+        onClick={() => setOpen((o) => !o)}
+        onMouseEnter={() => setOpen(true)}
+        aria-expanded={open}
+      >
+        Tools <ChevronDown size={13} />
+        {active && <span className="absolute -bottom-0.5 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-teal" />}
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-40 min-w-[180px] rounded-md border border-line-2 bg-ink-2 py-1 shadow-xl">
+          {TOOLS.map((t) => (
+            <Link key={t.href} href={t.href} className={`block px-4 py-2 text-[12.5px] ${isActive(path, t.href) ? "text-teal" : "text-mute hover:bg-ink-3 hover:text-bone"}`}>
+              {t.label}
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Shell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const path = usePathname();
@@ -64,31 +99,32 @@ export default function Shell({ children }: { children: ReactNode }) {
             <Mark size={32} />
             <Wordmark />
           </Link>
-          <nav className="mx-auto hidden items-center gap-1 lg:flex" aria-label="Main">
+          <nav className="mx-auto hidden items-center gap-0.5 xl:flex" aria-label="Main">
             {NAV.map((n) => {
               const a = isActive(path, n.href);
               return (
                 <Link
                   key={n.href}
                   href={n.href}
-                  className={`relative px-3 py-2 text-[13px] transition-colors 2xl:px-4 ${a ? "text-teal" : "text-mute hover:text-bone"}`}
+                  className={`relative whitespace-nowrap px-2 py-2 text-[12.5px] transition-colors 2xl:px-3 2xl:text-[13px] ${a ? "text-teal" : "text-mute hover:text-bone"}`}
                 >
                   {n.label}
                   {a && <span className="absolute -bottom-0.5 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-teal" />}
                 </Link>
               );
             })}
-            <a href={X_URL} target="_blank" rel="noreferrer" className="px-3 py-2 text-mute hover:text-bone" aria-label="Noxvault on X">
+            <ToolsMenu path={path} />
+            <a href={X_URL} target="_blank" rel="noreferrer" className="px-2 py-2 text-mute hover:text-bone" aria-label="Noxvault on X">
               <XIcon />
             </a>
           </nav>
-          <div className="ml-auto flex items-center gap-3 lg:ml-0">
+          <div className="ml-auto flex items-center gap-3 xl:ml-0">
             <span className="hidden 2xl:inline-flex">
               <NetworkChip />
             </span>
             <WalletButton className="hidden sm:inline-flex" />
             <button
-              className="flex h-10 w-10 items-center justify-center rounded border border-line-2 text-bone lg:hidden"
+              className="flex h-10 w-10 items-center justify-center rounded border border-line-2 text-bone xl:hidden"
               onClick={() => setOpen(true)}
               aria-label="Open menu"
             >
@@ -99,7 +135,7 @@ export default function Shell({ children }: { children: ReactNode }) {
       </header>
 
       {open && (
-        <div className="fixed inset-0 z-50 lg:hidden">
+        <div className="fixed inset-0 z-50 xl:hidden">
           <div className="absolute inset-0 bg-black/70" onClick={() => setOpen(false)} />
           <div className="absolute inset-y-0 right-0 flex w-[min(320px,88vw)] flex-col border-l border-line-2 bg-ink-2">
             <div className="flex h-[62px] items-center justify-between border-b border-line px-4">
@@ -122,7 +158,20 @@ export default function Shell({ children }: { children: ReactNode }) {
                   </Link>
                 );
               })}
-              <a href={X_URL} target="_blank" rel="noreferrer" className="flex items-center gap-2 px-3 py-2.5 text-mute">
+              <div className="label mb-1 mt-4 px-3">tools</div>
+              {TOOLS.map((n) => {
+                const a = isActive(path, n.href);
+                return (
+                  <Link
+                    key={n.href}
+                    href={n.href}
+                    className={`flex items-center justify-between rounded px-3 py-2.5 text-[14px] ${a ? "bg-teal/[0.08] text-teal" : "text-mute hover:text-bone"}`}
+                  >
+                    {n.label}
+                  </Link>
+                );
+              })}
+              <a href={X_URL} target="_blank" rel="noreferrer" className="mt-2 flex items-center gap-2 px-3 py-2.5 text-mute">
                 <XIcon size={14} /> X
               </a>
             </nav>
@@ -157,7 +206,7 @@ export default function Shell({ children }: { children: ReactNode }) {
             <div>
               <div className="text-[12px] tracking-[0.18em]">
                 <span className="font-bold">NOXVAULT</span>{" "}
-                <span className="text-teal/80">{"// v1.0 // SOLANA"}</span>
+                <span className="text-teal/80">{"// v2.0 // SOLANA"}</span>
               </div>
               <div className="mt-1 text-[10px] tracking-[0.14em] text-dim">BUILT ON HASHES, FOR A LONGER TOMORROW</div>
             </div>

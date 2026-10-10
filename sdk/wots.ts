@@ -67,6 +67,11 @@ export interface TreeSeeds {
   pkSeed: Uint8Array;
 }
 
+/** Seed index of a tree (docs/SPEC.md §2): primary = v, recovery = v + 2^31. */
+export function seedIndex(vaultNumber: number, tree: 0 | 1): number {
+  return (vaultNumber + (tree === 1 ? 0x8000_0000 : 0)) >>> 0;
+}
+
 export function treeSeeds(master: Uint8Array, vaultNumber: number): TreeSeeds {
   if (master.length !== 32) throw new Error("master secret must be 32 bytes");
   return {

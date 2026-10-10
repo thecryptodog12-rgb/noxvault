@@ -1,193 +1,156 @@
-// Web-side helpers around the SDK's unlock plan: persistence of the signed message,
-// reading the on-chain Unlock buffer, and step bookkeeping. See docs/SPEC.md.
-import type { Program } from "@coral-xyz/anchor";
+// Web-side glue for v2 actions: what this browser remembers about an action it is signing,
+// sending helpers (wallet or relayer), and reading vault balances. All buffer / step logic
+// lives in the SDK (buildSteps, remainingSteps, packSteps). See docs/SPEC.md §6–8.
 import { Connection, PublicKey, Transaction, type TransactionInstruction } from "@solana/web3.js";
-import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from "@solana/spl-token";
-import { SIGS_PER_TX, SOL_MINT, spentPda, unlockPda, type Noxvault, type UnlockPlan } from "@nox/sdk/client";
-import { LEN } from "@nox/sdk/wots";
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { SOL_MINT, type SignedAction } from "@nox/sdk/client";
+import type { Action } from "@nox/sdk/wots";
+import { encodeRelayRequest } from "@nox/sdk/relayer";
 
-// ---------- pending unlock (the frozen message parameters) ----------
+// ---------- action <-> JSON (keys base58, amounts decimal strings) ----------
 
-export interface PendingUnlock {
-  v: 1;
-  vault: string;
-  index: number;
-  mint: string; // SOL_MINT for SOL
-  dest: string;
-  next: string;
-  amount: string; // base units
-  tokenProgram?: string;
-  digest: string; // hex, for display / sanity
-  createdAt: number;
-  done: number[]; // step indexes confirmed by this browser
+export type ActionJson = Record<string, string | number> & { kind: Action["kind"] };
+
+export function actionToJson(a: Action): ActionJson {
+  const out: Record<string, string | number> = { kind: a.kind };
+  for (const [k, v] of Object.entries(a)) {
+    if (k === "kind") continue;
+    out[k] = v instanceof Uint8Array ? new PublicKey(v).toBase58() : typeof v === "bigint" ? v.toString() : (v as number);
+  }
+  return out as ActionJson;
 }
 
-// "attempted": set BEFORE the first transaction of an unlock is sent. Once set, this browser
-// never offers to discard the frozen message (a send may have published signature values).
-const attKey = (vault: string) => `nox.attempted.${vault}`;
-
-export function markAttempted(vault: string) {
-  try {
-    localStorage.setItem(attKey(vault), String(Date.now()));
-  } catch {}
-}
-
-export function wasAttempted(vault: string): boolean {
-  try {
-    return localStorage.getItem(attKey(vault)) !== null;
-  } catch {
-    return true; // unknown: be safe
+export function actionFromJson(j: ActionJson): Action {
+  const key = (v: unknown) => new PublicKey(String(v)).toBytes();
+  const big = (v: unknown) => BigInt(String(v));
+  const fee = big(j.fee);
+  const feePayee = key(j.feePayee);
+  switch (j.kind) {
+    case "withdraw":
+      return { kind: "withdraw", mint: key(j.mint), dest: key(j.dest), amount: big(j.amount), fee, feePayee };
+    case "stake":
+      return { kind: "stake", seed: Number(j.seed), vote: key(j.vote), amount: big(j.amount), fee, feePayee };
+    case "unstake":
+    case "collectStake":
+      return { kind: j.kind, seed: Number(j.seed), fee, feePayee };
+    case "cancel":
+    case "ping":
+      return { kind: j.kind, fee, feePayee };
   }
 }
 
-const pendKey = (vault: string) => `nox.pending.${vault}`;
+// ---------- the action this browser froze for a leaf ----------
 
-export function loadPending(vault: string): PendingUnlock | null {
+export interface PendingAction {
+  v: 2;
+  vault: string;
+  tree: number;
+  leaf: number;
+  action: ActionJson;
+  digest: string; // hex
+  mode: "wallet" | "relayer";
+  createdAt: number;
+}
+
+const pendKey = (vault: string, tree: number) => `nox2.pending.${vault}.${tree}`;
+const attKey = (vault: string, tree: number, leaf: number) => `nox2.attempted.${vault}.${tree}.${leaf}`;
+
+export function loadPending(vault: string, tree: number): PendingAction | null {
   try {
-    const raw = localStorage.getItem(pendKey(vault));
-    return raw ? (JSON.parse(raw) as PendingUnlock) : null;
+    const raw = localStorage.getItem(pendKey(vault, tree));
+    const p = raw ? (JSON.parse(raw) as PendingAction) : null;
+    return p && p.v === 2 ? p : null;
   } catch {
     return null;
   }
 }
 
-export function savePending(p: PendingUnlock) {
+export function savePending(p: PendingAction) {
   try {
-    localStorage.setItem(pendKey(p.vault), JSON.stringify(p));
+    localStorage.setItem(pendKey(p.vault, p.tree), JSON.stringify(p));
   } catch {}
 }
 
-export function clearPending(vault: string) {
+export function clearPending(vault: string, tree: number) {
   try {
-    localStorage.removeItem(pendKey(vault));
+    localStorage.removeItem(pendKey(vault, tree));
   } catch {}
 }
 
-/** Called only when the vault is spent (the unlock finished): drops message + attempted flag. */
-export function clearFinished(vault: string) {
-  clearPending(vault);
+/** Set BEFORE the first transaction or relay request of an action is sent. */
+export function markAttempted(vault: string, tree: number, leaf: number) {
   try {
-    localStorage.removeItem(attKey(vault));
+    localStorage.setItem(attKey(vault, tree, leaf), String(Date.now()));
   } catch {}
 }
 
-/** A token mint's program, read from the mint account's owner on chain (never from storage). */
-export async function mintTokenProgram(conn: Connection, mint: PublicKey): Promise<PublicKey> {
-  const info = await conn.getAccountInfo(mint, "confirmed");
-  if (!info) throw new Error(`Mint ${mint.toBase58()} not found`);
-  if (!info.owner.equals(TOKEN_PROGRAM_ID) && !info.owner.equals(TOKEN_2022_PROGRAM_ID))
-    throw new Error(`Mint ${mint.toBase58()} is not owned by a token program`);
-  return info.owner;
-}
-
-// ---------- on-chain Unlock buffer ----------
-
-export interface UnlockBuffer {
-  address: PublicKey;
-  amount: bigint;
-  written: bigint;
-  verified: bigint;
-  vault: PublicKey;
-  payer: PublicKey;
-  pkSeed: Uint8Array;
-  mint: PublicKey;
-  dest: PublicKey;
-  next: PublicKey;
-  frozen: boolean;
-}
-
-/** Manual decode of the zero-copy `Unlock` account (repr(C), offsets after the 8-byte discriminator). */
-export function decodeUnlock(address: PublicKey, data: Uint8Array): UnlockBuffer {
-  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  const pk = (o: number) => new PublicKey(data.slice(o, o + 32));
-  return {
-    address,
-    amount: dv.getBigUint64(8, true),
-    written: dv.getBigUint64(16, true),
-    verified: dv.getBigUint64(24, true),
-    vault: pk(32),
-    payer: pk(64),
-    pkSeed: data.slice(96, 128),
-    mint: pk(128),
-    dest: pk(160),
-    next: pk(192),
-    frozen: data[258] === 1,
-  };
-}
-
-/** True only if the buffer holds exactly this message AND was opened with this key's pk_seed. */
-export function bufferMatches(b: UnlockBuffer, p: PendingUnlock, pkSeed: Uint8Array): boolean {
-  return (
-    b.mint.toBase58() === p.mint &&
-    b.dest.toBase58() === p.dest &&
-    b.next.toBase58() === p.next &&
-    b.amount.toString() === p.amount &&
-    b.pkSeed.length === pkSeed.length &&
-    b.pkSeed.every((x, i) => x === pkSeed[i])
-  );
-}
-
-// ---------- step bookkeeping ----------
-
-const allBits = (word: bigint, from: number, to: number) => {
-  for (let j = from; j < to; j++) if (((word >> BigInt(j)) & 1n) === 0n) return false;
-  return true;
-};
-
-/**
- * Whether one unpacked plan step (planUnlock().steps[i].label: "open", "write i/n",
- * "verify a–b", "pay out") is already done on chain for this payer's buffer.
- */
-export function stepDoneOnChain(label: string, buf: UnlockBuffer | null, spent: boolean): boolean {
-  if (spent) return true;
-  if (!buf) return false;
-  if (label === "open") return true;
-  const w = /^write (\d+)\/(\d+)$/.exec(label);
-  if (w) {
-    const i = Number(w[1]) - 1;
-    return buf.frozen || allBits(buf.written, i * SIGS_PER_TX, Math.min((i + 1) * SIGS_PER_TX, LEN));
+export function wasAttempted(vault: string, tree: number, leaf: number): boolean {
+  try {
+    return localStorage.getItem(attKey(vault, tree, leaf)) !== null;
+  } catch {
+    return true; // unknown: be safe
   }
-  const v = /^verify (\d+)\D+(\d+)$/.exec(label);
-  if (v) return allBits(buf.verified, Number(v[1]), Number(v[2]) + 1);
-  return false; // pay out: done only when Spent exists
 }
 
-export interface SendStep {
-  label: string;
-  /** Instructions still to send, or null when already done on chain. */
-  ixs: TransactionInstruction[] | null;
+export function clearAttempted(vault: string, tree: number, leaf: number) {
+  try {
+    localStorage.removeItem(attKey(vault, tree, leaf));
+  } catch {}
 }
 
-/**
- * The transactions still to send for a frozen message, given this payer's Unlock buffer.
- * A buffer only counts as progress if it holds this exact message and this key's pk_seed.
- * If the payer's buffer holds anything else it is stale: it is closed first (cancel_unlock),
- * and the whole plan runs from a fresh buffer.
- */
-export function sendSteps(
-  plan: UnlockPlan,
-  buf: UnlockBuffer | null,
-  spent: boolean,
-  pending: PendingUnlock,
-  pkSeed: Uint8Array,
-  cancelIx: TransactionInstruction
-): SendStep[] {
-  if (spent) return plan.transactions.map((t) => ({ label: t.label, ixs: null }));
-  const stale = !!buf && !bufferMatches(buf, pending, pkSeed);
-  const progress = stale ? null : buf;
-  const done = new Map(plan.steps.map((s) => [s.ix, stepDoneOnChain(s.label, progress, false)]));
-  const steps: SendStep[] = plan.transactions.map((t) => {
-    const work = t.instructions.filter((ix) => done.has(ix) && !done.get(ix));
-    return { label: t.label, ixs: work.length ? t.instructions.filter((ix) => !done.has(ix) || !done.get(ix)) : null };
+// ---------- sending with a wallet ----------
+
+export type SendFn = (
+  tx: Transaction,
+  conn: Connection,
+  opts?: { preflightCommitment?: "confirmed"; maxRetries?: number }
+) => Promise<string>;
+
+const RETRYABLE = /Blockhash not found|block height exceeded|BlockheightExceeded|TransactionExpired/i;
+
+/** One transaction with a "confirmed" blockhash; expired-blockhash errors retry with a fresh one. */
+export async function sendIxs(conn: Connection, payer: PublicKey, send: SendFn, ixs: TransactionInstruction[], attempts = 4): Promise<string> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+      const tx = new Transaction({ feePayer: payer, blockhash, lastValidBlockHeight }).add(...ixs);
+      const sig = await send(tx, conn, { preflightCommitment: "confirmed", maxRetries: 3 });
+      const res = await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+      if (res.value.err) throw new Error(`Transaction failed: ${JSON.stringify(res.value.err)}`);
+      return sig;
+    } catch (e) {
+      const text = e instanceof Error ? `${e.name} ${e.message}` : String(e);
+      if (attempt >= attempts || !RETRYABLE.test(text)) throw e;
+      await new Promise((r) => setTimeout(r, 800 * attempt));
+    }
+  }
+}
+
+// ---------- relayer (this site's /api routes) ----------
+
+export interface RelayerInfo {
+  relayer: string;
+  minFee: string; // lamports
+  discount: null | { mint: string; threshold: string };
+}
+
+export async function fetchRelayerInfo(): Promise<RelayerInfo> {
+  const r = await fetch("/api/relayer-info", { cache: "no-store" });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `Relayer unavailable (${r.status})`);
+  return j as RelayerInfo;
+}
+
+/** Sends a signed action through the relayer. Safe to repeat with the same action. */
+export async function relayAction(s: SignedAction): Promise<string[]> {
+  const r = await fetch("/api/relay", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(encodeRelayRequest(s)),
   });
-  return stale ? [{ label: "close stale buffer (different message)", ixs: [cancelIx] }, ...steps] : steps;
-}
-
-export async function cancelUnlockIx(program: Program<Noxvault>, payer: PublicKey, vault: PublicKey) {
-  return program.methods
-    .cancelUnlock()
-    .accountsPartial({ payer, unlock: unlockPda(vault, payer, program.programId) })
-    .instruction();
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `Relay failed (${r.status})`);
+  return j.signatures as string[];
 }
 
 // ---------- vault reading ----------
@@ -207,16 +170,15 @@ export interface VaultAssets {
 
 export async function vaultAssets(conn: Connection, vault: PublicKey): Promise<VaultAssets> {
   const [lamports, ...lists] = await Promise.all([
-    conn.getBalance(vault),
+    conn.getBalance(vault, "confirmed"),
     ...[TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].map((programId) =>
-      conn.getParsedTokenAccountsByOwner(vault, { programId }).then((r) => ({ programId, r }))
+      conn.getParsedTokenAccountsByOwner(vault, { programId }, "confirmed").then((r) => ({ programId, r }))
     ),
   ]);
   const tokens: TokenHolding[] = [];
   for (const { programId, r } of lists) {
     for (const a of r.value) {
-      const info = (a.account.data as { parsed: { info: { mint: string; tokenAmount: { amount: string; decimals: number } } } })
-        .parsed.info;
+      const info = (a.account.data as { parsed: { info: { mint: string; tokenAmount: { amount: string; decimals: number } } } }).parsed.info;
       tokens.push({
         mint: new PublicKey(info.mint),
         ata: a.pubkey,
@@ -229,80 +191,28 @@ export async function vaultAssets(conn: Connection, vault: PublicKey): Promise<V
   return { lamports, tokens };
 }
 
-export async function isSpent(conn: Connection, programId: PublicKey, vault: PublicKey): Promise<boolean> {
-  return !!(await conn.getAccountInfo(spentPda(vault, programId)));
-}
+export const isSol = (mint: PublicKey | Uint8Array | string) =>
+  (typeof mint === "string" ? mint : mint instanceof Uint8Array ? new PublicKey(mint).toBase58() : mint.toBase58()) === SOL_MINT.toBase58();
 
-// ---------- sweeps (spent vault → successor) ----------
-
-export async function sweepIx(program: Program<Noxvault>, vault: PublicKey, successor: PublicKey) {
-  return program.methods
-    .sweep()
-    .accountsPartial({ vault, spent: spentPda(vault, program.programId), successor })
-    .instruction();
-}
-
-export async function sweepTokenIx(
-  program: Program<Noxvault>,
-  payer: PublicKey,
-  vault: PublicKey,
-  successor: PublicKey,
-  mint: PublicKey,
-  tokenProgram: PublicKey
-) {
-  const ata = (o: PublicKey) => getAssociatedTokenAddressSync(mint, o, true, tokenProgram);
-  return program.methods
-    .sweepToken()
-    .accountsPartial({
-      payer,
-      vault,
-      spent: spentPda(vault, program.programId),
-      mint,
-      vaultAta: ata(vault),
-      successor,
-      successorAta: ata(successor),
-      tokenProgram,
-    })
-    .instruction();
-}
-
-// ---------- sending ----------
-
-export type SendFn = (
-  tx: Transaction,
-  conn: Connection,
-  opts?: { preflightCommitment?: "confirmed"; maxRetries?: number }
-) => Promise<string>;
-
-const RETRYABLE = /Blockhash not found|block height exceeded|BlockheightExceeded|TransactionExpired/i;
-
-/**
- * Sends one transaction with a "confirmed" blockhash and waits for confirmation.
- * Public devnet RPCs sometimes simulate on a lagging node; those errors are retried with a
- * fresh blockhash (every Noxvault step is safe to resend).
- */
-export async function sendIxs(
-  conn: Connection,
-  payer: PublicKey,
-  send: SendFn,
-  ixs: TransactionInstruction[],
-  attempts = 4
-): Promise<string> {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
-      const tx = new Transaction({ feePayer: payer, blockhash, lastValidBlockHeight }).add(...ixs);
-      const sig = await send(tx, conn, { preflightCommitment: "confirmed", maxRetries: 3 });
-      const res = await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
-      if (res.value.err) throw new Error(`Transaction failed: ${JSON.stringify(res.value.err)}`);
-      return sig;
-    } catch (e) {
-      const text = e instanceof Error ? `${e.name} ${e.message}` : String(e);
-      if (attempt >= attempts || !RETRYABLE.test(text)) throw e;
-      await new Promise((r) => setTimeout(r, 800 * attempt));
-    }
+export function describeAction(a: Action): string {
+  const sol = (n: bigint) => `${(Number(n) / 1e9).toLocaleString("en-US", { maximumFractionDigits: 9 })} SOL`;
+  const short = (k: Uint8Array) => {
+    const s = new PublicKey(k).toBase58();
+    return `${s.slice(0, 4)}…${s.slice(-4)}`;
+  };
+  const fee = a.fee > 0n ? ` (fee ${sol(a.fee)})` : "";
+  switch (a.kind) {
+    case "withdraw":
+      return `withdraw ${isSol(a.mint) ? sol(a.amount) : `${a.amount} units of ${short(a.mint)}`} to ${short(a.dest)}${fee}`;
+    case "stake":
+      return `stake ${sol(a.amount)} with ${short(a.vote)} (slot #${a.seed})${fee}`;
+    case "unstake":
+      return `unstake slot #${a.seed}${fee}`;
+    case "collectStake":
+      return `collect stake slot #${a.seed}${fee}`;
+    case "cancel":
+      return `cancel the pending withdrawal${fee}`;
+    case "ping":
+      return `ping (prove the owner is active)${fee}`;
   }
 }
-
-export const isSol = (mint: PublicKey | string) =>
-  (typeof mint === "string" ? mint : mint.toBase58()) === SOL_MINT.toBase58();

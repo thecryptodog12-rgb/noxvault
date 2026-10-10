@@ -1,0 +1,712 @@
+"use client";
+// Sign and send one vault action with a one-time key (docs/SPEC.md §5–8).
+// Safety rules, per leaf: the vault's whole history decides which leaf may sign what
+// (findSignedMessages + pickLeaf); an unfinished signed message is resumed, never replaced;
+// preflightAction runs before signing; "attempted" is persisted before anything is sent.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { PublicKey } from "@solana/web3.js";
+import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import {
+  SOL_MINT,
+  TREE_PRIMARY,
+  actionDigest,
+  buildSteps,
+  fetchState,
+  findSignedMessages,
+  leafUsed,
+  mintTokenProgram,
+  packSteps,
+  pickLeaf,
+  preflightAction,
+  remainingSteps,
+  type SignedAction,
+  type SignedMessage,
+  type Signer,
+  type VaultStateView,
+} from "@nox/sdk/client";
+import { authPath, equal, sign, type Action } from "@nox/sdk/wots";
+import { Label, Note } from "@/components/ui";
+import { useNox } from "@/lib/hooks";
+import { errMsg, fromBaseUnits, hex, short, sol, toBaseUnits } from "@/lib/format";
+import { explorerUrl } from "@/lib/config";
+import {
+  actionFromJson,
+  actionToJson,
+  clearAttempted,
+  clearPending,
+  describeAction,
+  fetchRelayerInfo,
+  isSol,
+  loadPending,
+  markAttempted,
+  relayAction,
+  savePending,
+  sendIxs,
+  wasAttempted,
+  type PendingAction,
+  type RelayerInfo,
+  type VaultAssets,
+} from "@/lib/unlock";
+
+type Kind = Action["kind"];
+type Mode = "wallet" | "relayer";
+type StepState = "todo" | "sending" | "done" | "failed";
+
+interface Frozen {
+  leaf: number;
+  action: Action;
+  mode: Mode;
+  source: "chain" | "local";
+}
+
+type History =
+  | { kind: "loading" }
+  | { kind: "error"; msg: string }
+  | { kind: "ready"; signed: SignedMessage[]; leaf: number; resume?: SignedMessage }
+  | { kind: "exhausted"; msg: string };
+
+export interface StakeSlot {
+  seed: number;
+  address: PublicKey;
+  lamports: number;
+}
+
+const KINDS: { k: Kind; label: string }[] = [
+  { k: "withdraw", label: "Withdraw" },
+  { k: "stake", label: "Stake" },
+  { k: "unstake", label: "Unstake" },
+  { k: "collectStake", label: "Collect" },
+  { k: "ping", label: "Ping" },
+  { k: "cancel", label: "Cancel pending" },
+];
+
+export default function ActionPanel({
+  vault,
+  state,
+  signer,
+  assets,
+  stakes,
+  onChanged,
+  allowed,
+}: {
+  vault: PublicKey;
+  state: VaultStateView;
+  signer: Signer;
+  assets: VaultAssets | null;
+  stakes: (StakeSlot | null)[];
+  onChanged: () => void;
+  /** Action kinds this signer may use right now (recovery before the delay: cancel only). */
+  allowed?: Kind[];
+}) {
+  const { connection, program, wallet } = useNox();
+  const { setVisible } = useWalletModal();
+  const vaultStr = vault.toBase58();
+  const tree = signer.tree;
+
+  const [history, setHistory] = useState<History>({ kind: "loading" });
+  const [frozen, setFrozen] = useState<Frozen | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [lastDone, setLastDone] = useState<string | null>(null);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
+  // form
+  const kinds = KINDS.filter((k) => !allowed || allowed.includes(k.k));
+  const [kind, setKind] = useState<Kind>(kinds[0]?.k ?? "withdraw");
+  const [mode, setMode] = useState<Mode>("wallet");
+  const [asset, setAsset] = useState(SOL_MINT.toBase58());
+  const [amount, setAmount] = useState("");
+  const [dest, setDest] = useState("");
+  const [vote, setVote] = useState("");
+  const [seed, setSeed] = useState<number | null>(null);
+  const [validators, setValidators] = useState<{ vote: string; stake: number }[] | null>(null);
+  const [relayer, setRelayer] = useState<RelayerInfo | null>(null);
+  const [relayerErr, setRelayerErr] = useState<string | null>(null);
+
+  const [pre, setPre] = useState<{ errors: string[]; warnings: string[]; key: string } | null>(null);
+  const [consent, setConsent] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [formErr, setFormErr] = useState<string | null>(null);
+
+  // sending
+  const [steps, setSteps] = useState<{ label: string; st: StepState; sig?: string }[]>([]);
+  const [sendErr, setSendErr] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+  const [running, setRunning] = useState(false);
+
+  const tokens = assets?.tokens.filter((t) => t.amount > 0n) ?? [];
+  const holding = isSol(asset) ? null : tokens.find((t) => t.mint.toBase58() === asset) ?? null;
+  const usedStakes = stakes.filter((s): s is StakeSlot => !!s);
+  const freeSeed = stakes.findIndex((s) => !s);
+
+  useEffect(() => {
+    if (!dest && wallet.publicKey) setDest(wallet.publicKey.toBase58());
+  }, [wallet.publicKey, dest]);
+
+  useEffect(() => {
+    setPre(null);
+    setConsent(false);
+  }, [kind, mode, asset, amount, dest, vote, seed]);
+
+  useEffect(() => {
+    if (mode !== "relayer" || relayer) return;
+    fetchRelayerInfo()
+      .then((r) => {
+        setRelayer(r);
+        setRelayerErr(null);
+      })
+      .catch((e) => setRelayerErr(errMsg(e)));
+  }, [mode, relayer]);
+
+  useEffect(() => {
+    if (kind !== "stake" || validators) return;
+    connection
+      .getVoteAccounts("confirmed")
+      .then((v) => {
+        const list = v.current
+          .sort((a, b) => b.activatedStake - a.activatedStake)
+          .slice(0, 25)
+          .map((x) => ({ vote: x.votePubkey, stake: x.activatedStake }));
+        setValidators(list);
+        if (!vote && list[0]) setVote(list[0].vote);
+      })
+      .catch(() => setValidators([]));
+  }, [kind, validators, connection, vote]);
+
+  // ---- the vault's history decides which leaf signs, and whether a message is already fixed ----
+  const loadHistory = useCallback(async () => {
+    setHistory({ kind: "loading" });
+    setNote(null);
+    let signed: SignedMessage[];
+    try {
+      signed = await findSignedMessages(program, vault, signer);
+    } catch (e) {
+      setHistory({ kind: "error", msg: errMsg(e) });
+      setFrozen(null);
+      return;
+    }
+    const fresh = (await fetchState(program, vault).catch(() => null)) ?? stateRef.current;
+    let pick: { leaf: number; resume?: SignedMessage };
+    try {
+      pick = pickLeaf(fresh, signer, signed);
+    } catch (e) {
+      setHistory({ kind: "exhausted", msg: errMsg(e) });
+      setFrozen(null);
+      return;
+    }
+    setHistory({ kind: "ready", signed, leaf: pick.leaf, resume: pick.resume });
+
+    const local = loadPending(vaultStr, tree);
+    if (pick.resume) {
+      // Chain wins: this leaf published part of a signature for exactly this message.
+      const a = pick.resume.action;
+      if (local && !(local.leaf === pick.resume.leaf && local.digest === hex(pick.resume.digest)))
+        setNote("This browser remembered a different action, but the chain shows a one-time key already published part of a signature for the one below. Only that one can be completed with it.");
+      const m: Mode = a.fee > 0n ? "relayer" : "wallet";
+      savePending({
+        v: 2,
+        vault: vaultStr,
+        tree,
+        leaf: pick.resume.leaf,
+        action: actionToJson(a),
+        digest: hex(pick.resume.digest),
+        mode: m,
+        createdAt: local?.createdAt ?? Date.now(),
+      });
+      setFrozen({ leaf: pick.resume.leaf, action: a, mode: m, source: "chain" });
+      return;
+    }
+    if (local && !leafUsed(fresh, tree, local.leaf) && (local.leaf === pick.leaf || wasAttempted(vaultStr, tree, local.leaf))) {
+      // A send for it may still be in flight: keep it locked to the same message.
+      setFrozen({ leaf: local.leaf, action: actionFromJson(local.action), mode: local.mode, source: "local" });
+      return;
+    }
+    if (local && leafUsed(fresh, tree, local.leaf)) {
+      clearPending(vaultStr, tree);
+      clearAttempted(vaultStr, tree, local.leaf);
+    }
+    setFrozen(null);
+  }, [program, vault, signer, vaultStr, tree]);
+
+  useEffect(() => {
+    loadHistory();
+  }, [loadHistory]);
+
+  const leaf = history.kind === "ready" ? history.leaf : null;
+  const payerFor = (m: Mode) => (m === "relayer" ? (relayer ? new PublicKey(relayer.relayer) : null) : wallet.publicKey);
+
+  // ---- build the action from the form ----
+  const buildAction = async (): Promise<{ action: Action; tokenProgram?: PublicKey }> => {
+    let fee = 0n;
+    let feePayee: Uint8Array;
+    if (mode === "relayer") {
+      if (!relayer) throw new Error(relayerErr || "Relayer info not loaded yet");
+      fee = BigInt(relayer.minFee);
+      feePayee = new PublicKey(relayer.relayer).toBytes();
+    } else {
+      if (!wallet.publicKey) throw new Error("Connect a wallet: it pays the network fees");
+      feePayee = wallet.publicKey.toBytes();
+    }
+    switch (kind) {
+      case "withdraw": {
+        let d: PublicKey;
+        try {
+          d = new PublicKey(dest.trim());
+        } catch {
+          throw new Error("Destination is not a valid address");
+        }
+        const mint = isSol(asset) ? SOL_MINT : new PublicKey(asset);
+        const units = toBaseUnits(amount, holding ? holding.decimals : 9);
+        const tokenProgram = isSol(asset) ? undefined : await mintTokenProgram(connection, mint);
+        return { action: { kind, mint: mint.toBytes(), dest: d.toBytes(), amount: units, fee, feePayee }, tokenProgram };
+      }
+      case "stake": {
+        let v: PublicKey;
+        try {
+          v = new PublicKey(vote.trim());
+        } catch {
+          throw new Error("Pick a validator");
+        }
+        if (freeSeed < 0) throw new Error("All stake slots are in use");
+        return { action: { kind, seed: freeSeed, vote: v.toBytes(), amount: toBaseUnits(amount, 9), fee, feePayee } };
+      }
+      case "unstake":
+      case "collectStake":
+        if (seed === null) throw new Error("Pick a stake slot");
+        return { action: { kind, seed, fee, feePayee } };
+      case "cancel":
+      case "ping":
+        return { action: { kind, fee, feePayee } };
+    }
+  };
+
+  // ---- check, then freeze the message for this leaf ----
+  const prepare = async () => {
+    setFormErr(null);
+    if (leaf === null) return;
+    setBusy("check");
+    try {
+      const { action, tokenProgram } = await buildAction();
+      const payer = payerFor(mode);
+      if (!payer) throw new Error(mode === "relayer" ? "Relayer unavailable" : "Connect a wallet");
+      const digest = actionDigest(program.programId, vault, tree, leaf, action);
+      const preKey = `${leaf}:${hex(digest)}`;
+      let res: { errors: string[]; warnings: string[] };
+      try {
+        res = await preflightAction({ program, payer, vault, signer, leaf, action, tokenProgram });
+        // Re-read the history right before freezing: nothing may have been signed meanwhile.
+        const signed = await findSignedMessages(program, vault, signer);
+        const fresh = await fetchState(program, vault);
+        const other = signed.find((m) => fresh && !leafUsed(fresh, tree, m.leaf) && !(m.leaf === leaf && equal(m.digest, digest)));
+        if (other) res.errors.push(`One-time key #${other.leaf} already signed "${describeAction(other.action)}". Finish that first.`);
+      } catch (e) {
+        res = { errors: [`Could not read this vault's history, so it is not safe to sign (${errMsg(e)}).`], warnings: [] };
+      }
+      const same = pre?.key === preKey;
+      setPre({ ...res, key: preKey });
+      if (!same) setConsent(false);
+      if (res.errors.length) {
+        if (res.errors.some((e) => /already signed/.test(e))) loadHistory();
+        return;
+      }
+      if (res.warnings.length && !(same && consent)) return;
+      const p: PendingAction = { v: 2, vault: vaultStr, tree, leaf, action: actionToJson(action), digest: hex(digest), mode, createdAt: Date.now() };
+      savePending(p); // persisted BEFORE anything is signed or sent
+      setFrozen({ leaf, action, mode, source: "local" });
+      setSteps([]);
+      setSendErr(null);
+    } catch (e) {
+      setFormErr(errMsg(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const discard = async () => {
+    if (!frozen || frozen.source !== "local" || wasAttempted(vaultStr, tree, frozen.leaf)) return;
+    try {
+      const signed = await findSignedMessages(program, vault, signer);
+      if (signed.some((m) => m.leaf === frozen.leaf)) {
+        setNote("Cannot discard: this one-time key already published part of a signature.");
+        loadHistory();
+        return;
+      }
+    } catch (e) {
+      setNote(`Cannot discard: the vault's history could not be read (${errMsg(e)}).`);
+      return;
+    }
+    if (!window.confirm("Discard this action? Nothing was sent for it, so you can choose a different one.")) return;
+    clearPending(vaultStr, tree);
+    setFrozen(null);
+    setSteps([]);
+  };
+
+  // ---- send the frozen message ----
+  const signedFor = (f: Frozen): SignedAction => {
+    const digest = actionDigest(program.programId, vault, tree, f.leaf, f.action);
+    return {
+      vault,
+      tree,
+      leaf: f.leaf,
+      pkSeed: signer.seeds.pkSeed,
+      authPath: authPath(signer.pub, f.leaf),
+      signature: sign(signer.seeds, f.leaf, digest),
+      action: f.action,
+    };
+  };
+
+  const finish = async () => {
+    setDone(true);
+    if (frozen) setLastDone(`Done: ${describeAction(frozen.action)} — one-time key #${frozen.leaf} is now used and can never sign again.`);
+    clearPending(vaultStr, tree);
+    onChanged();
+    setSteps([]);
+    setDone(false);
+    await loadHistory();
+  };
+
+  const sendWallet = async (f: Frozen) => {
+    const payer = wallet.publicKey;
+    if (!payer) {
+      setVisible(true);
+      return;
+    }
+    const fresh = await fetchState(program, vault);
+    if (fresh && leafUsed(fresh, tree, f.leaf)) return finish();
+    const s = signedFor(f);
+    const a = f.action;
+    const tokenProgram = a.kind === "withdraw" && !isSol(a.mint) ? await mintTokenProgram(connection, new PublicKey(a.mint)) : undefined;
+    const all = await buildSteps(program, payer, s, { tokenProgram });
+    const todo = await remainingSteps(program, payer, s, all);
+    const txs = packSteps(payer, todo);
+    const list = txs.map((t) => ({ label: t.label, st: "todo" as StepState, sig: undefined as string | undefined }));
+    setSteps(list);
+    for (let i = 0; i < txs.length; i++) {
+      list[i].st = "sending";
+      setSteps([...list]);
+      markAttempted(vaultStr, tree, f.leaf); // before anything can reach the network
+      try {
+        list[i].sig = await sendIxs(connection, payer, wallet.sendTransaction, txs[i].instructions);
+        list[i].st = "done";
+        setSteps([...list]);
+      } catch (e) {
+        list[i].st = "failed";
+        setSteps([...list]);
+        throw e;
+      }
+    }
+    await finish();
+  };
+
+  const sendRelayer = async (f: Frozen) => {
+    const s = signedFor(f);
+    setSteps([{ label: "relayer sends open + write + verify + execute", st: "sending" }]);
+    markAttempted(vaultStr, tree, f.leaf);
+    try {
+      const sigs = await relayAction(s);
+      setSteps(sigs.length ? sigs.map((sig, i) => ({ label: `transaction ${i + 1}`, st: "done", sig })) : [{ label: "already executed", st: "done" }]);
+    } catch (e) {
+      setSteps([{ label: "relayer", st: "failed" }]);
+      throw e;
+    }
+    await finish();
+  };
+
+  const send = async (m: Mode) => {
+    if (!frozen) return;
+    setRunning(true);
+    setSendErr(null);
+    try {
+      if (m === "relayer") await sendRelayer(frozen);
+      else await sendWallet(frozen);
+    } catch (e) {
+      setSendErr(errMsg(e));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const relayerOk = useMemo(
+    () =>
+      !!frozen &&
+      !!relayer &&
+      frozen.action.fee >= BigInt(relayer.minFee) &&
+      equal(frozen.action.feePayee, new PublicKey(relayer.relayer).toBytes()),
+    [frozen, relayer]
+  );
+  useEffect(() => {
+    if (frozen?.mode === "relayer" && !relayer) fetchRelayerInfo().then(setRelayer).catch((e) => setRelayerErr(errMsg(e)));
+  }, [frozen, relayer]);
+
+  // ---- max for SOL withdrawals: everything minus the fee leaves exactly 0 (allowed) ----
+  const maxAmount = () => {
+    const fee = mode === "relayer" && relayer ? BigInt(relayer.minFee) : 0n;
+    if (holding) return fromBaseUnits(holding.amount, holding.decimals).replace(/,/g, "");
+    const lamports = BigInt(assets?.lamports ?? 0) - fee;
+    return lamports > 0n ? fromBaseUnits(lamports, 9).replace(/,/g, "") : "0";
+  };
+
+  // ---------- render ----------
+
+  if (history.kind === "loading")
+    return (
+      <div className="text-[13px] text-mute">
+        reading this vault&apos;s full history<span className="blink">…</span>
+      </div>
+    );
+  if (history.kind === "error")
+    return (
+      <div className="flex flex-col items-start gap-3">
+        <Note kind="bad">
+          Could not read this vault&apos;s transaction history ({history.msg}). Signing is blocked: without it the app cannot prove a
+          one-time key never signed something else.
+        </Note>
+        <button className="btn ghost sm" onClick={loadHistory}>
+          try again
+        </button>
+      </div>
+    );
+  if (history.kind === "exhausted") return <Note kind="bad">{history.msg}</Note>;
+
+  const keysLeft = (1 << signer.pub.height) - countUsed(state, tree);
+
+  return (
+    <div className="flex flex-col gap-4">
+      {note && <Note kind="warn">{note}</Note>}
+      {lastDone && <Note kind="ok">{lastDone}</Note>}
+
+      {frozen ? (
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Label>signed action // one-time key #{frozen.leaf}</Label>
+            <span className="text-[10.5px] uppercase tracking-[0.14em] text-teal">{frozen.source === "chain" ? "from chain" : "frozen in this browser"}</span>
+          </div>
+          <div className="rounded-md border border-teal/40 bg-teal/[0.04] px-4 py-3 text-[13px]">{describeAction(frozen.action)}</div>
+          <Note>
+            A one-time key signs <strong>one</strong> message, ever. Before signing, the app reads the vault&apos;s whole history; if a
+            key ever published part of a signature, only that same action can be completed with it. Re-sending it is harmless.
+          </Note>
+
+          {steps.length > 0 && (
+            <ol className="flex flex-col">
+              {steps.map((s, i) => (
+                <li key={i} className="flex items-center gap-3 border-b border-line py-2 text-[12.5px] last:border-b-0">
+                  <span
+                    className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${
+                      s.st === "done" ? "bg-teal" : s.st === "sending" ? "animate-pulse bg-warn" : s.st === "failed" ? "bg-bad" : "border border-line-2"
+                    }`}
+                  />
+                  <span className={s.st === "failed" ? "text-bad" : s.st === "done" ? "text-mute" : ""}>{s.label}</span>
+                  {s.sig && (
+                    <a className="ml-auto text-[10.5px] text-dim hover:text-teal" href={explorerUrl(s.sig, "tx")} target="_blank" rel="noreferrer">
+                      tx ↗
+                    </a>
+                  )}
+                </li>
+              ))}
+            </ol>
+          )}
+          {sendErr && <Note kind="bad">{sendErr}</Note>}
+          {done ? (
+            <Note kind="ok">Done. One-time key #{frozen.leaf} is used and can never sign again.</Note>
+          ) : (
+            <div className="flex flex-wrap items-center gap-3">
+              {(frozen.mode === "relayer" || relayerOk) && (
+                <button className="btn" disabled={running || !relayerOk} onClick={() => send("relayer")}>
+                  {running ? "sending…" : sendErr ? "retry via relayer" : "send via relayer (gasless)"}
+                </button>
+              )}
+              <button className={`btn ${frozen.mode === "relayer" ? "ghost" : ""}`} disabled={running} onClick={() => send("wallet")}>
+                {!wallet.publicKey ? "connect wallet to send" : running ? "sending…" : sendErr ? "retry with my wallet" : "send with my wallet"}
+              </button>
+              {frozen.source === "local" && !wasAttempted(vaultStr, tree, frozen.leaf) && !running && (
+                <button className="text-[11px] uppercase tracking-[0.14em] text-dim hover:text-bad" onClick={discard}>
+                  [discard — nothing sent yet]
+                </button>
+              )}
+            </div>
+          )}
+          {frozen.mode === "relayer" && relayerErr && <Note kind="warn">Relayer: {relayerErr}</Note>}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Label>
+              new action // next one-time key #{leaf} · {keysLeft}/{1 << signer.pub.height} left
+            </Label>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {kinds.map((k) => (
+              <button
+                key={k.k}
+                onClick={() => setKind(k.k)}
+                className={`rounded border px-3 py-1.5 text-[12px] ${kind === k.k ? "border-teal bg-teal/[0.08] text-teal" : "border-line-2 text-mute hover:text-bone"}`}
+              >
+                {k.label}
+              </button>
+            ))}
+          </div>
+
+          {kind === "withdraw" && (
+            <div className="grid gap-3 sm:grid-cols-2 [&>*]:min-w-0">
+              <label className="flex flex-col gap-1.5">
+                <Label>asset</Label>
+                <select className="field" value={asset} onChange={(e) => (setAsset(e.target.value), setAmount(""))}>
+                  <option value={SOL_MINT.toBase58()}>SOL — {sol(assets?.lamports ?? 0)} in vault</option>
+                  {tokens.map((t) => (
+                    <option key={t.mint.toBase58()} value={t.mint.toBase58()}>
+                      {short(t.mint.toBase58(), 4)} — {fromBaseUnits(t.amount, t.decimals)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <Label>amount</Label>
+                <div className="flex gap-2">
+                  <input className="field flex-1" inputMode="decimal" placeholder="0.0" value={amount} onChange={(e) => setAmount(e.target.value)} />
+                  <button className="btn ghost sm" type="button" onClick={() => setAmount(maxAmount())}>
+                    max
+                  </button>
+                </div>
+              </label>
+              <label className="flex flex-col gap-1.5 sm:col-span-2">
+                <Label>destination wallet {holding ? "(its token account is created if needed)" : ""}</Label>
+                <input className="field" value={dest} onChange={(e) => setDest(e.target.value)} spellCheck={false} placeholder="wallet address" />
+                {state.config.whitelist.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    <span className="text-[11px] text-dim">whitelist:</span>
+                    {state.config.whitelist.map((k) => {
+                      const a = new PublicKey(k).toBase58();
+                      return (
+                        <button key={a} className="rounded border border-line-2 px-2 py-0.5 text-[11px] text-mute hover:text-teal" onClick={() => setDest(a)}>
+                          {short(a, 4)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </label>
+            </div>
+          )}
+
+          {kind === "stake" && (
+            <div className="grid gap-3 sm:grid-cols-2 [&>*]:min-w-0">
+              <label className="flex flex-col gap-1.5">
+                <Label>validator (top by active stake)</Label>
+                <select className="field" value={vote} onChange={(e) => setVote(e.target.value)}>
+                  {!validators && <option>loading…</option>}
+                  {validators?.map((v) => (
+                    <option key={v.vote} value={v.vote}>
+                      {short(v.vote, 5)} — {sol(v.stake, 0)} SOL staked
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <Label>amount (SOL) · slot #{freeSeed < 0 ? "–" : freeSeed}</Label>
+                <input className="field" inputMode="decimal" placeholder="1.0" value={amount} onChange={(e) => setAmount(e.target.value)} />
+              </label>
+            </div>
+          )}
+
+          {(kind === "unstake" || kind === "collectStake") && (
+            <label className="flex flex-col gap-1.5">
+              <Label>stake slot</Label>
+              {usedStakes.length === 0 ? (
+                <div className="text-[12.5px] text-dim">This vault has no stake accounts.</div>
+              ) : (
+                <select className="field" value={seed ?? ""} onChange={(e) => setSeed(e.target.value === "" ? null : Number(e.target.value))}>
+                  <option value="">pick a slot</option>
+                  {usedStakes.map((s) => (
+                    <option key={s.seed} value={s.seed}>
+                      #{s.seed} — {sol(s.lamports)} SOL ({short(s.address.toBase58(), 4)})
+                    </option>
+                  ))}
+                </select>
+              )}
+            </label>
+          )}
+
+          {kind === "ping" && <p className="text-[12.5px] text-mute">Proves the owner is active: resets the recovery inactivity clock. Uses one key.</p>}
+          {kind === "cancel" && (
+            <p className="text-[12.5px] text-mute">
+              {state.pending ? "Drops the pending withdrawal before it can execute." : "Nothing is pending right now."}
+            </p>
+          )}
+
+          <div className="flex flex-col gap-2">
+            <Label>who pays the network fees</Label>
+            <div className="grid gap-2 sm:grid-cols-2 [&>*]:min-w-0">
+              {(
+                [
+                  ["wallet", "My wallet pays", "fee 0 · your wallet signs the transactions"],
+                  ["relayer", "Gasless via relayer", relayer ? `vault pays ${sol(BigInt(relayer.minFee), 6)} SOL to the relayer` : "no wallet needed"],
+                ] as const
+              ).map(([m, t, d]) => (
+                <button
+                  key={m}
+                  onClick={() => setMode(m)}
+                  className={`rounded-md border px-3 py-2.5 text-left ${mode === m ? "border-teal bg-teal/[0.06]" : "border-line-2 hover:border-line-2/80"}`}
+                >
+                  <div className={`text-[12.5px] ${mode === m ? "text-teal" : ""}`}>{t}</div>
+                  <div className="mt-0.5 text-[11px] text-dim">{d}</div>
+                </button>
+              ))}
+            </div>
+            {mode === "relayer" && relayerErr && <Note kind="warn">Relayer unavailable: {relayerErr}</Note>}
+          </div>
+
+          {formErr && <div className="text-[12px] text-bad">✕ {formErr}</div>}
+          {pre && pre.errors.length > 0 && (
+            <Note kind="bad">
+              Not signed:
+              <ul className="mt-1 list-inside list-disc">
+                {pre.errors.map((e) => (
+                  <li key={e}>{e}</li>
+                ))}
+              </ul>
+            </Note>
+          )}
+          {pre && pre.errors.length === 0 && pre.warnings.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <Note kind="warn">
+                Check before signing:
+                <ul className="mt-1 list-inside list-disc">
+                  {pre.warnings.map((w) => (
+                    <li key={w}>{w}</li>
+                  ))}
+                </ul>
+              </Note>
+              <label className="flex cursor-pointer items-start gap-2 text-[12px] text-mute">
+                <input type="checkbox" className="mt-1 accent-[#2ee6d6]" checked={consent} onChange={(e) => setConsent(e.target.checked)} />I understand
+                and want to sign this exact action.
+              </label>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-3">
+            {mode === "wallet" && !wallet.publicKey ? (
+              <button className="btn" onClick={() => setVisible(true)}>
+                connect wallet
+              </button>
+            ) : (
+              <button
+                className="btn"
+                onClick={prepare}
+                disabled={!!busy || (mode === "relayer" && !relayer) || (!!pre?.warnings.length && !pre.errors.length && !consent)}
+              >
+                {busy ? "checking…" : "check & sign →"}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function countUsed(state: VaultStateView, tree: number): number {
+  const map = tree === TREE_PRIMARY ? state.usedPrimary : state.usedRecovery;
+  let n = 0;
+  for (const b of map) for (let i = 0; i < 8; i++) if (b & (1 << i)) n++;
+  return n;
+}

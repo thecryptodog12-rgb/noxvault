@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { JetBrains_Mono } from "next/font/google";
 import Providers from "@/components/Providers";
+import PwaRegister from "@/components/PwaRegister";
 import Shell from "@/components/Shell";
 import "./globals.css";
 
@@ -18,6 +19,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className={mono.variable}>
       <body>
+        <PwaRegister />
         <Providers>
           <Shell>{children}</Shell>
         </Providers>

@@ -2,7 +2,14 @@
 import { useMemo, useState } from "react";
 import { sha256 } from "@noble/hashes/sha256";
 import { randomBytes } from "@noble/hashes/utils";
-import { LEN, LEN1, deriveKey, digits, recoverRoot, sign, equal, type OneTimeKey } from "@nox/sdk/wots";
+import { LEN, LEN1, digits, recoverRoot, sign, equal, treeSeeds, leafPublic, type TreeSeeds } from "@nox/sdk/wots";
+
+// The lab uses one leaf (one-time key #0) of a tree. With no auth path, the "root" is the leaf hash.
+interface LabKey {
+  seeds: TreeSeeds;
+  pkSeed: Uint8Array;
+  root: Uint8Array;
+}
 import { Label, Note, PageHead, Panel } from "@/components/ui";
 import { hex } from "@/lib/format";
 import ChainGrid from "./ChainGrid";
@@ -19,7 +26,7 @@ interface Signed {
 }
 
 export default function KeyLab() {
-  const [key, setKey] = useState<OneTimeKey | null>(null);
+  const [key, setKey] = useState<LabKey | null>(null);
   const [genMs, setGenMs] = useState(0);
   const [msg, setMsg] = useState("pay 1 SOL to alice");
   const [first, setFirst] = useState<Signed | null>(null);
@@ -30,7 +37,8 @@ export default function KeyLab() {
 
   const generate = () => {
     const t = performance.now();
-    const k = deriveKey(randomBytes(32), 0);
+    const seeds = treeSeeds(randomBytes(32), 0);
+    const k: LabKey = { seeds, pkSeed: seeds.pkSeed, root: leafPublic(seeds, 0) };
     setGenMs(performance.now() - t);
     setKey(k);
     setFirst(null);
@@ -43,7 +51,7 @@ export default function KeyLab() {
     if (!key) return;
     const d = digestOf(msg);
     const t = performance.now();
-    const sig = sign(key, d);
+    const sig = sign(key.seeds, 0, d);
     const s: Signed = { msg, digest: d, digits: digits(d), sig, ms: performance.now() - t };
     if (!first) {
       setFirst(s);
@@ -63,7 +71,7 @@ export default function KeyLab() {
     if (!key || !first) return null;
     const sig = sigTamper ? first.sig.map((c, j) => (j === 5 ? Uint8Array.from(c, (x, i) => (i === 0 ? x ^ 1 : x)) : c)) : first.sig;
     const t = performance.now();
-    const root = recoverRoot(key.pkSeed, digestOf(check), sig);
+    const root = recoverRoot(key.pkSeed, 0, digestOf(check), sig, []);
     return { ok: equal(root, key.root), root, ms: performance.now() - t };
   }, [key, first, check, sigTamper]);
 
@@ -95,18 +103,18 @@ export default function KeyLab() {
                 <span className="truncate text-mute">{hex(key.pkSeed)}</span>
               </div>
               <div className="flex gap-3">
-                <span className="w-16 shrink-0 text-dim">root</span>
+                <span className="w-16 shrink-0 text-dim">leaf #0</span>
                 <span className="truncate text-teal">{hex(key.root)}</span>
               </div>
               <div className="flex gap-3">
                 <span className="w-16 shrink-0 text-dim">work</span>
-                <span className="text-mute">34 chains × 255 steps = 8,670 SHA-256 calls, then 1 more for the root</span>
+                <span className="text-mute">34 chains × 255 steps = 8,670 SHA-256 calls for this one key; a vault has 256 of them in a Merkle tree</span>
               </div>
             </div>
           ) : (
             <p className="text-[12.5px] text-mute">
-              A key is 34 secret starting values. Each is hashed 255 times; the 34 ends hashed together give the root, and the root
-              gives the vault address.
+              A one-time key is 34 secret starting values. Each is hashed 255 times; the 34 ends hashed together give the leaf. A
+              vault&apos;s 256 leaves form a Merkle tree whose root (plus the vault settings) gives the vault address.
             </p>
           )}
         </div>
@@ -217,7 +225,7 @@ export default function KeyLab() {
                   <div className={`border px-4 py-3 ${verifyRes.ok ? "border-teal text-teal" : "border-bad/70 text-bad"}`}>
                     <div className="font-display text-[22px]">{verifyRes.ok ? "VALID" : "REJECTED"}</div>
                     <div className="mt-1 text-[11px] text-dim">
-                      rebuilt root {hex(verifyRes.root).slice(0, 24)}… {verifyRes.ok ? "=" : "≠"} key root ·{" "}
+                      rebuilt root {hex(verifyRes.root).slice(0, 24)}… {verifyRes.ok ? "=" : "≠"} leaf #0 ·{" "}
                       {verifyRes.ms.toFixed(2)} ms
                     </div>
                   </div>

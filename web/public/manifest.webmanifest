@@ -1,0 +1,19 @@
+{
+  "name": "Noxvault",
+  "short_name": "Noxvault",
+  "description": "Hash-based vaults for Solana. Sign offline, one-time keys, no ed25519 key can move what is inside.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#03070a",
+  "theme_color": "#2ee6d6",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Sign offline", "url": "/offline", "icons": [{ "src": "/icon.svg", "sizes": "any" }] },
+    { "name": "Submit a signed action", "url": "/submit", "icons": [{ "src": "/icon.svg", "sizes": "any" }] }
+  ]
+}

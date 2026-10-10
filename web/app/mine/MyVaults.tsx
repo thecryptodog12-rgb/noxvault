@@ -1,62 +1,66 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { PublicKey } from "@solana/web3.js";
-import { scanVaults, type VaultState } from "@nox/sdk/client";
-import { Copy, Empty, Label, Note, PageHead, Panel, Status } from "@/components/ui";
+import { TREE_PRIMARY, fetchState, findVaultsFor, withRetry, type Signer, type VaultStateView } from "@nox/sdk/client";
+import { equal } from "@nox/sdk/wots";
+import { Empty, Label, Note, PageHead, Panel } from "@/components/ui";
 import SecretInput from "@/components/SecretInput";
+import TreeProgress from "@/components/vault/TreeProgress";
+import VaultView from "@/components/vault/VaultView";
 import { useNox } from "@/lib/hooks";
-import { errMsg, fromBaseUnits, short, sol } from "@/lib/format";
-import { explorerUrl, NETWORK } from "@/lib/config";
+import { getSigner } from "@/lib/trees";
+import { errMsg } from "@/lib/format";
 import { forgetWords } from "@/lib/secret";
-import { loadPending, sendIxs, sweepIx, sweepTokenIx, vaultAssets, type VaultAssets } from "@/lib/unlock";
-import UnlockFlow from "./UnlockFlow";
+import { NETWORK } from "@/lib/config";
 
-export interface VaultRow extends VaultState {
-  assets: VaultAssets | null;
-  pending: boolean;
+interface Found {
+  n: number;
+  signer: Signer;
+  state: VaultStateView;
 }
 
+const MAX_NUMBERS = 16;
+
 export default function MyVaults() {
-  const { connection, program, deployed } = useNox();
+  const { program, deployed } = useNox();
   const [master, setMaster] = useState<Uint8Array | null>(null);
-  const [rows, setRows] = useState<VaultRow[] | null>(null);
-  const [nextFresh, setNextFresh] = useState(0);
-  const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [selected, setSelected] = useState<number | null>(null);
+  const [found, setFound] = useState<Found[]>([]);
+  const [progress, setProgress] = useState<{ n: number; done: number; total: number } | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanErr, setScanErr] = useState<string | null>(null);
+  const [scanned, setScanned] = useState(false);
 
   const scan = useCallback(
     async (m: Uint8Array) => {
-      setLoading(true);
-      setErr(null);
+      setScanning(true);
+      setScanErr(null);
+      setScanned(false);
+      setFound([]);
+      const out: Found[] = [];
       try {
-        const r = await scanVaults(program, m);
-        const withAssets = await Promise.all(
-          r.vaults.map(async (v) => ({
-            ...v,
-            assets: await vaultAssets(connection, v.vault).catch(() => null),
-            pending: !!loadPending(v.vault.toBase58()),
-          }))
-        );
-        setRows(withAssets);
-        setNextFresh(r.nextFresh);
+        for (let n = 0; n < MAX_NUMBERS; n++) {
+          const signer = await getSigner(m, n, TREE_PRIMARY, (done, total) => setProgress({ n, done, total }));
+          const states = await withRetry(() => findVaultsFor(program, signer));
+          if (!states.length) break;
+          for (const state of states) out.push({ n, signer, state });
+          setFound([...out]);
+        }
+        setScanned(true);
       } catch (e) {
-        setErr(errMsg(e));
-        setRows([]);
+        setScanErr(errMsg(e));
       } finally {
-        setLoading(false);
+        setProgress(null);
+        setScanning(false);
       }
     },
-    [program, connection]
+    [program]
   );
 
-  useEffect(() => {
-    if (master) scan(master);
-  }, [master, scan]);
-
-  const sel = rows?.find((r) => r.index === selected) ?? null;
-  const totalSol = rows?.reduce((s, r) => s + (r.spent ? 0 : r.lamports), 0) ?? 0;
+  const start = (m: Uint8Array) => {
+    setMaster(m);
+    scan(m);
+  };
 
   return (
     <div>
@@ -67,64 +71,48 @@ export default function MyVaults() {
             My <span className="inv">vaults</span>
           </>
         }
-        sub="Your words find your vaults by themselves: the browser derives vault #0, #1, #2… and asks the chain which ones hold funds or were already used."
+        sub="Your phrase finds your vaults: the browser builds the one-time key tree for vault number 0, 1, 2… and asks the chain which vaults use it."
       />
 
       {!master ? (
-        <div className="grid [&>*]:min-w-0 gap-6 xl:grid-cols-[1.25fr_1fr]">
+        <div className="grid gap-6 xl:grid-cols-[1.25fr_1fr] [&>*]:min-w-0">
           <Panel title="enter your 24 words">
             <div className="p-4 sm:p-5">
-              <SecretInput cta="scan my vaults" onSecret={(m) => setMaster(m)} />
+              <SecretInput cta="find my vaults" onSecret={(m) => start(m)} />
             </div>
           </Panel>
           <div className="flex flex-col gap-4">
-            <Panel title="how the scan works" className="text-[12.5px]">
+            <Panel title="how it works" className="text-[12.5px]">
               <p className="p-4 text-mute">
-                For each index the browser builds the 34 chains (8,670 SHA-256 calls), hashes the ends into a root and derives the
-                vault address. It stops after three empty, never-used vaults in a row. Only the public addresses are queried on
-                the RPC. Before any unlock, the app also reads the vault&apos;s whole history; if this key ever published part of a
-                signature, only that same withdrawal can be completed.
+                A vault has one fixed address and 256 one-time keys arranged in a Merkle tree. Building that tree takes a few
+                seconds the first time; only its public part is cached on this device. Before any action, the app reads the
+                vault&apos;s whole history; if a key ever published part of a signature, only that same action can be completed with
+                it.
               </p>
             </Panel>
             <Note>
-              No words yet? <Link href="/create" className="underline">Create a vault</Link> first.
+              No vault yet? <Link href="/create" className="underline">Create one</Link>. Holding someone&apos;s recovery phrase? Use{" "}
+              <Link href="/recovery" className="underline">recovery</Link>.
             </Note>
           </div>
         </div>
       ) : (
         <div className="flex flex-col gap-6">
-          <div className="grid [&>*]:min-w-0 grid-cols-2 gap-3 md:grid-cols-4">
-            <Tile k="vaults found" v={rows ? String(rows.length) : "…"} />
-            <Tile k="sealed sol" v={rows ? sol(totalSol) : "…"} />
-            <Tile k="spent keys" v={rows ? String(rows.filter((r) => r.spent).length) : "…"} />
-            <Tile k="next fresh" v={`#${nextFresh}`} />
-          </div>
-
-          {deployed === false && (
-            <Note kind="warn">
-              The Noxvault program is not deployed on {NETWORK} yet, so nothing can be unlocked. Balances below are still read from
-              the chain.
-            </Note>
-          )}
+          {deployed === false && <Note kind="warn">The Noxvault program is not deployed on {NETWORK}; nothing can be found or signed.</Note>}
 
           <Panel
-            title={`vaults // index 0 → ${Math.max(nextFresh - 1, 0)}`}
+            title="search"
             right={
-              <div className="flex items-center gap-4">
-                <button
-                  className="text-[10px] uppercase tracking-[0.18em] text-dim hover:text-teal disabled:opacity-40"
-                  disabled={loading}
-                  onClick={() => master && scan(master)}
-                >
-                  [{loading ? "scanning" : "rescan"}]
+              <div className="flex gap-4">
+                <button className="text-[10.5px] uppercase tracking-[0.14em] text-dim hover:text-teal disabled:opacity-40" disabled={scanning} onClick={() => scan(master)}>
+                  [{scanning ? "scanning" : "rescan"}]
                 </button>
                 <button
-                  className="text-[10px] uppercase tracking-[0.18em] text-dim hover:text-bad"
+                  className="text-[10.5px] uppercase tracking-[0.14em] text-dim hover:text-bad"
                   onClick={() => {
                     forgetWords();
                     setMaster(null);
-                    setRows(null);
-                    setSelected(null);
+                    setFound([]);
                   }}
                 >
                   [lock & forget]
@@ -132,165 +120,87 @@ export default function MyVaults() {
               </div>
             }
           >
-            {err && (
-              <div className="p-4">
-                <Note kind="bad">Could not read the chain: {err}</Note>
-              </div>
-            )}
-            {loading && !rows ? (
-              <Empty title="scanning…">Deriving keys and checking the chain.</Empty>
-            ) : rows && rows.length === 0 ? (
-              <Empty title="no vaults yet">
-                These words have no funded or used vaults on {NETWORK}. Your next fresh vault is #{nextFresh}.{" "}
-                <Link href="/create" className="underline">
-                  Fund it
-                </Link>
-                .
-              </Empty>
-            ) : (
-              <ul className="divide-y divide-dashed divide-line">
-                {rows?.map((r) => (
-                  <VaultItem
-                    key={r.index}
-                    row={r}
-                    active={selected === r.index}
-                    onUnlock={() => setSelected(selected === r.index ? null : r.index)}
-                    onChanged={() => master && scan(master)}
-                  />
-                ))}
-              </ul>
-            )}
+            <div className="flex flex-col gap-4 p-4 sm:p-5">
+              {progress && <TreeProgress label={`vault number ${progress.n}`} done={progress.done} total={progress.total} />}
+              {scanning && !progress && (
+                <div className="text-[12.5px] text-mute">
+                  asking the chain<span className="blink">…</span>
+                </div>
+              )}
+              {scanErr && (
+                <div className="flex flex-col gap-3">
+                  <Note kind="warn">
+                    Could not search the chain ({scanErr}). Searching needs an RPC that allows getProgramAccounts. You can still open a
+                    vault by its address.
+                  </Note>
+                </div>
+              )}
+              {scanned && found.length === 0 && (
+                <Empty title="no vaults found">
+                  These words have no initialized vaults on {NETWORK}. <Link href="/create" className="underline">Create one</Link>, or open
+                  one by its address below.
+                </Empty>
+              )}
+              {(scanErr || scanned) && <OpenByAddress master={master} onFound={(f) => setFound((x) => (x.some((y) => y.state.vault.equals(f.state.vault)) ? x : [...x, f]))} />}
+            </div>
           </Panel>
 
-          {sel && master && (
-            <UnlockFlow
-              key={sel.index}
-              master={master}
-              row={sel}
-              nextFresh={nextFresh}
-              onDone={() => scan(master)}
-              onClose={() => setSelected(null)}
-            />
-          )}
+          {found.map((f) => (
+            <VaultView key={f.state.vault.toBase58()} vault={f.state.vault} initialState={f.state} signer={f.signer} title={`VAULT #${f.n}`} />
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-function Tile({ k, v }: { k: string; v: string }) {
-  return (
-    <Panel className="p-4">
-      <Label>{k}</Label>
-      <div className="font-display mt-2 text-[22px]">{v}</div>
-    </Panel>
-  );
-}
+function OpenByAddress({ master, onFound }: { master: Uint8Array; onFound: (f: Found) => void }) {
+  const { program } = useNox();
+  const [addr, setAddr] = useState("");
+  const [n, setN] = useState("0");
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
-function VaultItem({
-  row,
-  active,
-  onUnlock,
-  onChanged,
-}: {
-  row: VaultRow;
-  active: boolean;
-  onUnlock: () => void;
-  onChanged: () => void;
-}) {
-  const { connection, program, wallet } = useNox();
-  const [busy, setBusy] = useState<string | null>(null);
-  const [msg, setMsg] = useState<{ kind: "ok" | "bad"; text: string } | null>(null);
-  const addr = row.vault.toBase58();
-  const tokens = row.assets?.tokens.filter((t) => t.amount > 0n) ?? [];
-  const hasLeft = row.spent && (row.lamports > 0 || tokens.length > 0);
-
-  const sweep = async (mint?: PublicKey, tokenProgram?: PublicKey) => {
-    if (!row.successor) return;
-    const payer = wallet.publicKey;
-    if (!payer) {
-      setMsg({ kind: "bad", text: "Connect a wallet to pay the fee" });
-      return;
-    }
-    setBusy(mint?.toBase58() ?? "sol");
-    setMsg(null);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setErr(null);
+    setBusy(true);
     try {
-      const ix = mint
-        ? await sweepTokenIx(program, payer, row.vault, row.successor, mint, tokenProgram!)
-        : await sweepIx(program, row.vault, row.successor);
-      await sendIxs(connection, payer, wallet.sendTransaction, [ix]);
-      setMsg({ kind: "ok", text: "Swept to the successor vault." });
-      onChanged();
+      let vault: PublicKey;
+      try {
+        vault = new PublicKey(addr.trim());
+      } catch {
+        throw new Error("Not a valid address");
+      }
+      const num = Number(n);
+      if (!Number.isInteger(num) || num < 0 || num > 10000) throw new Error("Vault number must be 0 or more");
+      const state = await withRetry(() => fetchState(program, vault));
+      if (!state) throw new Error("No initialized Noxvault at this address");
+      const signer = await getSigner(master, num, TREE_PRIMARY, (done, total) => setProgress({ done, total }));
+      if (!equal(state.config.primaryRoot, signer.pub.root)) throw new Error(`These words (vault number ${num}) are not this vault's owner phrase`);
+      onFound({ n: num, signer, state });
+      setAddr("");
     } catch (e) {
-      setMsg({ kind: "bad", text: errMsg(e) });
+      setErr(errMsg(e));
     } finally {
-      setBusy(null);
+      setBusy(false);
+      setProgress(null);
     }
   };
 
   return (
-    <li className={`px-4 py-4 ${active ? "bg-teal/[0.04]" : ""}`}>
-      <div className="flex flex-col gap-3 md:flex-row md:items-center">
-        <div className="flex min-w-0 flex-1 items-center gap-4">
-          <div className="font-display w-12 shrink-0 text-[20px] text-mute">#{row.index}</div>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <Status kind={row.pending ? "pending" : row.spent ? "spent" : "sealed"} />
-              <a className="truncate text-[13px] hover:text-teal" href={explorerUrl(addr)} target="_blank" rel="noreferrer">
-                {short(addr, 6)}
-              </a>
-              <Copy value={addr} />
-            </div>
-            {row.spent && row.successor && (
-              <div className="mt-1 text-[11.5px] text-dim">
-                spent → successor{" "}
-                <a className="text-mute hover:text-teal" href={explorerUrl(row.successor.toBase58())} target="_blank" rel="noreferrer">
-                  {short(row.successor.toBase58(), 6)}
-                </a>
-              </div>
-            )}
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-[12.5px] md:justify-end">
-          <span>
-            <span className="font-display text-[16px]">{sol(row.lamports)}</span> <span className="text-dim">SOL</span>
-          </span>
-          {tokens.map((t) => (
-            <span key={t.mint.toBase58()} className="text-mute">
-              {fromBaseUnits(t.amount, t.decimals)} <span className="text-dim">{short(t.mint.toBase58(), 3)}</span>
-            </span>
-          ))}
-          {!row.assets && <span className="text-[11px] text-dim">token balances unavailable</span>}
-        </div>
-        <div className="flex flex-wrap gap-2 md:w-[150px] md:justify-end">
-          {!row.spent && (
-            <button className={`btn sm ${active ? "" : "ghost"}`} onClick={onUnlock}>
-              {active ? "close" : row.pending ? "resume" : "unlock"}
-            </button>
-          )}
-        </div>
+    <form onSubmit={submit} className="flex flex-col gap-2 border-t border-line pt-4">
+      <Label>open by vault address</Label>
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <input className="field flex-1" placeholder="vault address" value={addr} onChange={(e) => setAddr(e.target.value)} spellCheck={false} />
+        <input className="field sm:w-28" placeholder="number" inputMode="numeric" value={n} onChange={(e) => setN(e.target.value)} aria-label="Vault number" />
+        <button className="btn" type="submit" disabled={busy || !addr}>
+          {busy ? "checking…" : "open"}
+        </button>
       </div>
-      {hasLeft && (
-        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-dashed border-line pt-3 text-[12px] md:ml-16">
-          <span className="text-dim">left in a spent vault — forward it:</span>
-          {row.lamports > 0 && (
-            <button className="btn ghost sm" onClick={() => sweep()} disabled={!!busy}>
-              {busy === "sol" ? "…" : `sweep ${sol(row.lamports)} SOL`}
-            </button>
-          )}
-          {tokens.map((t) => (
-            <button key={t.mint.toBase58()} className="btn ghost sm" onClick={() => sweep(t.mint, t.program)} disabled={!!busy}>
-              {busy === t.mint.toBase58() ? "…" : `sweep_token ${short(t.mint.toBase58(), 3)}`}
-            </button>
-          ))}
-        </div>
-      )}
-      {msg && (
-        <div className="mt-2 md:ml-16">
-          <Note kind={msg.kind}>{msg.text}</Note>
-        </div>
-      )}
-    </li>
+      {progress && <TreeProgress label={`vault number ${n}`} done={progress.done} total={progress.total} />}
+      {err && <div className="text-[12px] text-bad">✕ {err}</div>}
+    </form>
   );
 }
-

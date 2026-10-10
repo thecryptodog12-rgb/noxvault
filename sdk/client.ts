@@ -42,6 +42,7 @@ import {
   encodeAction,
   equal,
   messageDigest,
+  seedIndex,
   sign,
   treeSeeds,
   verifyCost,
@@ -102,7 +103,7 @@ export function makeSigner(
   tree: Signer["tree"],
   onLeaf?: (done: number, total: number) => void
 ): Signer {
-  const seeds = treeSeeds(master, (vaultNumber + (tree === TREE_RECOVERY ? 0x8000_0000 : 0)) >>> 0);
+  const seeds = treeSeeds(master, seedIndex(vaultNumber, tree));
   return { tree, seeds, pub: buildTree(seeds, tree === TREE_PRIMARY ? PRIMARY_HEIGHT : RECOVERY_HEIGHT, onLeaf) };
 }
 
