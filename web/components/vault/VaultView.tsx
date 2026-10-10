@@ -1,31 +1,38 @@
 "use client";
-// One v2 vault: balances, config, recovery clock, pending withdrawal, and the action form.
+// One v3 vault: balances, rules, signers, recovery / testament clocks, pending, approvals,
+// schedules, budgets, migration, invoice addresses and the action form.
 import { useCallback, useEffect, useState } from "react";
 import { PublicKey } from "@solana/web3.js";
-import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import {
-  TREE_PRIMARY,
+  RECOVERY_TREE,
   executePendingIx,
   fetchState,
+  keysLeft,
   mintTokenProgram,
+  vaultApprovals,
+  vaultBudgets,
+  vaultSchedules,
   vaultStakes,
   withRetry,
+  type ApprovalView,
+  type BudgetView,
+  type ScheduleView,
   type Signer,
   type VaultStateView,
 } from "@nox/sdk/client";
+import type { Action } from "@nox/sdk/wots";
 import { Copy, Label, Note, Panel } from "@/components/ui";
 import ActionPanel, { type StakeSlot } from "./ActionPanel";
+import TokenName from "./TokenName";
+import { Approvals, Budgets, Inboxes, Migration, RunMsg, Schedules, Section, Testament } from "./sections";
 import { useNox } from "@/lib/hooks";
+import { useRunner } from "@/lib/run";
 import { errMsg, fromBaseUnits, short, sol } from "@/lib/format";
 import { explorerUrl } from "@/lib/config";
-import { isSol, sendIxs, vaultAssets, type VaultAssets } from "@/lib/unlock";
+import { isSol, vaultAssets, type VaultAssets } from "@/lib/unlock";
 import { dateTime, duration, useNow } from "@/lib/time";
 
-export function usedCount(map: Uint8Array): number {
-  let n = 0;
-  for (const b of map) for (let i = 0; i < 8; i++) if (b & (1 << i)) n++;
-  return n;
-}
+const slotName = (t: number) => (t === RECOVERY_TREE ? "recovery" : `signer ${t + 1}`);
 
 export default function VaultView({
   vault,
@@ -38,16 +45,17 @@ export default function VaultView({
   signer: Signer;
   title?: string;
 }) {
-  const { connection, program, wallet } = useNox();
-  const { setVisible } = useWalletModal();
+  const { connection, program } = useNox();
   const now = useNow();
   const [state, setState] = useState(initialState);
   const [assets, setAssets] = useState<VaultAssets | null>(null);
   const [stakes, setStakes] = useState<(StakeSlot | null)[]>([]);
+  const [approvals, setApprovals] = useState<ApprovalView[]>([]);
+  const [schedules, setSchedules] = useState<ScheduleView[]>([]);
+  const [budgets, setBudgets] = useState<BudgetView[]>([]);
   const [readErr, setReadErr] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
-  const [execMsg, setExecMsg] = useState<{ kind: "ok" | "bad"; text: string } | null>(null);
-  const [execBusy, setExecBusy] = useState(false);
+  const [preset, setPreset] = useState<Action | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -56,6 +64,16 @@ export default function VaultView({
       setAssets(a);
       setStakes(st);
       setReadErr(null);
+      // these use getProgramAccounts; a public RPC may refuse them
+      const [ap, sc, bu] = await Promise.all([
+        vaultApprovals(program, vault).catch(() => null),
+        vaultSchedules(program, vault).catch(() => null),
+        vaultBudgets(program, vault).catch(() => null),
+      ]);
+      if (ap) setApprovals(ap);
+      if (sc) setSchedules(sc);
+      if (bu) setBudgets(bu);
+      if (!ap || !sc || !bu) setReadErr("Approvals, schedules or budgets could not be listed (the RPC may block getProgramAccounts).");
     } catch (e) {
       setReadErr(errMsg(e));
     }
@@ -66,36 +84,15 @@ export default function VaultView({
   }, [refresh]);
 
   const c = state.config;
-  const isRecovery = signer.tree !== TREE_PRIMARY;
-  const hasRecovery = c.recoveryHeight > 0;
-  const opensAt = state.lastActive + Number(c.recoveryDelay);
-  const recoveryOpen = hasRecovery && now >= opensAt;
-  const primaryUsed = usedCount(state.usedPrimary);
+  const mySlot = signer.tree;
+  const signerSlots = [0, 1, 2].filter((t) => c.trees[t].height > 0);
+  const hasRecovery = c.trees[RECOVERY_TREE].height > 0;
+  const recoveryAt = state.lastActive + Number(c.recoveryDelay);
+  const left = keysLeft(state, mySlot);
+  const total = 1 << c.trees[mySlot].height;
   const stakeTotal = stakes.reduce((s, x) => s + (x?.lamports ?? 0), 0);
-  const p = state.pending;
-
-  const execute = async () => {
-    if (!p) return;
-    if (!wallet.publicKey) {
-      setVisible(true);
-      return;
-    }
-    setExecBusy(true);
-    setExecMsg(null);
-    try {
-      const tokenProgram = isSol(p.mint) ? undefined : await mintTokenProgram(connection, p.mint);
-      const ix = await executePendingIx(program, wallet.publicKey, vault, state, tokenProgram);
-      await sendIxs(connection, wallet.publicKey, wallet.sendTransaction, [ix]);
-      setExecMsg({ kind: "ok", text: "Pending withdrawal executed." });
-      refresh();
-    } catch (e) {
-      setExecMsg({ kind: "bad", text: errMsg(e) });
-    } finally {
-      setExecBusy(false);
-    }
-  };
-
   const tokenList = assets?.tokens.filter((t) => t.amount > 0n) ?? [];
+  const windowSpent = now >= state.windowStart + 86400 ? 0n : state.windowSpent;
 
   return (
     <Panel lit={open}>
@@ -106,6 +103,7 @@ export default function VaultView({
             {short(vault.toBase58(), 8)}
           </a>
           <Copy value={vault.toBase58()} />
+          <span className="rounded-full border border-teal/50 px-2 py-0.5 text-[10.5px] uppercase tracking-[0.12em] text-teal">you: {slotName(mySlot)}</span>
         </div>
         <button className="text-[10.5px] uppercase tracking-[0.14em] text-dim hover:text-teal" onClick={refresh}>
           [refresh]
@@ -116,18 +114,39 @@ export default function VaultView({
         <Tile k="sol" v={assets ? sol(assets.lamports) : "…"} />
         <Tile k="tokens" v={assets ? String(tokenList.length) : "…"} />
         <Tile k="staked" v={stakes.length ? sol(stakeTotal) : "…"} />
-        <Tile k={isRecovery ? "recovery keys used" : "keys used"} v={isRecovery ? `${usedCount(state.usedRecovery)}/16` : `${primaryUsed}/256`} />
+        <Tile k={`your keys left`} v={`${left}/${total}`} warn={left < (mySlot === RECOVERY_TREE ? 4 : 20)} />
       </div>
 
       <div className="grid gap-4 p-4 sm:p-5 lg:grid-cols-2 [&>*]:min-w-0">
         <div className="flex flex-col gap-3 text-[12.5px]">
+          <div>
+            <Label>signers</Label>
+            <div className="mt-1.5 text-mute">
+              {signerSlots.map((t) => (t === mySlot ? `${slotName(t)} (you)` : slotName(t))).join(" · ")} — {c.threshold} of {signerSlots.length} must approve
+            </div>
+          </div>
+          <div>
+            <Label>destinations</Label>
+            <div className="mt-1.5 text-mute">
+              {c.whitelist.length ? `whitelist: ${c.whitelist.map((k) => short(new PublicKey(k).toBase58(), 4)).join(", ")}` : "no whitelist"}
+              <span className="block text-[11.5px] text-dim">
+                {c.whitelist.length || c.instantLimit > 0n
+                  ? `others ${c.slowDelay === 0n ? "refused" : `wait ${duration(Number(c.slowDelay))}, cancellable`}${
+                      c.instantLimit > 0n ? ` · up to ${sol(c.instantLimit)} SOL per 24 h instant (${sol(windowSpent)} used)` : ""
+                    }`
+                  : "every destination is immediate"}
+              </span>
+            </div>
+          </div>
           {tokenList.length > 0 && (
             <div>
-              <Label>token balances</Label>
+              <Label>tokens</Label>
               <ul className="mt-1.5 flex flex-col gap-1">
                 {tokenList.map((t) => (
                   <li key={t.mint.toBase58()} className="flex justify-between gap-3">
-                    <span className="text-mute">{short(t.mint.toBase58(), 5)}</span>
+                    <span className="text-mute">
+                      <TokenName mint={t.mint} />
+                    </span>
                     <span>{fromBaseUnits(t.amount, t.decimals)}</span>
                   </li>
                 ))}
@@ -149,97 +168,118 @@ export default function VaultView({
               </ul>
             </div>
           )}
-          <div>
-            <Label>whitelist</Label>
-            <div className="mt-1.5 text-mute">
-              {c.whitelist.length === 0
-                ? "none: any destination is immediate"
-                : c.whitelist.map((k) => short(new PublicKey(k).toBase58(), 4)).join(" · ")}
-            </div>
-            {c.whitelist.length > 0 && (
-              <div className="mt-1 text-[11.5px] text-dim">
-                Other addresses: {c.slowDelay === 0n ? "refused (whitelist only)" : `wait ${duration(Number(c.slowDelay))}, cancellable`}
-              </div>
-            )}
-          </div>
         </div>
-
         <div className="flex flex-col gap-3 text-[12.5px]">
           <div>
             <Label>recovery</Label>
             {hasRecovery ? (
-              <div className="mt-1.5 flex flex-col gap-1 text-mute">
-                <span>
-                  Owner last active <span className="text-bone">{dateTime(state.lastActive)}</span>
-                </span>
-                <span>
-                  Recovery can cancel any time; full control{" "}
-                  {recoveryOpen ? (
-                    <span className="text-warn">is open now</span>
-                  ) : (
-                    <>
-                      opens in <span className="text-bone">{duration(opensAt - now)}</span> ({dateTime(opensAt)})
-                    </>
-                  )}
-                  . A ping resets this.
-                </span>
+              <div className="mt-1.5 text-mute">
+                Owner last active <span className="text-bone">{dateTime(state.lastActive)}</span>. Recovery can always cancel; full control{" "}
+                {now >= recoveryAt ? <span className="text-warn">is open now</span> : <>opens in <span className="text-bone">{duration(recoveryAt - now)}</span></>}. A
+                ping resets this.
               </div>
             ) : (
-              <div className="mt-1.5 text-mute">No recovery key: only the owner&apos;s phrase can act.</div>
+              <div className="mt-1.5 text-mute">No recovery key.</div>
             )}
           </div>
-          {p && (
-            <div className="rounded-md border border-warn/50 bg-warn/[0.04] p-3">
-              <Label className="!text-warn">pending withdrawal</Label>
-              <div className="mt-1.5">
-                {isSol(p.mint) ? `${sol(p.amount, 9)} SOL` : `${p.amount.toString()} units of ${short(p.mint.toBase58(), 4)}`} →{" "}
-                {short(p.dest.toBase58(), 5)}
-              </div>
-              <div className="mt-1 text-[11.5px] text-mute">
-                {now >= p.executableAt ? "Executable now by anyone." : `Executable in ${duration(p.executableAt - now)} (${dateTime(p.executableAt)}). Either tree can cancel it before then.`}
-              </div>
-              {now >= p.executableAt && (
-                <button className="btn sm mt-2" onClick={execute} disabled={execBusy}>
-                  {execBusy ? "sending…" : wallet.publicKey ? "execute" : "connect wallet to execute"}
-                </button>
-              )}
-              {execMsg && (
-                <div className="mt-2">
-                  <Note kind={execMsg.kind}>{execMsg.text}</Note>
-                </div>
-              )}
+          <div>
+            <Label>testament</Label>
+            <div className="mt-1.5 text-mute">
+              {c.heirs.length ? `${c.heirs.length} heir(s), after ${duration(Number(c.testamentDelay))} of inactivity` : "none"}
             </div>
-          )}
-          {readErr && <Note kind="warn">Could not refresh: {readErr}</Note>}
+          </div>
+          <Pending vault={vault} state={state} onChanged={refresh} />
+          {readErr && <Note kind="warn">{readErr}</Note>}
         </div>
       </div>
 
-      <div className="border-t border-line-2 p-4 sm:p-5">
+      <Approvals vault={vault} state={state} approvals={approvals} mySlot={mySlot} onChanged={refresh} onCosign={(a) => (setPreset(a), setOpen(true))} />
+      <Migration vault={vault} state={state} assets={assets} onChanged={refresh} />
+      <Schedules vault={vault} schedules={schedules} onChanged={refresh} />
+      <Budgets vault={vault} budgets={budgets} onChanged={refresh} />
+      <Testament vault={vault} state={state} assets={assets} stakes={stakes} onChanged={refresh} />
+      <Inboxes vault={vault} onChanged={refresh} />
+
+      <Section title={mySlot === RECOVERY_TREE ? "recovery actions" : "actions"}>
         {!open ? (
-          <button className="btn" onClick={() => setOpen(true)}>
-            {isRecovery ? "recovery actions →" : "actions →"}
+          <button className="btn self-start" onClick={() => setOpen(true)}>
+            {mySlot === RECOVERY_TREE ? "recovery actions →" : "new action →"}
           </button>
         ) : (
           <ActionPanel
+            key={preset ? "preset" : "form"}
             vault={vault}
             state={state}
             signer={signer}
             assets={assets}
             stakes={stakes}
+            schedules={schedules}
+            budgets={budgets}
+            preset={preset}
+            onPresetDone={() => setPreset(null)}
             onChanged={refresh}
-            allowed={isRecovery && !recoveryOpen ? ["cancel"] : undefined}
           />
         )}
-      </div>
+      </Section>
     </Panel>
   );
 }
 
-function Tile({ k, v }: { k: string; v: string }) {
+function Pending({ vault, state, onChanged }: { vault: PublicKey; state: VaultStateView; onChanged: () => void }) {
+  const { program, connection } = useNox();
+  const { run, busy, msg, payer } = useRunner(onChanged);
+  const now = useNow();
+  const p = state.pending;
+  if (!p) return null;
+  return (
+    <div className="rounded-md border border-warn/50 bg-warn/[0.04] p-3">
+      <Label className="!text-warn">pending {p.kind}</Label>
+      <div className="mt-1.5">
+        {p.kind === "migrate" ? (
+          <>migrate to {short(p.dest.toBase58(), 5)}</>
+        ) : (
+          <>
+            {isSol(p.mint) ? `${sol(p.amount, 9)} SOL` : <>{p.amount.toString()} <TokenName mint={p.mint} /></>} → {short(p.dest.toBase58(), 5)}
+          </>
+        )}
+      </div>
+      <div className="mt-1 text-[11.5px] text-mute">
+        {now >= p.executableAt ? "Executable now by anyone." : `Executable in ${duration(p.executableAt - now)} (${dateTime(p.executableAt)}). Either tree can cancel it before then.`}
+      </div>
+      {now >= p.executableAt && (
+        <button
+          className="btn sm mt-2"
+          disabled={!!busy}
+          onClick={() =>
+            run(
+              "pending",
+              async () => {
+                const tp = p.kind === "withdraw" && !isSol(p.mint) ? await mintTokenProgram(connection, p.mint) : undefined;
+                return [await executePendingIx(program, payer!, vault, state, tp)];
+              },
+              "Pending action executed."
+            )
+          }
+        >
+          {busy ? "sending…" : payer ? "execute" : "connect wallet to execute"}
+        </button>
+      )}
+      <div className="mt-2">
+        <RunMsg msg={msg} />
+      </div>
+    </div>
+  );
+}
+
+function Tile({ k, v, warn }: { k: string; v: string; warn?: boolean }) {
   return (
     <div className="bg-ink-2 px-4 py-3">
       <Label>{k}</Label>
-      <div className="mt-1 truncate text-[18px] font-bold">{v}</div>
+      <div className={`mt-1 truncate text-[18px] font-bold ${warn ? "text-warn" : ""}`}>{v}</div>
     </div>
   );
+}
+
+export function signerCount(state: VaultStateView) {
+  return [0, 1, 2].filter((t) => state.config.trees[t].height > 0).length;
 }

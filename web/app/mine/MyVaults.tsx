@@ -2,7 +2,7 @@
 import { useCallback, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { PublicKey } from "@solana/web3.js";
-import { TREE_PRIMARY, fetchState, findVaultsFor, withRetry, type Signer, type VaultStateView } from "@nox/sdk/client";
+import { fetchState, findVaultsFor, inSlot, withRetry, type Signer, type VaultStateView } from "@nox/sdk/client";
 import { equal } from "@nox/sdk/wots";
 import { Empty, Label, Note, PageHead, Panel } from "@/components/ui";
 import SecretInput from "@/components/SecretInput";
@@ -40,10 +40,10 @@ export default function MyVaults() {
       const out: Found[] = [];
       try {
         for (let n = 0; n < MAX_NUMBERS; n++) {
-          const signer = await getSigner(m, n, TREE_PRIMARY, (done, total) => setProgress({ n, done, total }));
+          const signer = await getSigner(m, n, 0, (done, total) => setProgress({ n, done, total }));
           const states = await withRetry(() => findVaultsFor(program, signer));
           if (!states.length) break;
-          for (const state of states) out.push({ n, signer, state });
+          for (const { state, slot } of states) out.push({ n, signer: inSlot(signer, slot), state });
           setFound([...out]);
         }
         setScanned(true);
@@ -71,7 +71,7 @@ export default function MyVaults() {
             My <span className="inv">vaults</span>
           </>
         }
-        sub="Your phrase finds your vaults: the browser builds the one-time key tree for vault number 0, 1, 2… and asks the chain which vaults use it."
+        sub="Your phrase finds your vaults: the browser builds the one-time key tree for vault number 0, 1, 2… and asks the chain which vaults use it, as owner or as a co-signer."
       />
 
       {!master ? (
@@ -84,7 +84,7 @@ export default function MyVaults() {
           <div className="flex flex-col gap-4">
             <Panel title="how it works" className="text-[12.5px]">
               <p className="p-4 text-mute">
-                A vault has one fixed address and 256 one-time keys arranged in a Merkle tree. Building that tree takes a few
+                A vault has one fixed address and 256 one-time keys per signer, arranged in a Merkle tree. Building that tree takes a few
                 seconds the first time; only its public part is cached on this device. Before any action, the app reads the
                 vault&apos;s whole history; if a key ever published part of a signature, only that same action can be completed with
                 it.
@@ -177,9 +177,10 @@ function OpenByAddress({ master, onFound }: { master: Uint8Array; onFound: (f: F
       if (!Number.isInteger(num) || num < 0 || num > 10000) throw new Error("Vault number must be 0 or more");
       const state = await withRetry(() => fetchState(program, vault));
       if (!state) throw new Error("No initialized Noxvault at this address");
-      const signer = await getSigner(master, num, TREE_PRIMARY, (done, total) => setProgress({ done, total }));
-      if (!equal(state.config.primaryRoot, signer.pub.root)) throw new Error(`These words (vault number ${num}) are not this vault's owner phrase`);
-      onFound({ n: num, signer, state });
+      const tree = await getSigner(master, num, 0, (done, total) => setProgress({ done, total }));
+      const slot = [0, 1, 2].find((t) => equal(state.config.trees[t].root, tree.pub.root));
+      if (slot === undefined) throw new Error(`These words (vault number ${num}) are not a signer of this vault`);
+      onFound({ n: num, signer: inSlot(tree, slot), state });
       setAddr("");
     } catch (e) {
       setErr(errMsg(e));

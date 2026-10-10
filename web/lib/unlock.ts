@@ -11,6 +11,10 @@ import { encodeRelayRequest } from "@nox/sdk/relayer";
 
 export type ActionJson = Record<string, string | number> & { kind: Action["kind"] };
 
+const KEY_FIELDS = new Set(["mint", "dest", "vote", "session", "newVault", "feePayee"]);
+const BIG_FIELDS = new Set(["amount", "interval", "start", "limit", "period", "expires", "fee"]);
+const NUM_FIELDS = new Set(["seed", "id", "count"]);
+
 export function actionToJson(a: Action): ActionJson {
   const out: Record<string, string | number> = { kind: a.kind };
   for (const [k, v] of Object.entries(a)) {
@@ -21,22 +25,15 @@ export function actionToJson(a: Action): ActionJson {
 }
 
 export function actionFromJson(j: ActionJson): Action {
-  const key = (v: unknown) => new PublicKey(String(v)).toBytes();
-  const big = (v: unknown) => BigInt(String(v));
-  const fee = big(j.fee);
-  const feePayee = key(j.feePayee);
-  switch (j.kind) {
-    case "withdraw":
-      return { kind: "withdraw", mint: key(j.mint), dest: key(j.dest), amount: big(j.amount), fee, feePayee };
-    case "stake":
-      return { kind: "stake", seed: Number(j.seed), vote: key(j.vote), amount: big(j.amount), fee, feePayee };
-    case "unstake":
-    case "collectStake":
-      return { kind: j.kind, seed: Number(j.seed), fee, feePayee };
-    case "cancel":
-    case "ping":
-      return { kind: j.kind, fee, feePayee };
+  const out: Record<string, unknown> = { kind: j.kind };
+  for (const [k, v] of Object.entries(j)) {
+    if (k === "kind") continue;
+    if (KEY_FIELDS.has(k)) out[k] = new PublicKey(String(v)).toBytes();
+    else if (BIG_FIELDS.has(k)) out[k] = BigInt(String(v));
+    else if (NUM_FIELDS.has(k)) out[k] = Number(v);
+    else throw new Error(`unknown action field ${k}`);
   }
+  return out as unknown as Action;
 }
 
 // ---------- the action this browser froze for a leaf ----------
@@ -200,10 +197,16 @@ export function describeAction(a: Action): string {
     const s = new PublicKey(k).toBase58();
     return `${s.slice(0, 4)}…${s.slice(-4)}`;
   };
+  const amt = (mint: Uint8Array, n: bigint) => (isSol(mint) ? sol(n) : `${n} units of ${short(mint)}`);
+  const every = (secs: bigint) => {
+    const s = Number(secs);
+    return s % 86400 === 0 ? `${s / 86400} d` : s % 3600 === 0 ? `${s / 3600} h` : `${s} s`;
+  };
+  const when = (t: bigint) => new Date(Number(t) * 1000).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
   const fee = a.fee > 0n ? ` (fee ${sol(a.fee)})` : "";
   switch (a.kind) {
     case "withdraw":
-      return `withdraw ${isSol(a.mint) ? sol(a.amount) : `${a.amount} units of ${short(a.mint)}`} to ${short(a.dest)}${fee}`;
+      return `withdraw ${amt(a.mint, a.amount)} to ${short(a.dest)}${fee}`;
     case "stake":
       return `stake ${sol(a.amount)} with ${short(a.vote)} (slot #${a.seed})${fee}`;
     case "unstake":
@@ -211,8 +214,18 @@ export function describeAction(a: Action): string {
     case "collectStake":
       return `collect stake slot #${a.seed}${fee}`;
     case "cancel":
-      return `cancel the pending withdrawal${fee}`;
+      return `cancel the pending withdrawal / migration${fee}`;
     case "ping":
-      return `ping (prove the owner is active)${fee}`;
+      return `ping (owner is active)${fee}`;
+    case "schedule":
+      return `schedule #${a.id}: ${amt(a.mint, a.amount)} to ${short(a.dest)} every ${every(a.interval)}, ${a.count}×, from ${when(a.start)}${fee}`;
+    case "cancelSchedule":
+      return `cancel schedule #${a.id}${fee}`;
+    case "budget":
+      return `budget #${a.id}: ${short(a.session)} may spend ${amt(a.mint, a.limit)} per ${every(a.period)} until ${when(a.expires)}${fee}`;
+    case "cancelBudget":
+      return `cancel budget #${a.id}${fee}`;
+    case "migrate":
+      return `migrate everything to vault ${short(a.newVault)}${fee}`;
   }
 }

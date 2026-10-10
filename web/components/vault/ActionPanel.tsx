@@ -1,30 +1,35 @@
 "use client";
-// Sign and send one vault action with a one-time key (docs/SPEC.md §5–8).
+// Sign one vault action (an approval) with a one-time key and send it (docs/SPEC.md §4–5, §9).
 // Safety rules, per leaf: the vault's whole history decides which leaf may sign what
 // (findSignedMessages + pickLeaf); an unfinished signed message is resumed, never replaced;
 // preflightAction runs before signing; "attempted" is persisted before anything is sent.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { PublicKey } from "@solana/web3.js";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import {
+  RECOVERY_TREE,
   SOL_MINT,
-  TREE_PRIMARY,
   actionDigest,
   buildSteps,
+  completesApproval,
   fetchState,
   findSignedMessages,
+  keysLeft,
   leafUsed,
   mintTokenProgram,
   packSteps,
   pickLeaf,
   preflightAction,
   remainingSteps,
+  type BudgetView,
+  type ScheduleView,
   type SignedAction,
   type SignedMessage,
   type Signer,
   type VaultStateView,
 } from "@nox/sdk/client";
-import { authPath, equal, sign, type Action } from "@nox/sdk/wots";
+import { authPath, equal, sign, type Action, type Kind } from "@nox/sdk/wots";
 import { Label, Note } from "@/components/ui";
 import { useNox } from "@/lib/hooks";
 import { errMsg, fromBaseUnits, hex, short, sol, toBaseUnits } from "@/lib/format";
@@ -48,7 +53,7 @@ import {
   type VaultAssets,
 } from "@/lib/unlock";
 
-type Kind = Action["kind"];
+type KindName = Action["kind"];
 type Mode = "wallet" | "relayer";
 type StepState = "todo" | "sending" | "done" | "failed";
 
@@ -71,14 +76,23 @@ export interface StakeSlot {
   lamports: number;
 }
 
-const KINDS: { k: Kind; label: string }[] = [
+const KINDS: { k: KindName; label: string }[] = [
   { k: "withdraw", label: "Withdraw" },
+  { k: "schedule", label: "Schedule" },
+  { k: "budget", label: "Budget" },
   { k: "stake", label: "Stake" },
   { k: "unstake", label: "Unstake" },
   { k: "collectStake", label: "Collect" },
+  { k: "cancelSchedule", label: "Stop schedule" },
+  { k: "cancelBudget", label: "Stop budget" },
+  { k: "migrate", label: "Migrate" },
   { k: "ping", label: "Ping" },
   { k: "cancel", label: "Cancel pending" },
 ];
+
+const RECOVERY_CANCELS: KindName[] = ["cancel", "cancelSchedule", "cancelBudget"];
+
+const unitSecs = { h: 3600, d: 86400 } as const;
 
 export default function ActionPanel({
   vault,
@@ -86,22 +100,33 @@ export default function ActionPanel({
   signer,
   assets,
   stakes,
+  schedules,
+  budgets,
+  preset,
+  onPresetDone,
   onChanged,
-  allowed,
 }: {
   vault: PublicKey;
   state: VaultStateView;
   signer: Signer;
   assets: VaultAssets | null;
   stakes: (StakeSlot | null)[];
+  schedules: ScheduleView[];
+  budgets: BudgetView[];
+  /** Co-sign an existing approval: sign exactly this action. */
+  preset?: Action | null;
+  onPresetDone?: () => void;
   onChanged: () => void;
-  /** Action kinds this signer may use right now (recovery before the delay: cancel only). */
-  allowed?: Kind[];
 }) {
   const { connection, program, wallet } = useNox();
   const { setVisible } = useWalletModal();
   const vaultStr = vault.toBase58();
   const tree = signer.tree;
+  const isRecovery = tree === RECOVERY_TREE;
+  const recoveryOpen = Math.floor(Date.now() / 1000) >= state.lastActive + Number(state.config.recoveryDelay);
+  const kinds = isRecovery && !recoveryOpen
+    ? RECOVERY_CANCELS.map((k) => KINDS.find((x) => x.k === k)!)
+    : KINDS;
 
   const [history, setHistory] = useState<History>({ kind: "loading" });
   const [frozen, setFrozen] = useState<Frozen | null>(null);
@@ -111,14 +136,20 @@ export default function ActionPanel({
   stateRef.current = state;
 
   // form
-  const kinds = KINDS.filter((k) => !allowed || allowed.includes(k.k));
-  const [kind, setKind] = useState<Kind>(kinds[0]?.k ?? "withdraw");
+  const [kind, setKind] = useState<KindName>(kinds[0]?.k ?? "withdraw");
   const [mode, setMode] = useState<Mode>("wallet");
   const [asset, setAsset] = useState(SOL_MINT.toBase58());
   const [amount, setAmount] = useState("");
   const [dest, setDest] = useState("");
   const [vote, setVote] = useState("");
   const [seed, setSeed] = useState<number | null>(null);
+  const [everyN, setEveryN] = useState("30");
+  const [everyU, setEveryU] = useState<"h" | "d">("d");
+  const [count, setCount] = useState("12");
+  const [start, setStart] = useState(() => localInput(Date.now() + 10 * 60_000));
+  const [session, setSession] = useState("");
+  const [expiresDays, setExpiresDays] = useState("30");
+  const [newVault, setNewVault] = useState("");
   const [validators, setValidators] = useState<{ vote: string; stake: number }[] | null>(null);
   const [relayer, setRelayer] = useState<RelayerInfo | null>(null);
   const [relayerErr, setRelayerErr] = useState<string | null>(null);
@@ -131,32 +162,41 @@ export default function ActionPanel({
   // sending
   const [steps, setSteps] = useState<{ label: string; st: StepState; sig?: string }[]>([]);
   const [sendErr, setSendErr] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
   const [running, setRunning] = useState(false);
 
   const tokens = assets?.tokens.filter((t) => t.amount > 0n) ?? [];
   const holding = isSol(asset) ? null : tokens.find((t) => t.mint.toBase58() === asset) ?? null;
   const usedStakes = stakes.filter((s): s is StakeSlot => !!s);
   const freeSeed = stakes.findIndex((s) => !s);
+  const freeId = (taken: number[]) => {
+    for (let i = 0; i < 256; i++) if (!taken.includes(i)) return i;
+    return -1;
+  };
+  const scheduleId = freeId(schedules.map((s) => s.id));
+  const budgetId = freeId(budgets.map((b) => b.id));
 
   useEffect(() => {
-    if (!dest && wallet.publicKey) setDest(wallet.publicKey.toBase58());
-  }, [wallet.publicKey, dest]);
+    if (wallet.publicKey) {
+      if (!dest) setDest(wallet.publicKey.toBase58());
+      if (!session) setSession(wallet.publicKey.toBase58());
+    }
+  }, [wallet.publicKey, dest, session]);
 
   useEffect(() => {
     setPre(null);
     setConsent(false);
-  }, [kind, mode, asset, amount, dest, vote, seed]);
+  }, [kind, mode, asset, amount, dest, vote, seed, everyN, everyU, count, start, session, expiresDays, newVault, preset]);
 
   useEffect(() => {
-    if (mode !== "relayer" || relayer) return;
+    if (relayer) return;
+    if (mode !== "relayer" && !(frozen && frozen.action.fee > 0n) && !(preset && preset.fee > 0n)) return;
     fetchRelayerInfo()
       .then((r) => {
         setRelayer(r);
         setRelayerErr(null);
       })
       .catch((e) => setRelayerErr(errMsg(e)));
-  }, [mode, relayer]);
+  }, [mode, relayer, frozen, preset]);
 
   useEffect(() => {
     if (kind !== "stake" || validators) return;
@@ -203,16 +243,7 @@ export default function ActionPanel({
       if (local && !(local.leaf === pick.resume.leaf && local.digest === hex(pick.resume.digest)))
         setNote("This browser remembered a different action, but the chain shows a one-time key already published part of a signature for the one below. Only that one can be completed with it.");
       const m: Mode = a.fee > 0n ? "relayer" : "wallet";
-      savePending({
-        v: 2,
-        vault: vaultStr,
-        tree,
-        leaf: pick.resume.leaf,
-        action: actionToJson(a),
-        digest: hex(pick.resume.digest),
-        mode: m,
-        createdAt: local?.createdAt ?? Date.now(),
-      });
+      savePending({ v: 2, vault: vaultStr, tree, leaf: pick.resume.leaf, action: actionToJson(a), digest: hex(pick.resume.digest), mode: m, createdAt: local?.createdAt ?? Date.now() });
       setFrozen({ leaf: pick.resume.leaf, action: a, mode: m, source: "chain" });
       return;
     }
@@ -236,48 +267,87 @@ export default function ActionPanel({
   const payerFor = (m: Mode) => (m === "relayer" ? (relayer ? new PublicKey(relayer.relayer) : null) : wallet.publicKey);
 
   // ---- build the action from the form ----
-  const buildAction = async (): Promise<{ action: Action; tokenProgram?: PublicKey }> => {
-    let fee = 0n;
-    let feePayee: Uint8Array;
-    if (mode === "relayer") {
-      if (!relayer) throw new Error(relayerErr || "Relayer info not loaded yet");
-      fee = BigInt(relayer.minFee);
-      feePayee = new PublicKey(relayer.relayer).toBytes();
-    } else {
-      if (!wallet.publicKey) throw new Error("Connect a wallet: it pays the network fees");
-      feePayee = wallet.publicKey.toBytes();
+  const parseKey = (v: string, what: string) => {
+    try {
+      return new PublicKey(v.trim());
+    } catch {
+      throw new Error(`${what} is not a valid address`);
     }
+  };
+
+  const buildKind = async (): Promise<{ kind: Kind; tokenProgram?: PublicKey }> => {
+    const mint = isSol(asset) ? SOL_MINT : new PublicKey(asset);
+    const decimals = holding ? holding.decimals : 9;
     switch (kind) {
       case "withdraw": {
-        let d: PublicKey;
-        try {
-          d = new PublicKey(dest.trim());
-        } catch {
-          throw new Error("Destination is not a valid address");
-        }
-        const mint = isSol(asset) ? SOL_MINT : new PublicKey(asset);
-        const units = toBaseUnits(amount, holding ? holding.decimals : 9);
+        const units = toBaseUnits(amount, decimals);
         const tokenProgram = isSol(asset) ? undefined : await mintTokenProgram(connection, mint);
-        return { action: { kind, mint: mint.toBytes(), dest: d.toBytes(), amount: units, fee, feePayee }, tokenProgram };
+        return { kind: { kind, mint: mint.toBytes(), dest: parseKey(dest, "Destination").toBytes(), amount: units }, tokenProgram };
+      }
+      case "schedule": {
+        if (scheduleId < 0) throw new Error("All schedule slots are in use");
+        const n = Number(everyN);
+        const c = Number(count);
+        if (!(n > 0) || !Number.isInteger(c) || c < 1 || c > 65535) throw new Error("Interval and count must be positive");
+        const startAt = Math.floor(new Date(start).getTime() / 1000);
+        if (!Number.isFinite(startAt)) throw new Error("Pick a start time");
+        return {
+          kind: {
+            kind,
+            id: scheduleId,
+            mint: mint.toBytes(),
+            dest: parseKey(dest, "Destination").toBytes(),
+            amount: toBaseUnits(amount, decimals),
+            interval: BigInt(Math.round(n * unitSecs[everyU])),
+            count: c,
+            start: BigInt(startAt),
+          },
+        };
+      }
+      case "budget": {
+        if (budgetId < 0) throw new Error("All budget slots are in use");
+        const n = Number(everyN);
+        const days = Number(expiresDays);
+        if (!(n > 0) || !(days > 0)) throw new Error("Period and expiry must be positive");
+        return {
+          kind: {
+            kind,
+            id: budgetId,
+            session: parseKey(session, "Session key").toBytes(),
+            mint: mint.toBytes(),
+            limit: toBaseUnits(amount, decimals),
+            period: BigInt(Math.round(n * unitSecs[everyU])),
+            expires: BigInt(Math.floor(Date.now() / 1000 + days * 86400)),
+          },
+        };
       }
       case "stake": {
-        let v: PublicKey;
-        try {
-          v = new PublicKey(vote.trim());
-        } catch {
-          throw new Error("Pick a validator");
-        }
         if (freeSeed < 0) throw new Error("All stake slots are in use");
-        return { action: { kind, seed: freeSeed, vote: v.toBytes(), amount: toBaseUnits(amount, 9), fee, feePayee } };
+        return { kind: { kind, seed: freeSeed, vote: parseKey(vote, "Validator").toBytes(), amount: toBaseUnits(amount, 9) } };
       }
       case "unstake":
       case "collectStake":
         if (seed === null) throw new Error("Pick a stake slot");
-        return { action: { kind, seed, fee, feePayee } };
+        return { kind: { kind, seed } };
+      case "cancelSchedule":
+      case "cancelBudget":
+        if (seed === null) throw new Error(`Pick a ${kind === "cancelSchedule" ? "schedule" : "budget"}`);
+        return { kind: { kind, id: seed } };
+      case "migrate":
+        return { kind: { kind, newVault: parseKey(newVault, "New vault").toBytes() } };
       case "cancel":
       case "ping":
-        return { action: { kind, fee, feePayee } };
+        return { kind: { kind } };
     }
+  };
+
+  const feeFor = (m: Mode): { fee: bigint; feePayee: Uint8Array } => {
+    if (m === "relayer") {
+      if (!relayer) throw new Error(relayerErr || "Relayer info not loaded yet");
+      return { fee: BigInt(relayer.minFee), feePayee: new PublicKey(relayer.relayer).toBytes() };
+    }
+    if (!wallet.publicKey) throw new Error("Connect a wallet: it pays the network fees");
+    return { fee: 0n, feePayee: wallet.publicKey.toBytes() };
   };
 
   // ---- check, then freeze the message for this leaf ----
@@ -286,9 +356,21 @@ export default function ActionPanel({
     if (leaf === null) return;
     setBusy("check");
     try {
-      const { action, tokenProgram } = await buildAction();
-      const payer = payerFor(mode);
-      if (!payer) throw new Error(mode === "relayer" ? "Relayer unavailable" : "Connect a wallet");
+      let action: Action;
+      let tokenProgram: PublicKey | undefined;
+      let useMode = mode;
+      if (preset) {
+        // Co-signing: the action (including its fee) is fixed by whoever opened the approval.
+        action = preset;
+        if (action.kind === "withdraw" && !isSol(action.mint)) tokenProgram = await mintTokenProgram(connection, new PublicKey(action.mint));
+        useMode = action.fee > 0n && relayer && equal(action.feePayee, new PublicKey(relayer.relayer).toBytes()) ? "relayer" : "wallet";
+      } else {
+        const b = await buildKind();
+        action = { ...b.kind, ...feeFor(mode) } as Action;
+        tokenProgram = b.tokenProgram;
+      }
+      const payer = payerFor(useMode) ?? wallet.publicKey;
+      if (!payer) throw new Error(useMode === "relayer" ? "Relayer unavailable" : "Connect a wallet");
       const digest = actionDigest(program.programId, vault, tree, leaf, action);
       const preKey = `${leaf}:${hex(digest)}`;
       let res: { errors: string[]; warnings: string[] };
@@ -310,11 +392,12 @@ export default function ActionPanel({
         return;
       }
       if (res.warnings.length && !(same && consent)) return;
-      const p: PendingAction = { v: 2, vault: vaultStr, tree, leaf, action: actionToJson(action), digest: hex(digest), mode, createdAt: Date.now() };
+      const p: PendingAction = { v: 2, vault: vaultStr, tree, leaf, action: actionToJson(action), digest: hex(digest), mode: useMode, createdAt: Date.now() };
       savePending(p); // persisted BEFORE anything is signed or sent
-      setFrozen({ leaf, action, mode, source: "local" });
+      setFrozen({ leaf, action, mode: useMode, source: "local" });
       setSteps([]);
       setSendErr(null);
+      onPresetDone?.();
     } catch (e) {
       setFormErr(errMsg(e));
     } finally {
@@ -344,24 +427,18 @@ export default function ActionPanel({
   // ---- send the frozen message ----
   const signedFor = (f: Frozen): SignedAction => {
     const digest = actionDigest(program.programId, vault, tree, f.leaf, f.action);
-    return {
-      vault,
-      tree,
-      leaf: f.leaf,
-      pkSeed: signer.seeds.pkSeed,
-      authPath: authPath(signer.pub, f.leaf),
-      signature: sign(signer.seeds, f.leaf, digest),
-      action: f.action,
-    };
+    return { vault, tree, leaf: f.leaf, pkSeed: signer.seeds.pkSeed, authPath: authPath(signer.pub, f.leaf), signature: sign(signer.seeds, f.leaf, digest), action: f.action };
   };
 
-  const finish = async () => {
-    setDone(true);
-    if (frozen) setLastDone(`Done: ${describeAction(frozen.action)} — one-time key #${frozen.leaf} is now used and can never sign again.`);
+  const finish = async (f: Frozen, executed: boolean) => {
+    setLastDone(
+      executed
+        ? `Done: ${describeAction(f.action)}. One-time key #${f.leaf} is used and can never sign again.`
+        : `Approval recorded with one-time key #${f.leaf}. It executes once enough signers approve the same action (see open approvals).`
+    );
     clearPending(vaultStr, tree);
     onChanged();
     setSteps([]);
-    setDone(false);
     await loadHistory();
   };
 
@@ -371,13 +448,13 @@ export default function ActionPanel({
       setVisible(true);
       return;
     }
-    const fresh = await fetchState(program, vault);
-    if (fresh && leafUsed(fresh, tree, f.leaf)) return finish();
     const s = signedFor(f);
     const a = f.action;
     const tokenProgram = a.kind === "withdraw" && !isSol(a.mint) ? await mintTokenProgram(connection, new PublicKey(a.mint)) : undefined;
-    const all = await buildSteps(program, payer, s, { tokenProgram });
+    const status = await completesApproval(program, vault, tree, a);
+    const all = await buildSteps(program, payer, s, { tokenProgram, execute: status.willExecute, creator: status.creator ?? payer });
     const todo = await remainingSteps(program, payer, s, all);
+    if (!todo.length) return finish(f, status.willExecute);
     const txs = packSteps(payer, todo);
     const list = txs.map((t) => ({ label: t.label, st: "todo" as StepState, sig: undefined as string | undefined }));
     setSteps(list);
@@ -395,21 +472,22 @@ export default function ActionPanel({
         throw e;
       }
     }
-    await finish();
+    await finish(f, status.willExecute);
   };
 
   const sendRelayer = async (f: Frozen) => {
     const s = signedFor(f);
-    setSteps([{ label: "relayer sends open + write + verify + execute", st: "sending" }]);
+    setSteps([{ label: "relayer sends open + write + verify + approve (+ execute)", st: "sending" }]);
     markAttempted(vaultStr, tree, f.leaf);
+    const status = await completesApproval(program, vault, tree, f.action).catch(() => ({ willExecute: true }));
     try {
       const sigs = await relayAction(s);
-      setSteps(sigs.length ? sigs.map((sig, i) => ({ label: `transaction ${i + 1}`, st: "done", sig })) : [{ label: "already executed", st: "done" }]);
+      setSteps(sigs.length ? sigs.map((sig, i) => ({ label: `transaction ${i + 1}`, st: "done", sig })) : [{ label: "already done", st: "done" }]);
     } catch (e) {
       setSteps([{ label: "relayer", st: "failed" }]);
       throw e;
     }
-    await finish();
+    await finish(f, status.willExecute);
   };
 
   const send = async (m: Mode) => {
@@ -427,18 +505,11 @@ export default function ActionPanel({
   };
 
   const relayerOk = useMemo(
-    () =>
-      !!frozen &&
-      !!relayer &&
-      frozen.action.fee >= BigInt(relayer.minFee) &&
-      equal(frozen.action.feePayee, new PublicKey(relayer.relayer).toBytes()),
+    () => !!frozen && !!relayer && frozen.action.fee >= BigInt(relayer.minFee) && equal(frozen.action.feePayee, new PublicKey(relayer.relayer).toBytes()),
     [frozen, relayer]
   );
-  useEffect(() => {
-    if (frozen?.mode === "relayer" && !relayer) fetchRelayerInfo().then(setRelayer).catch((e) => setRelayerErr(errMsg(e)));
-  }, [frozen, relayer]);
 
-  // ---- max for SOL withdrawals: everything minus the fee leaves exactly 0 (allowed) ----
+  // ---- max for SOL: everything minus the fee leaves exactly 0 (allowed) ----
   const maxAmount = () => {
     const fee = mode === "relayer" && relayer ? BigInt(relayer.minFee) : 0n;
     if (holding) return fromBaseUnits(holding.amount, holding.decimals).replace(/,/g, "");
@@ -468,17 +539,70 @@ export default function ActionPanel({
     );
   if (history.kind === "exhausted") return <Note kind="bad">{history.msg}</Note>;
 
-  const keysLeft = (1 << signer.pub.height) - countUsed(state, tree);
+  const left = keysLeft(state, tree);
+  const total = 1 << signer.pub.height;
+
+  const assetSelect = (
+    <label className="flex flex-col gap-1.5">
+      <Label>asset</Label>
+      <select className="field" value={asset} onChange={(e) => (setAsset(e.target.value), setAmount(""))}>
+        <option value={SOL_MINT.toBase58()}>SOL — {sol(assets?.lamports ?? 0)} in vault</option>
+        {tokens.map((t) => (
+          <option key={t.mint.toBase58()} value={t.mint.toBase58()}>
+            {short(t.mint.toBase58(), 4)} — {fromBaseUnits(t.amount, t.decimals)}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+  const destInput = (label = "destination wallet") => (
+    <label className="flex flex-col gap-1.5 sm:col-span-2">
+      <Label>
+        {label} {holding ? "(its token account is created if needed)" : ""}
+      </Label>
+      <input className="field" value={dest} onChange={(e) => setDest(e.target.value)} spellCheck={false} placeholder="wallet address" />
+      {state.config.whitelist.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 pt-1">
+          <span className="text-[11px] text-dim">whitelist:</span>
+          {state.config.whitelist.map((k) => {
+            const a = new PublicKey(k).toBase58();
+            return (
+              <button key={a} type="button" className="rounded border border-line-2 px-2 py-0.5 text-[11px] text-mute hover:text-teal" onClick={() => setDest(a)}>
+                {short(a, 4)}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </label>
+  );
+  const periodInput = (label: string) => (
+    <label className="flex flex-col gap-1.5">
+      <Label>{label}</Label>
+      <div className="flex gap-2">
+        <input className="field flex-1" inputMode="decimal" value={everyN} onChange={(e) => setEveryN(e.target.value)} />
+        <select className="field !w-24" value={everyU} onChange={(e) => setEveryU(e.target.value as "h" | "d")}>
+          <option value="h">hours</option>
+          <option value="d">days</option>
+        </select>
+      </div>
+    </label>
+  );
 
   return (
     <div className="flex flex-col gap-4">
       {note && <Note kind="warn">{note}</Note>}
       {lastDone && <Note kind="ok">{lastDone}</Note>}
+      {left < (isRecovery ? 4 : 20) && (
+        <Note kind="warn">
+          Only {left} one-time keys left in this tree. Plan a <strong>migrate</strong> to a new vault before they run out.
+        </Note>
+      )}
 
       {frozen ? (
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <Label>signed action // one-time key #{frozen.leaf}</Label>
+            <Label>signed approval // one-time key #{frozen.leaf}</Label>
             <span className="text-[10.5px] uppercase tracking-[0.14em] text-teal">{frozen.source === "chain" ? "from chain" : "frozen in this browser"}</span>
           </div>
           <div className="rounded-md border border-teal/40 bg-teal/[0.04] px-4 py-3 text-[13px]">{describeAction(frozen.action)}</div>
@@ -486,7 +610,6 @@ export default function ActionPanel({
             A one-time key signs <strong>one</strong> message, ever. Before signing, the app reads the vault&apos;s whole history; if a
             key ever published part of a signature, only that same action can be completed with it. Re-sending it is harmless.
           </Note>
-
           {steps.length > 0 && (
             <ol className="flex flex-col">
               {steps.map((s, i) => (
@@ -507,39 +630,56 @@ export default function ActionPanel({
             </ol>
           )}
           {sendErr && <Note kind="bad">{sendErr}</Note>}
-          {done ? (
-            <Note kind="ok">Done. One-time key #{frozen.leaf} is used and can never sign again.</Note>
-          ) : (
-            <div className="flex flex-wrap items-center gap-3">
-              {(frozen.mode === "relayer" || relayerOk) && (
-                <button className="btn" disabled={running || !relayerOk} onClick={() => send("relayer")}>
-                  {running ? "sending…" : sendErr ? "retry via relayer" : "send via relayer (gasless)"}
-                </button>
-              )}
-              <button className={`btn ${frozen.mode === "relayer" ? "ghost" : ""}`} disabled={running} onClick={() => send("wallet")}>
-                {!wallet.publicKey ? "connect wallet to send" : running ? "sending…" : sendErr ? "retry with my wallet" : "send with my wallet"}
+          <div className="flex flex-wrap items-center gap-3">
+            {(frozen.mode === "relayer" || relayerOk) && (
+              <button className="btn" disabled={running || !relayerOk} onClick={() => send("relayer")}>
+                {running ? "sending…" : sendErr ? "retry via relayer" : "send via relayer (gasless)"}
               </button>
-              {frozen.source === "local" && !wasAttempted(vaultStr, tree, frozen.leaf) && !running && (
-                <button className="text-[11px] uppercase tracking-[0.14em] text-dim hover:text-bad" onClick={discard}>
-                  [discard — nothing sent yet]
-                </button>
-              )}
-            </div>
-          )}
+            )}
+            <button className={`btn ${frozen.mode === "relayer" ? "ghost" : ""}`} disabled={running} onClick={() => send("wallet")}>
+              {!wallet.publicKey ? "connect wallet to send" : running ? "sending…" : sendErr ? "retry with my wallet" : "send with my wallet"}
+            </button>
+            {frozen.source === "local" && !wasAttempted(vaultStr, tree, frozen.leaf) && !running && (
+              <button className="text-[11px] uppercase tracking-[0.14em] text-dim hover:text-bad" onClick={discard}>
+                [discard — nothing sent yet]
+              </button>
+            )}
+          </div>
           {frozen.mode === "relayer" && relayerErr && <Note kind="warn">Relayer: {relayerErr}</Note>}
+        </div>
+      ) : preset ? (
+        <div className="flex flex-col gap-4">
+          <Label>co-sign // next one-time key #{leaf}</Label>
+          <div className="rounded-md border border-teal/40 bg-teal/[0.04] px-4 py-3 text-[13px]">{describeAction(preset)}</div>
+          <p className="text-[12px] text-mute">You approve exactly this action, fee included. Check it before signing.</p>
+          <PreflightNotes pre={pre} consent={consent} setConsent={setConsent} />
+          {formErr && <div className="text-[12px] text-bad">✕ {formErr}</div>}
+          <div className="flex flex-wrap gap-3">
+            {!wallet.publicKey && !(preset.fee > 0n) ? (
+              <button className="btn" onClick={() => setVisible(true)}>
+                connect wallet
+              </button>
+            ) : (
+              <button className="btn" onClick={prepare} disabled={!!busy || (!!pre?.warnings.length && !pre.errors.length && !consent)}>
+                {busy ? "checking…" : "check & approve →"}
+              </button>
+            )}
+            <button className="btn ghost" onClick={onPresetDone}>
+              back
+            </button>
+          </div>
         </div>
       ) : (
         <div className="flex flex-col gap-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <Label>
-              new action // next one-time key #{leaf} · {keysLeft}/{1 << signer.pub.height} left
-            </Label>
-          </div>
+          <Label>
+            new action // next one-time key #{leaf} · {left}/{total} left
+            {state.config.threshold > 1 && !isRecovery && ` · needs ${state.config.threshold} signers`}
+          </Label>
           <div className="flex flex-wrap gap-1.5">
             {kinds.map((k) => (
               <button
                 key={k.k}
-                onClick={() => setKind(k.k)}
+                onClick={() => (setKind(k.k), setSeed(null))}
                 className={`rounded border px-3 py-1.5 text-[12px] ${kind === k.k ? "border-teal bg-teal/[0.08] text-teal" : "border-line-2 text-mute hover:text-bone"}`}
               >
                 {k.label}
@@ -549,17 +689,7 @@ export default function ActionPanel({
 
           {kind === "withdraw" && (
             <div className="grid gap-3 sm:grid-cols-2 [&>*]:min-w-0">
-              <label className="flex flex-col gap-1.5">
-                <Label>asset</Label>
-                <select className="field" value={asset} onChange={(e) => (setAsset(e.target.value), setAmount(""))}>
-                  <option value={SOL_MINT.toBase58()}>SOL — {sol(assets?.lamports ?? 0)} in vault</option>
-                  {tokens.map((t) => (
-                    <option key={t.mint.toBase58()} value={t.mint.toBase58()}>
-                      {short(t.mint.toBase58(), 4)} — {fromBaseUnits(t.amount, t.decimals)}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              {assetSelect}
               <label className="flex flex-col gap-1.5">
                 <Label>amount</Label>
                 <div className="flex gap-2">
@@ -569,23 +699,51 @@ export default function ActionPanel({
                   </button>
                 </div>
               </label>
-              <label className="flex flex-col gap-1.5 sm:col-span-2">
-                <Label>destination wallet {holding ? "(its token account is created if needed)" : ""}</Label>
-                <input className="field" value={dest} onChange={(e) => setDest(e.target.value)} spellCheck={false} placeholder="wallet address" />
-                {state.config.whitelist.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 pt-1">
-                    <span className="text-[11px] text-dim">whitelist:</span>
-                    {state.config.whitelist.map((k) => {
-                      const a = new PublicKey(k).toBase58();
-                      return (
-                        <button key={a} className="rounded border border-line-2 px-2 py-0.5 text-[11px] text-mute hover:text-teal" onClick={() => setDest(a)}>
-                          {short(a, 4)}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
+              {destInput()}
+            </div>
+          )}
+
+          {kind === "schedule" && (
+            <div className="grid gap-3 sm:grid-cols-2 [&>*]:min-w-0">
+              {assetSelect}
+              <label className="flex flex-col gap-1.5">
+                <Label>amount per payment</Label>
+                <input className="field" inputMode="decimal" placeholder="0.0" value={amount} onChange={(e) => setAmount(e.target.value)} />
               </label>
+              {destInput("pay to")}
+              {periodInput("every")}
+              <label className="flex flex-col gap-1.5">
+                <Label>number of payments</Label>
+                <input className="field" inputMode="numeric" value={count} onChange={(e) => setCount(e.target.value)} />
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <Label>first payment · slot #{scheduleId}</Label>
+                <input className="field" type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} />
+              </label>
+              <p className="text-[11.5px] text-dim sm:col-span-2">Anyone (a keeper, or you below) can run a due payment. It never pays more or earlier than signed.</p>
+            </div>
+          )}
+
+          {kind === "budget" && (
+            <div className="grid gap-3 sm:grid-cols-2 [&>*]:min-w-0">
+              <label className="flex flex-col gap-1.5 sm:col-span-2">
+                <Label>session key (an ordinary wallet; default: the connected one)</Label>
+                <input className="field" value={session} onChange={(e) => setSession(e.target.value)} spellCheck={false} placeholder="wallet address" />
+              </label>
+              {assetSelect}
+              <label className="flex flex-col gap-1.5">
+                <Label>limit per period</Label>
+                <input className="field" inputMode="decimal" placeholder="0.5" value={amount} onChange={(e) => setAmount(e.target.value)} />
+              </label>
+              {periodInput("period")}
+              <label className="flex flex-col gap-1.5">
+                <Label>expires in (days) · slot #{budgetId}</Label>
+                <input className="field" inputMode="numeric" value={expiresDays} onChange={(e) => setExpiresDays(e.target.value)} />
+              </label>
+              <p className="text-[11.5px] text-dim sm:col-span-2">
+                The daily-use path: that wallet can then spend up to the limit per period to unrestricted destinations, without using
+                one-time keys. Losing it loses at most the budget.
+              </p>
             </div>
           )}
 
@@ -610,29 +768,47 @@ export default function ActionPanel({
           )}
 
           {(kind === "unstake" || kind === "collectStake") && (
-            <label className="flex flex-col gap-1.5">
-              <Label>stake slot</Label>
-              {usedStakes.length === 0 ? (
-                <div className="text-[12.5px] text-dim">This vault has no stake accounts.</div>
-              ) : (
-                <select className="field" value={seed ?? ""} onChange={(e) => setSeed(e.target.value === "" ? null : Number(e.target.value))}>
-                  <option value="">pick a slot</option>
-                  {usedStakes.map((s) => (
-                    <option key={s.seed} value={s.seed}>
-                      #{s.seed} — {sol(s.lamports)} SOL ({short(s.address.toBase58(), 4)})
-                    </option>
-                  ))}
-                </select>
-              )}
-            </label>
+            <SlotPicker
+              label="stake slot"
+              empty="This vault has no stake accounts."
+              value={seed}
+              onChange={setSeed}
+              options={usedStakes.map((s) => ({ v: s.seed, t: `#${s.seed} — ${sol(s.lamports)} SOL (${short(s.address.toBase58(), 4)})` }))}
+            />
           )}
-
-          {kind === "ping" && <p className="text-[12.5px] text-mute">Proves the owner is active: resets the recovery inactivity clock. Uses one key.</p>}
-          {kind === "cancel" && (
-            <p className="text-[12.5px] text-mute">
-              {state.pending ? "Drops the pending withdrawal before it can execute." : "Nothing is pending right now."}
-            </p>
+          {kind === "cancelSchedule" && (
+            <SlotPicker
+              label="schedule"
+              empty="No schedules."
+              value={seed}
+              onChange={setSeed}
+              options={schedules.map((s) => ({ v: s.id, t: `#${s.id} — ${s.remaining} left to ${short(s.dest.toBase58(), 4)}` }))}
+            />
           )}
+          {kind === "cancelBudget" && (
+            <SlotPicker
+              label="budget"
+              empty="No budgets."
+              value={seed}
+              onChange={setSeed}
+              options={budgets.map((b) => ({ v: b.id, t: `#${b.id} — session ${short(b.session.toBase58(), 4)}` }))}
+            />
+          )}
+          {kind === "migrate" && (
+            <div className="flex flex-col gap-2">
+              <label className="flex flex-col gap-1.5">
+                <Label>new vault address</Label>
+                <input className="field" value={newVault} onChange={(e) => setNewVault(e.target.value)} spellCheck={false} placeholder="an initialized Noxvault" />
+              </label>
+              <p className="text-[11.5px] text-dim">
+                No new vault yet? <Link href="/create" className="underline">Create one</Link> with the same phrase: it uses the next vault
+                number, so fresh keys. Co-signers and the recovery holder must give you new codes for it (a tree must never serve two
+                vaults). After approval, anyone can move all SOL and tokens across.
+              </p>
+            </div>
+          )}
+          {kind === "ping" && <p className="text-[12.5px] text-mute">Proves the owner is active: resets the recovery and testament clocks. Uses one key.</p>}
+          {kind === "cancel" && <p className="text-[12.5px] text-mute">{state.pending ? "Drops the pending withdrawal / migration before it executes." : "Nothing is pending right now."}</p>}
 
           <div className="flex flex-col gap-2">
             <Label>who pays the network fees</Label>
@@ -643,11 +819,7 @@ export default function ActionPanel({
                   ["relayer", "Gasless via relayer", relayer ? `vault pays ${sol(BigInt(relayer.minFee), 6)} SOL to the relayer` : "no wallet needed"],
                 ] as const
               ).map(([m, t, d]) => (
-                <button
-                  key={m}
-                  onClick={() => setMode(m)}
-                  className={`rounded-md border px-3 py-2.5 text-left ${mode === m ? "border-teal bg-teal/[0.06]" : "border-line-2 hover:border-line-2/80"}`}
-                >
+                <button key={m} onClick={() => setMode(m)} className={`rounded-md border px-3 py-2.5 text-left ${mode === m ? "border-teal bg-teal/[0.06]" : "border-line-2"}`}>
                   <div className={`text-[12.5px] ${mode === m ? "text-teal" : ""}`}>{t}</div>
                   <div className="mt-0.5 text-[11px] text-dim">{d}</div>
                 </button>
@@ -657,43 +829,14 @@ export default function ActionPanel({
           </div>
 
           {formErr && <div className="text-[12px] text-bad">✕ {formErr}</div>}
-          {pre && pre.errors.length > 0 && (
-            <Note kind="bad">
-              Not signed:
-              <ul className="mt-1 list-inside list-disc">
-                {pre.errors.map((e) => (
-                  <li key={e}>{e}</li>
-                ))}
-              </ul>
-            </Note>
-          )}
-          {pre && pre.errors.length === 0 && pre.warnings.length > 0 && (
-            <div className="flex flex-col gap-2">
-              <Note kind="warn">
-                Check before signing:
-                <ul className="mt-1 list-inside list-disc">
-                  {pre.warnings.map((w) => (
-                    <li key={w}>{w}</li>
-                  ))}
-                </ul>
-              </Note>
-              <label className="flex cursor-pointer items-start gap-2 text-[12px] text-mute">
-                <input type="checkbox" className="mt-1 accent-[#2ee6d6]" checked={consent} onChange={(e) => setConsent(e.target.checked)} />I understand
-                and want to sign this exact action.
-              </label>
-            </div>
-          )}
+          <PreflightNotes pre={pre} consent={consent} setConsent={setConsent} />
           <div className="flex flex-wrap gap-3">
             {mode === "wallet" && !wallet.publicKey ? (
               <button className="btn" onClick={() => setVisible(true)}>
                 connect wallet
               </button>
             ) : (
-              <button
-                className="btn"
-                onClick={prepare}
-                disabled={!!busy || (mode === "relayer" && !relayer) || (!!pre?.warnings.length && !pre.errors.length && !consent)}
-              >
+              <button className="btn" onClick={prepare} disabled={!!busy || (mode === "relayer" && !relayer) || (!!pre?.warnings.length && !pre.errors.length && !consent)}>
                 {busy ? "checking…" : "check & sign →"}
               </button>
             )}
@@ -704,9 +847,80 @@ export default function ActionPanel({
   );
 }
 
-function countUsed(state: VaultStateView, tree: number): number {
-  const map = tree === TREE_PRIMARY ? state.usedPrimary : state.usedRecovery;
-  let n = 0;
-  for (const b of map) for (let i = 0; i < 8; i++) if (b & (1 << i)) n++;
-  return n;
+function PreflightNotes({
+  pre,
+  consent,
+  setConsent,
+}: {
+  pre: { errors: string[]; warnings: string[] } | null;
+  consent: boolean;
+  setConsent: (v: boolean) => void;
+}) {
+  if (!pre) return null;
+  if (pre.errors.length)
+    return (
+      <Note kind="bad">
+        Not signed:
+        <ul className="mt-1 list-inside list-disc">
+          {pre.errors.map((e) => (
+            <li key={e}>{e}</li>
+          ))}
+        </ul>
+      </Note>
+    );
+  if (!pre.warnings.length) return null;
+  return (
+    <div className="flex flex-col gap-2">
+      <Note kind="warn">
+        Check before signing:
+        <ul className="mt-1 list-inside list-disc">
+          {pre.warnings.map((w) => (
+            <li key={w}>{w}</li>
+          ))}
+        </ul>
+      </Note>
+      <label className="flex cursor-pointer items-start gap-2 text-[12px] text-mute">
+        <input type="checkbox" className="mt-1 accent-[#2ee6d6]" checked={consent} onChange={(e) => setConsent(e.target.checked)} />I understand and want to
+        sign this exact action.
+      </label>
+    </div>
+  );
+}
+
+function SlotPicker({
+  label,
+  empty,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  empty: string;
+  value: number | null;
+  onChange: (v: number | null) => void;
+  options: { v: number; t: string }[];
+}) {
+  return (
+    <label className="flex flex-col gap-1.5">
+      <Label>{label}</Label>
+      {options.length === 0 ? (
+        <div className="text-[12.5px] text-dim">{empty}</div>
+      ) : (
+        <select className="field" value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))}>
+          <option value="">pick one</option>
+          {options.map((o) => (
+            <option key={o.v} value={o.v}>
+              {o.t}
+            </option>
+          ))}
+        </select>
+      )}
+    </label>
+  );
+}
+
+function localInput(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }

@@ -57,11 +57,12 @@
     }
   },
   "include": [
-    "next-env.d.ts",
     "**/*.ts",
     "**/*.tsx",
+    "../sdk/**/*.ts",
     ".next/types/**/*.ts",
-    "../sdk/**/*.ts"
+    "next-env.d.ts",
+    ".next-local/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

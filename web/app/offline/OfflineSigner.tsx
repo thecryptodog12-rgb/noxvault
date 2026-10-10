@@ -2,13 +2,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { PublicKey } from "@solana/web3.js";
-import { PROGRAM_ID, TREE_PRIMARY, TREE_RECOVERY, actionDigest, type SignedAction } from "@nox/sdk/client";
+import { PROGRAM_ID, TREE_PRIMARY, RECOVERY_TREE, actionDigest, type SignedAction } from "@nox/sdk/client";
 import { encodeRelayRequest } from "@nox/sdk/relayer";
 import { authPath, equal, recoverRoot, sign, type PublicTree, type TreeSeeds } from "@nox/sdk/wots";
 import SecretInput from "@/components/SecretInput";
 import { Copy, Label, Note, PageHead, Panel } from "@/components/ui";
 import { errMsg, hex } from "@/lib/format";
-import { ACTION_KINDS, EMPTY_FORM, KIND_LABEL, actionFromForm, splitForQr, summarize, type ActionForm } from "@/lib/offline";
+import { ACTION_KINDS, EMPTY_FORM, KIND_FIELDS, KIND_LABEL, SLOT_LABEL, actionFromForm, splitForQr, summarize, type ActionForm } from "@/lib/offline";
 import QrParts from "./QrParts";
 import Summary from "./Summary";
 
@@ -95,7 +95,7 @@ export default function OfflineSigner() {
     const w = newWorker();
     workerRef.current = w;
     setBuildErr(null);
-    setProgress({ done: 0, total: tree === TREE_PRIMARY ? 256 : 16 });
+    setProgress({ done: 0, total: tree === RECOVERY_TREE ? 16 : 256 });
     w.onmessage = (e) => {
       const m = e.data;
       if (m.type === "progress") setProgress({ done: m.done, total: m.total });
@@ -126,7 +126,7 @@ export default function OfflineSigner() {
     setProgress(null);
   };
 
-  const maxLeaf = built ? (1 << built.pub.height) - 1 : tree === TREE_PRIMARY ? 255 : 15;
+  const maxLeaf = built ? (1 << built.pub.height) - 1 : tree === RECOVERY_TREE ? 15 : 255;
 
   // Live preview of what will be signed.
   const preview = useMemo(() => {
@@ -135,7 +135,7 @@ export default function OfflineSigner() {
       const l = Number(leaf);
       if (leaf === "" || !Number.isInteger(l) || l < 0 || l > maxLeaf) throw new Error(`Leaf must be 0–${maxLeaf}`);
       const action = actionFromForm(form);
-      const dec = form.kind === "withdraw" && form.asset === "token" ? Number(form.decimals) : undefined;
+      const dec = KIND_FIELDS[form.kind].includes("asset") && form.asset === "token" ? Number(form.decimals) : undefined;
       return { ok: true as const, v, l, action, summary: summarize(v.toBase58(), tree, l, action, dec) };
     } catch (e) {
       return { ok: false as const, err: errMsg(e) };
@@ -162,8 +162,6 @@ export default function OfflineSigner() {
 
   const parts = useMemo(() => (out ? splitForQr(out.text, partSize) : []), [out, partSize]);
   const set = (k: keyof ActionForm) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }));
-  const needsAmount = form.kind === "withdraw" || form.kind === "stake";
-  const needsSeed = form.kind === "stake" || form.kind === "unstake" || form.kind === "collectStake";
 
   return (
     <div className="flex flex-col gap-6">
@@ -214,10 +212,12 @@ export default function OfflineSigner() {
                 <input className="field" inputMode="numeric" value={vaultNumber} onChange={(e) => setVaultNumber(e.target.value.trim())} />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label>tree</Label>
+                <Label>your slot in the vault</Label>
                 <select className="field" value={tree} onChange={(e) => setTree(Number(e.target.value))}>
-                  <option value={TREE_PRIMARY}>primary (256 keys)</option>
-                  <option value={TREE_RECOVERY}>recovery (16 keys)</option>
+                  <option value={TREE_PRIMARY}>signer 1 / owner (256 keys)</option>
+                  <option value={1}>signer 2 / co-signer (256 keys)</option>
+                  <option value={2}>signer 3 / co-signer (256 keys)</option>
+                  <option value={RECOVERY_TREE}>recovery (16 keys)</option>
                 </select>
               </div>
             </div>
@@ -236,6 +236,10 @@ export default function OfflineSigner() {
               </div>
             )}
             {buildErr && <div className="text-[12px] text-bad">✕ {buildErr}</div>}
+            <Note kind="warn">
+              One tree, one vault: the tree of this phrase and vault number must serve <strong>only one vault</strong>. Online, check on{" "}
+              <Link href="/mine" className="text-teal">/mine</Link> (or /vaults) that this tree root appears in no other vault before you sign.
+            </Note>
             {built && (
               <div className="grid gap-1 text-[12px]">
                 <div className="flex gap-3">
@@ -245,7 +249,7 @@ export default function OfflineSigner() {
                 <div className="flex gap-3">
                   <span className="w-20 shrink-0 text-dim">keys</span>
                   <span className="text-mute">
-                    {1 << built.pub.height} one-time keys, {built.tree === TREE_PRIMARY ? "primary" : "recovery"} tree of vault #{built.vaultNumber}
+                    {1 << built.pub.height} one-time keys, {SLOT_LABEL(built.tree)} tree of vault #{built.vaultNumber}
                   </span>
                 </div>
               </div>
@@ -276,53 +280,81 @@ export default function OfflineSigner() {
               </div>
             </div>
 
-            {form.kind === "withdraw" && (
-              <>
-                <div className="flex gap-2">
-                  {(["sol", "token"] as const).map((a) => (
-                    <button key={a} className={`btn sm ${form.asset === a ? "outline" : "ghost"}`} onClick={() => setForm((f) => ({ ...f, asset: a }))}>
-                      {a === "sol" ? "SOL" : "SPL token"}
-                    </button>
-                  ))}
+            {(() => {
+              const f = KIND_FIELDS[form.kind];
+              const tokenAsset = f.includes("asset") && form.asset === "token";
+              const field = (k: keyof ActionForm, label: string, extra: Record<string, string> = {}) => (
+                <div className="flex flex-col gap-1.5">
+                  <Label>{label}</Label>
+                  <input className="field" value={form[k] as string} onChange={set(k)} spellCheck={false} {...extra} />
                 </div>
-                {form.asset === "token" && (
-                  <div className="grid grid-cols-[1fr_96px] gap-3">
-                    <div className="flex flex-col gap-1.5">
-                      <Label>mint</Label>
-                      <input className="field" value={form.mint} onChange={set("mint")} spellCheck={false} />
-                    </div>
-                    <div className="flex flex-col gap-1.5">
-                      <Label>decimals</Label>
-                      <input className="field" inputMode="numeric" value={form.decimals} onChange={set("decimals")} />
-                    </div>
+              );
+              const unit = (k: "intervalUnit" | "periodUnit") => (
+                <select className="field !w-24" value={form[k]} onChange={(e) => setForm((x) => ({ ...x, [k]: e.target.value as "h" | "d" }))}>
+                  <option value="h">hours</option>
+                  <option value="d">days</option>
+                </select>
+              );
+              return (
+                <>
+                  {f.includes("asset") && (
+                    <>
+                      <div className="flex gap-2">
+                        {(["sol", "token"] as const).map((a) => (
+                          <button key={a} className={`btn sm ${form.asset === a ? "outline" : "ghost"}`} onClick={() => setForm((x) => ({ ...x, asset: a }))}>
+                            {a === "sol" ? "SOL" : "SPL / Token-2022"}
+                          </button>
+                        ))}
+                      </div>
+                      {tokenAsset && (
+                        <div className="grid grid-cols-[1fr_96px] gap-3">
+                          {field("mint", "mint")}
+                          {field("decimals", "decimals", { inputMode: "numeric" })}
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {f.includes("id") && field("id", form.kind === "schedule" || form.kind === "cancelSchedule" ? "schedule slot (0–255)" : "budget slot (0–255)", { inputMode: "numeric" })}
+                  {f.includes("session") && field("session", "session wallet (an ordinary wallet that may spend)")}
+                  {f.includes("dest") && field("dest", form.kind === "schedule" ? "pay to" : "destination wallet")}
+                  {f.includes("vote") && field("vote", "validator vote account")}
+                  {f.includes("newVault") && field("newVault", "new vault address (must be an initialized Noxvault)")}
+                  <div className="grid grid-cols-2 gap-3">
+                    {f.includes("amount") &&
+                      field(
+                        "amount",
+                        `${form.kind === "schedule" ? "amount per payment" : form.kind === "budget" ? "limit per period" : "amount"} (${tokenAsset ? "tokens" : "SOL"})`,
+                        { inputMode: "decimal", placeholder: "0.0" }
+                      )}
+                    {f.includes("seed") && field("seed", "stake slot (0–7)", { inputMode: "numeric" })}
+                    {f.includes("count") && field("count", "number of payments", { inputMode: "numeric" })}
                   </div>
-                )}
-                <div className="flex flex-col gap-1.5">
-                  <Label>destination wallet</Label>
-                  <input className="field" value={form.dest} onChange={set("dest")} spellCheck={false} />
-                </div>
-              </>
-            )}
-            {form.kind === "stake" && (
-              <div className="flex flex-col gap-1.5">
-                <Label>validator vote account</Label>
-                <input className="field" value={form.vote} onChange={set("vote")} spellCheck={false} />
-              </div>
-            )}
-            <div className="grid grid-cols-2 gap-3">
-              {needsAmount && (
-                <div className="flex flex-col gap-1.5">
-                  <Label>amount ({form.kind === "withdraw" && form.asset === "token" ? "tokens" : "SOL"})</Label>
-                  <input className="field" inputMode="decimal" value={form.amount} onChange={set("amount")} placeholder="0.0" />
-                </div>
-              )}
-              {needsSeed && (
-                <div className="flex flex-col gap-1.5">
-                  <Label>stake slot</Label>
-                  <input className="field" inputMode="numeric" value={form.seed} onChange={set("seed")} />
-                </div>
-              )}
-            </div>
+                  {f.includes("interval") && (
+                    <div className="flex flex-col gap-1.5">
+                      <Label>every</Label>
+                      <div className="flex gap-2">
+                        <input className="field flex-1" inputMode="decimal" value={form.interval} onChange={set("interval")} />
+                        {unit("intervalUnit")}
+                      </div>
+                    </div>
+                  )}
+                  {f.includes("period") && (
+                    <div className="flex flex-col gap-1.5">
+                      <Label>period</Label>
+                      <div className="flex gap-2">
+                        <input className="field flex-1" inputMode="decimal" value={form.period} onChange={set("period")} />
+                        {unit("periodUnit")}
+                      </div>
+                    </div>
+                  )}
+                  {f.includes("start") && field("start", "first payment", { type: "datetime-local" })}
+                  {f.includes("expires") && field("expires", "budget expires", { type: "datetime-local" })}
+                  {(form.kind === "schedule" || form.kind === "budget" || form.kind === "cancelSchedule" || form.kind === "cancelBudget") && (
+                    <p className="text-[11px] text-dim">Slots: take a free one (new) or the existing one (stop) from the online prepare step / vault view.</p>
+                  )}
+                </>
+              );
+            })()}
             <div className="grid grid-cols-[120px_1fr] gap-3">
               <div className="flex flex-col gap-1.5">
                 <Label>fee (SOL)</Label>

@@ -1,7 +1,7 @@
 "use client";
 import { useState, type FormEvent } from "react";
 import { PublicKey } from "@solana/web3.js";
-import { TREE_RECOVERY, fetchState, withRetry, wordsToSecret, type Signer, type VaultStateView } from "@nox/sdk/client";
+import { RECOVERY_TREE, fetchState, withRetry, wordsToSecret, type Signer, type VaultStateView } from "@nox/sdk/client";
 import { equal } from "@nox/sdk/wots";
 import { Label, Note, PageHead, Panel } from "@/components/ui";
 import TreeProgress from "@/components/vault/TreeProgress";
@@ -38,9 +38,9 @@ export default function Recovery() {
       if (!Number.isInteger(num) || num < 0) throw new Error("Vault number must be 0 or more");
       const state = await withRetry(() => fetchState(program, vault));
       if (!state) throw new Error("No initialized Noxvault at this address");
-      if (state.config.recoveryHeight === 0) throw new Error("This vault has no recovery key");
-      const signer = await getSigner(master, num, TREE_RECOVERY, (done, total) => setProgress({ done, total }));
-      if (!equal(state.config.recoveryRoot, signer.pub.root))
+      if (state.config.trees[RECOVERY_TREE].height === 0) throw new Error("This vault has no recovery key");
+      const signer = await getSigner(master, num, RECOVERY_TREE, (done, total) => setProgress({ done, total }));
+      if (!equal(state.config.trees[RECOVERY_TREE].root, signer.pub.root))
         throw new Error(`This phrase (vault number ${num}) is not the recovery key of ${short(vault.toBase58(), 4)}. Try another vault number.`);
       setRes({ vault, state, signer });
     } catch (e) {

@@ -1,16 +1,15 @@
-// Builds the PUBLIC Merkle tree of one phrase/vault-number/tree in a worker so the page stays
-// responsive. Receives the 32-byte master and returns only public data (levels, pk_seed, root).
-import { buildTree, treeSeeds, PRIMARY_HEIGHT, RECOVERY_HEIGHT } from "@nox/sdk/wots";
-import { seedIndex } from "./treeIndex";
+// Builds the PUBLIC Merkle tree of one phrase / vault number / slot kind in a worker so the page
+// stays responsive. Receives the 32-byte master and returns only public data.
+import { buildTree, treeSeeds, seedIndex, PRIMARY_HEIGHT, RECOVERY_HEIGHT } from "@nox/sdk/wots";
 
-type Req = { id: number; master: Uint8Array; vaultNumber: number; tree: 0 | 1 };
+type Req = { id: number; master: Uint8Array; vaultNumber: number; recovery: boolean };
 
 self.onmessage = (e: MessageEvent<Req>) => {
-  const { id, master, vaultNumber, tree } = e.data;
+  const { id, master, vaultNumber, recovery } = e.data;
   try {
-    const seeds = treeSeeds(master, seedIndex(vaultNumber, tree));
+    const seeds = treeSeeds(master, seedIndex(vaultNumber, recovery ? 1 : 0));
     let last = 0;
-    const pub = buildTree(seeds, tree === 0 ? PRIMARY_HEIGHT : RECOVERY_HEIGHT, (done, total) => {
+    const pub = buildTree(seeds, recovery ? RECOVERY_HEIGHT : PRIMARY_HEIGHT, (done, total) => {
       if (done === total || done - last >= 4) {
         last = done;
         (self as unknown as Worker).postMessage({ id, progress: [done, total] });

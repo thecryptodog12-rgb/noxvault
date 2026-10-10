@@ -30,6 +30,10 @@ function XIcon({ size = 16 }: { size?: number }) {
 }
 
 const TOOLS = [
+  { href: "/escape", label: "Escape Hatch" },
+  { href: "/scan", label: "Scan" },
+  { href: "/canary", label: "Quantum canary" },
+  { href: "/cosign", label: "Co-signer codes" },
   { href: "/offline", label: "Offline signing" },
   { href: "/backup", label: "Backup" },
 ];
@@ -206,7 +210,7 @@ export default function Shell({ children }: { children: ReactNode }) {
             <div>
               <div className="text-[12px] tracking-[0.18em]">
                 <span className="font-bold">NOXVAULT</span>{" "}
-                <span className="text-teal/80">{"// v2.0 // SOLANA"}</span>
+                <span className="text-teal/80">{"// v3.0 // SOLANA"}</span>
               </div>
               <div className="mt-1 text-[10px] tracking-[0.14em] text-dim">BUILT ON HASHES, FOR A LONGER TOMORROW</div>
             </div>

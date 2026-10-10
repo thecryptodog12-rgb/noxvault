@@ -3,14 +3,15 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { PublicKey } from "@solana/web3.js";
-import { decodeState, fetchState, vaultStakes, withRetry, type VaultStateView } from "@nox/sdk/client";
+import { RECOVERY_TREE, decodeState, fetchState, keysLeft, vaultSchedules, vaultStakes, withRetry, type VaultStateView } from "@nox/sdk/client";
 import { Copy, Empty, Label, Note, PageHead, Panel, Status } from "@/components/ui";
-import { usedCount } from "@/components/vault/VaultView";
 import { useNox } from "@/lib/hooks";
 import { errMsg, fromBaseUnits, short, sol, timeAgo } from "@/lib/format";
 import { explorerUrl, NETWORK } from "@/lib/config";
 import { isSol, vaultAssets, type VaultAssets } from "@/lib/unlock";
 import { dateTime, duration, useNow } from "@/lib/time";
+
+const signersOf = (s: VaultStateView) => [0, 1, 2].filter((t) => s.config.trees[t].height > 0).length;
 
 export default function Explorer() {
   const { connection, program, deployed } = useNox();
@@ -77,7 +78,7 @@ export default function Explorer() {
             Vault <span className="inv">explorer</span>
           </>
         }
-        sub="Every initialized Noxvault on this network: balance, actions taken, pending withdrawals and whether it has a recovery key. Configs are public; phrases are not."
+        sub="Every initialized Noxvault on this network: balance, signers, pending actions, recovery and testament. Configs are public; phrases are not."
       />
 
       <Lookup initial={q} />
@@ -97,19 +98,21 @@ export default function Explorer() {
           <Empty title="loading…" />
         ) : states!.length === 0 ? (
           <Empty title="no vaults yet">
-            {deployed === false ? "Waiting for the program to go live." : <>Nobody has initialized a v2 vault yet. <Link href="/create" className="underline">Create one</Link>.</>}
+            {deployed === false ? "Waiting for the program to go live." : <>Nobody has initialized a v3 vault yet. <Link href="/create" className="underline">Create one</Link>.</>}
           </Empty>
         ) : (
           <div className="overflow-x-auto">
-            <table className="tbl min-w-[720px] whitespace-nowrap">
+            <table className="tbl min-w-[860px] whitespace-nowrap">
               <thead>
                 <tr>
                   <th>vault</th>
                   <th className="!text-right">balance</th>
                   <th className="!text-right">actions</th>
-                  <th>keys used</th>
+                  <th>signers</th>
+                  <th>keys left</th>
                   <th>pending</th>
                   <th>recovery</th>
+                  <th>heirs</th>
                   <th className="!text-right">created</th>
                 </tr>
               </thead>
@@ -125,9 +128,13 @@ export default function Explorer() {
                       </td>
                       <td className="text-right">{sol(balances.get(a) ?? 0)} SOL</td>
                       <td className="text-right">{s.actions}</td>
-                      <td className="text-mute">{usedCount(s.usedPrimary)}/256</td>
-                      <td>{s.pending ? <Status kind="pending" /> : <span className="text-dim">—</span>}</td>
-                      <td className="text-mute">{s.config.recoveryHeight ? "yes" : "no"}</td>
+                      <td className="text-mute">
+                        {s.config.threshold} of {signersOf(s)}
+                      </td>
+                      <td className="text-mute">{keysLeft(s, 0)}/256</td>
+                      <td>{s.pending ? <Status kind="pending" /> : s.migrateTo ? <span className="text-warn">migrating</span> : <span className="text-dim">—</span>}</td>
+                      <td className="text-mute">{s.config.trees[RECOVERY_TREE].height ? "yes" : "no"}</td>
+                      <td className="text-mute">{s.config.heirs.length || "—"}</td>
                       <td className="text-right text-dim">{timeAgo(s.createdAt)}</td>
                     </tr>
                   );
@@ -174,7 +181,7 @@ function LookupResult({ q }: { q: string }) {
   const [st, setSt] = useState<
     | { kind: "loading" }
     | { kind: "bad"; text: string }
-    | { kind: "ok"; vault: PublicKey; state: VaultStateView | null; assets: VaultAssets; staked: number }
+    | { kind: "ok"; vault: PublicKey; state: VaultStateView | null; assets: VaultAssets; staked: number; schedules: number | null }
   >({ kind: "loading" });
 
   useEffect(() => {
@@ -189,7 +196,8 @@ function LookupResult({ q }: { q: string }) {
       }
       try {
         const [state, assets, stakes] = await Promise.all([fetchState(program, vault), vaultAssets(connection, vault), vaultStakes(program, vault)]);
-        if (live) setSt({ kind: "ok", vault, state, assets, staked: stakes.reduce((t, s) => t + (s?.lamports ?? 0), 0) });
+        const schedules = state ? await vaultSchedules(program, vault).then((l) => l.length).catch(() => null) : null;
+        if (live) setSt({ kind: "ok", vault, state, assets, staked: stakes.reduce((t, s) => t + (s?.lamports ?? 0), 0), schedules });
       } catch (e) {
         if (live) setSt({ kind: "bad", text: errMsg(e) });
       }
@@ -221,7 +229,7 @@ function LookupResult({ q }: { q: string }) {
               <Fact k="sol" v={sol(st.assets.lamports)} />
               <Fact k="staked" v={sol(st.staked)} />
               <Fact k="actions" v={st.state ? String(st.state.actions) : "—"} />
-              <Fact k="keys used" v={st.state ? `${usedCount(st.state.usedPrimary)}/256` : "—"} />
+              <Fact k="signers" v={st.state ? `${st.state.config.threshold} of ${signersOf(st.state)}` : "—"} />
             </div>
             {st.assets.tokens.filter((t) => t.amount > 0n).length > 0 && (
               <div className="text-[12.5px] text-mute">
@@ -239,18 +247,26 @@ function LookupResult({ q }: { q: string }) {
                 </span>
                 <span>
                   Recovery:{" "}
-                  {st.state.config.recoveryHeight
+                  {st.state.config.trees[RECOVERY_TREE].height
                     ? `yes, full control after ${duration(Number(st.state.config.recoveryDelay))} of inactivity`
                     : "none"}
+                  {" · "}Testament:{" "}
+                  {st.state.config.heirs.length
+                    ? `${st.state.config.heirs.length} heir(s) after ${duration(Number(st.state.config.testamentDelay))}`
+                    : "none"}
+                  {st.schedules !== null && ` · ${st.schedules} schedule(s)`}
                 </span>
                 <span>
                   Whitelist: {st.state.config.whitelist.length ? st.state.config.whitelist.map((k) => short(new PublicKey(k).toBase58(), 4)).join(", ") : "none"}
-                  {st.state.config.whitelist.length > 0 &&
-                    ` · others ${st.state.config.slowDelay === 0n ? "refused" : `wait ${duration(Number(st.state.config.slowDelay))}`}`}
+                  {(st.state.config.whitelist.length > 0 || st.state.config.instantLimit > 0n) &&
+                    ` · others ${st.state.config.instantLimit > 0n ? `${sol(st.state.config.instantLimit)} SOL/24 h instant, then ` : ""}${
+                      st.state.config.slowDelay === 0n ? "refused" : `wait ${duration(Number(st.state.config.slowDelay))}`
+                    }`}
                 </span>
+                {st.state.migrateTo && <span className="text-warn">Migrating to {short(st.state.migrateTo.toBase58(), 5)}</span>}
                 {st.state.pending && (
                   <span className="text-warn">
-                    Pending: {isSol(st.state.pending.mint) ? `${sol(st.state.pending.amount, 9)} SOL` : `${st.state.pending.amount} units`} →{" "}
+                    Pending {st.state.pending.kind}: {isSol(st.state.pending.mint) ? `${sol(st.state.pending.amount, 9)} SOL` : `${st.state.pending.amount} units`} →{" "}
                     {short(st.state.pending.dest.toBase58(), 4)},{" "}
                     {now >= st.state.pending.executableAt ? "executable now" : `executable in ${duration(st.state.pending.executableAt - now)}`}
                   </span>

@@ -7,6 +7,8 @@ const sdk = path.resolve(here, "../sdk");
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // a second dev server (e.g. against a local validator) can use its own build dir
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   experimental: { externalDir: true },
   outputFileTracingRoot: path.resolve(here, ".."),
   webpack(config) {

@@ -1,8 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { PublicKey } from "@solana/web3.js";
-import { vaultStakes, withRetry } from "@nox/sdk/client";
+import { RECOVERY_TREE, decodeState, vaultStakes, withRetry } from "@nox/sdk/client";
 import { Empty, Note, PageHead, Panel } from "@/components/ui";
 import { useNox } from "@/lib/hooks";
 import { NETWORK } from "@/lib/config";
@@ -17,6 +16,11 @@ interface Data {
   actions: number;
   withRecovery: number;
   withWhitelist: number;
+  multisig: number;
+  withHeirs: number;
+  migrating: number;
+  schedules: number | null;
+  budgets: number | null;
   pending: number;
   staked: number;
   stakeScanned: number;
@@ -26,16 +30,34 @@ interface Data {
 
 async function loadStats(program: ReturnType<typeof useNox>["program"]): Promise<Data> {
   const conn = program.provider.connection;
-  const all = await withRetry(() => program.account.vaultState.all());
-  const rows = all.map(({ account: a }) => ({
-    vault: a.vault as PublicKey,
-    actions: Number(a.actions),
-    createdAt: Number(a.createdAt),
-    recovery: a.config.recoveryHeight > 0,
-    whitelist: (a.config.whitelist as PublicKey[]).some((k) => !k.equals(PublicKey.default)),
-    pending: !!a.pending,
-    lamports: 0,
-  }));
+  const accts = await withRetry(() =>
+    conn.getProgramAccounts(program.programId, { commitment: "confirmed", filters: [{ memcmp: program.coder.accounts.memcmp("vaultState") }] })
+  );
+  const rows = accts.flatMap(({ account }) => {
+    try {
+      const s = decodeState(program, account.data);
+      return [
+        {
+          vault: s.vault,
+          actions: s.actions,
+          createdAt: s.createdAt,
+          recovery: s.config.trees[RECOVERY_TREE].height > 0,
+          whitelist: s.config.whitelist.length > 0,
+          multisig: [0, 1, 2].filter((t) => s.config.trees[t].height > 0).length > 1,
+          heirs: s.config.heirs.length > 0,
+          migrating: !!s.migrateTo,
+          pending: !!s.pending,
+          lamports: 0,
+        },
+      ];
+    } catch {
+      return []; // account from an older program version
+    }
+  });
+  const [schedules, budgets] = await Promise.all([
+    withRetry(() => program.account.schedule.all()).then((l) => l.length).catch(() => null),
+    withRetry(() => program.account.budget.all()).then((l) => l.length).catch(() => null),
+  ]);
 
   for (let i = 0; i < rows.length; i += 100) {
     const chunk = rows.slice(i, i + 100);
@@ -67,6 +89,11 @@ async function loadStats(program: ReturnType<typeof useNox>["program"]): Promise
     actions: rows.reduce((s, r) => s + r.actions, 0),
     withRecovery: rows.filter((r) => r.recovery).length,
     withWhitelist: rows.filter((r) => r.whitelist).length,
+    multisig: rows.filter((r) => r.multisig).length,
+    withHeirs: rows.filter((r) => r.heirs).length,
+    migrating: rows.filter((r) => r.migrating).length,
+    schedules,
+    budgets,
     pending: rows.filter((r) => r.pending).length,
     staked,
     stakeScanned: top.length,
@@ -155,7 +182,7 @@ export default function Stats() {
           Protocol <span className="inv">stats</span>
         </>
       }
-      sub={`Live numbers for every Noxvault v2 vault on ${NETWORK}, read straight from the program's accounts. No indexer, no backend.`}
+      sub={`Live numbers for every Noxvault v3 vault on ${NETWORK}, read straight from the program's accounts. No indexer, no backend.`}
     />
   );
 
@@ -175,7 +202,7 @@ export default function Stats() {
         {head}
         <Panel>
           <Empty title="Not live on this network yet">
-            The Noxvault v2 program is not deployed on {NETWORK}. Stats appear here as soon as it is.
+            The Noxvault v3 program is not deployed on {NETWORK}. Stats appear here as soon as it is.
           </Empty>
         </Panel>
       </div>
@@ -186,8 +213,8 @@ export default function Stats() {
       <div className="flex flex-col gap-4">
         {head}
         <Panel>
-          <Empty title="No v2 data to show">
-            The program on {NETWORK} did not return v2 vault accounts (it may still run an older version, or the RPC refused the
+          <Empty title="No v3 data to show">
+            The program on {NETWORK} did not return v3 vault accounts (it may still run an older version, or the RPC refused the
             query). <span className="text-mute">Details: {err.slice(0, 160)}</span>
           </Empty>
           <div className="flex justify-center pb-8">
@@ -207,7 +234,7 @@ export default function Stats() {
       {data.vaults === 0 ? (
         <Panel>
           <Empty title="No vaults yet">
-            Nobody has initialized a v2 vault on {NETWORK} so far. <Link href="/create" className="text-teal">Create the first one</Link>.
+            Nobody has initialized a v3 vault on {NETWORK} so far. <Link href="/create" className="text-teal">Create the first one</Link>.
           </Empty>
         </Panel>
       ) : (
@@ -219,7 +246,10 @@ export default function Stats() {
             <Tile k="SOL staked" v={sol(data.staked, 2)} sub={`stake accounts of the ${data.stakeScanned} largest vaults`} />
             <Tile k="with recovery key" v={data.withRecovery.toLocaleString("en-US")} sub={`${Math.round((100 * data.withRecovery) / data.vaults)}% of vaults`} />
             <Tile k="with whitelist" v={data.withWhitelist.toLocaleString("en-US")} sub={`${Math.round((100 * data.withWhitelist) / data.vaults)}% of vaults`} />
-            <Tile k="pending withdrawals" v={data.pending.toLocaleString("en-US")} sub="waiting out their delay" />
+            <Tile k="multi-signer" v={data.multisig.toLocaleString("en-US")} sub="vaults with co-signers" />
+            <Tile k="with testament" v={data.withHeirs.toLocaleString("en-US")} sub="heirs set" />
+            <Tile k="schedules · budgets" v={`${data.schedules ?? "–"} · ${data.budgets ?? "–"}`} sub="active on chain" />
+            <Tile k="pending · migrating" v={`${data.pending} · ${data.migrating}`} sub="waiting out a delay / moving" />
             <Tile k="updated" v={data.at.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })} sub={NETWORK} />
           </div>
           <Panel title={`vaults created per day // last ${DAYS} days`}>

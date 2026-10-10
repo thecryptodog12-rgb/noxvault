@@ -7,8 +7,7 @@ import { LAMPORTS_PER_SOL, PublicKey, SystemProgram, type TransactionInstruction
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import QRCode from "qrcode";
 import {
-  TREE_PRIMARY,
-  TREE_RECOVERY,
+  RECOVERY_TREE,
   fetchState,
   findVaultsFor,
   initVaultIx,
@@ -31,6 +30,8 @@ import { sendIxs } from "@/lib/unlock";
 import { configToJson } from "@/lib/configJson";
 import { duration } from "@/lib/time";
 
+const signerCountOf = (c: { trees: { height: number }[] }) => [0, 1, 2].filter((t) => c.trees[t].height > 0).length;
+const fromHex = (h: string) => Uint8Array.from(h.match(/../g)!.map((x) => parseInt(x, 16)));
 const RELAY_INIT_MIN = 0.02 * LAMPORTS_PER_SOL;
 type RecoveryMode = "none" | "code" | "generate";
 
@@ -54,7 +55,13 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
       try {
         // The first vault number with no initialized vault (usually 0).
         for (let n = 0; n < 32; n++) {
-          const s = await getSigner(master, n, TREE_PRIMARY, (done, total) => live && setProgress({ done, total }));
+          const s = await getSigner(master, n, 0, (done, total) => live && setProgress({ done, total }));
+          // skip trees this browser already handed out as a co-signer code (/cosign)
+          let given = false;
+          try {
+            given = localStorage.getItem(`nox3.code.given.cosigner.${hex(s.pub.root)}`) !== null;
+          } catch {}
+          if (given) continue;
           const existing = await withRetry(() => findVaultsFor(program, s));
           if (!live) return;
           if (!existing.length) {
@@ -86,6 +93,11 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
   const [whitelist, setWhitelist] = useState<string[]>([""]);
   const [strict, setStrict] = useState(false);
   const [slowHours, setSlowHours] = useState("24");
+  const [coCodes, setCoCodes] = useState<string[]>([]);
+  const [threshold, setThreshold] = useState(1);
+  const [instantSol, setInstantSol] = useState("0");
+  const [heirs, setHeirs] = useState<{ addr: string; pct: string }[]>([]);
+  const [testDays, setTestDays] = useState("365");
   const [remember, setRemember] = useState<Remember>(() => {
     const s = loadWords();
     return s && s.words === words ? s.where : "off";
@@ -101,7 +113,7 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
     setRecBusy(true);
     try {
       const m = newMasterSecret();
-      const s = await getSigner(m, vaultNumber, TREE_RECOVERY);
+      const s = await getSigner(m, vaultNumber, RECOVERY_TREE);
       setRecWords(secretToWords(m));
       setRecRoot(s.pub.root);
       setRecHanded(false);
@@ -138,14 +150,56 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
     if (new Set(wl.map((k) => k.toBase58())).size !== wl.length) return { error: "The whitelist has a duplicate." } as const;
     const hours = Number(slowHours);
     if (wl.length && !strict && (!Number.isFinite(hours) || hours < 1 || hours > 24 * 365)) return { error: "Delay must be 1 hour to 365 days." } as const;
+    const coSigners: Uint8Array[] = [];
+    for (const [i, raw] of coCodes.entries()) {
+      const c = raw.trim().toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(c)) return { error: `Co-signer code ${i + 1} must be 64 hex characters.` } as const;
+      const root = fromHex(c);
+      if (root.every((b) => b === 0)) return { error: `Co-signer code ${i + 1} is empty.` } as const;
+      const same = (a: Uint8Array, b: Uint8Array) => a.every((x, k) => x === b[k]);
+      if (same(root, signer.pub.root) || (recoveryRoot && same(root, recoveryRoot)) || coSigners.some((r) => same(r, root)))
+        return { error: `Co-signer code ${i + 1} repeats another key in this vault.` } as const;
+      coSigners.push(root);
+    }
+    const signers = 1 + coSigners.length;
+    if (threshold < 1 || threshold > signers) return { error: `Threshold must be 1–${signers}.` } as const;
+    let instant = 0n;
+    try {
+      instant = instantSol.trim() ? toBaseUnits(instantSol, 9) : 0n;
+    } catch {
+      return { error: "Daily instant limit must be a number of SOL." } as const;
+    }
+    const heirList: { addr: PublicKey; bps: number }[] = [];
+    for (const h of heirs) {
+      if (!h.addr.trim() && !h.pct.trim()) continue;
+      let addr: PublicKey;
+      try {
+        addr = new PublicKey(h.addr.trim());
+      } catch {
+        return { error: `Heir address is not valid: ${short(h.addr, 6)}` } as const;
+      }
+      const pct = Number(h.pct);
+      if (!(pct > 0) || Math.round(pct * 100) !== pct * 100) return { error: "Heir shares are percentages with at most 2 decimals." } as const;
+      heirList.push({ addr, bps: Math.round(pct * 100) });
+    }
+    if (heirList.length && heirList.reduce((t, h) => t + h.bps, 0) !== 10000) return { error: "Heir shares must add up to exactly 100%." } as const;
+    const tdays = Number(testDays);
+    if (heirList.length && (!Number.isFinite(tdays) || tdays < 30 || tdays > 3650)) return { error: "Testament delay must be 30–3650 days." } as const;
+    const restricted = wl.length > 0 || instant > 0n;
+    if (instant > 0n && !strict && !wl.length && (!Number.isFinite(hours) || hours < 1)) return { error: "Delay must be at least 1 hour." } as const;
     const config = makeConfig(signer, {
+      coSigners,
+      threshold,
       recoveryRoot,
       recoveryDelaySecs: recoveryRoot ? Math.round(days * 86400) : undefined,
       whitelist: wl,
-      slowDelaySecs: wl.length ? (strict ? 0 : Math.round(hours * 3600)) : 0,
+      slowDelaySecs: restricted ? (strict ? 0 : Math.round(hours * 3600)) : 0,
+      instantLimitLamports: instant,
+      heirs: heirList,
+      testamentDelaySecs: heirList.length ? Math.round(tdays * 86400) : undefined,
     });
     return { config, vault: vaultOf(config, program.programId) } as const;
-  }, [signer, recMode, recCode, recRoot, recHanded, recDays, whitelist, strict, slowHours, program]);
+  }, [signer, recMode, recCode, recRoot, recHanded, recDays, whitelist, strict, slowHours, coCodes, threshold, instantSol, heirs, testDays, program]);
 
   const config = "config" in built ? built.config : null;
   const vault = "vault" in built ? built.vault : null;
@@ -154,7 +208,7 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
   useEffect(() => {
     if (!config || !vault) return;
     try {
-      localStorage.setItem(`nox2.config.${vault.toBase58()}`, JSON.stringify(configToJson(config)));
+      localStorage.setItem(`nox3.config.${vault.toBase58()}`, JSON.stringify(configToJson(config)));
     } catch {}
   }, [config, vault]);
 
@@ -282,7 +336,7 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
               {(
                 [
                   ["none", "None", "only your phrase can act"],
-                  ["code", "Paste a recovery code", "a holder's 64-hex tree root"],
+                  ["code", "Paste a recovery code", "the holder makes it on /cosign"],
                   ["generate", "Make a recovery phrase", "24 words to hand to someone"],
                 ] as const
               ).map(([m, t, d]) => (
@@ -366,7 +420,12 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
                 [+ add address]
               </button>
             )}
-            {wlCount > 0 && (
+            <label className="flex flex-wrap items-center gap-3 text-[12.5px] text-mute">
+              Daily instant limit
+              <input className="field !w-28" inputMode="decimal" value={instantSol} onChange={(e) => setInstantSol(e.target.value)} />
+              SOL per 24 h may go to other addresses at once (0 = off). Above it, they wait.
+            </label>
+            {(wlCount > 0 || (Number(instantSol) || 0) > 0) && (
               <div className="flex flex-wrap items-center gap-3 text-[12.5px] text-mute">
                 Withdrawals to other addresses:
                 <label className="flex items-center gap-2">
@@ -380,6 +439,94 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
                   strict: whitelist only
                 </label>
               </div>
+            )}
+          </div>
+
+          {/* co-signers */}
+          <div className="flex flex-col gap-3">
+            <Label>co-signers (optional, up to 2)</Label>
+            <p className="text-[11.5px] text-dim">
+              Each co-signer opens <Link href="/cosign" className="underline">/cosign</Link> with their own phrase and sends you their code. With a
+              threshold above 1, every action needs that many signers to approve the same thing.
+            </p>
+            {coCodes.map((c, i) => (
+              <div key={i} className="flex gap-2">
+                <input
+                  className="field flex-1 font-mono"
+                  placeholder={`co-signer ${i + 2} code (64 hex)`}
+                  value={c}
+                  onChange={(e) => setCoCodes((l) => l.map((x, k) => (k === i ? e.target.value : x)))}
+                  spellCheck={false}
+                />
+                <button
+                  className="btn ghost sm"
+                  onClick={() => {
+                    setCoCodes((l) => l.filter((_, k) => k !== i));
+                    setThreshold((t) => Math.min(t, coCodes.length));
+                  }}
+                  aria-label="Remove"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            {coCodes.length < 2 && (
+              <button className="self-start text-[11px] uppercase tracking-[0.14em] text-dim hover:text-teal" onClick={() => setCoCodes((l) => [...l, ""])}>
+                [+ add co-signer]
+              </button>
+            )}
+            {coCodes.length > 0 && (
+              <label className="flex flex-wrap items-center gap-3 text-[12.5px] text-mute">
+                Approvals needed:
+                <select className="field !w-24" value={threshold} onChange={(e) => setThreshold(Number(e.target.value))}>
+                  {Array.from({ length: coCodes.length + 1 }, (_, i) => i + 1).map((n) => (
+                    <option key={n} value={n}>
+                      {n} of {coCodes.length + 1}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
+
+          {/* testament */}
+          <div className="flex flex-col gap-3">
+            <Label>testament (optional, up to 4 heirs)</Label>
+            {heirs.map((h, i) => (
+              <div key={i} className="flex gap-2">
+                <input
+                  className="field flex-1"
+                  placeholder="heir wallet address"
+                  value={h.addr}
+                  onChange={(e) => setHeirs((l) => l.map((x, k) => (k === i ? { ...x, addr: e.target.value } : x)))}
+                  spellCheck={false}
+                />
+                <input
+                  className="field !w-24"
+                  placeholder="%"
+                  inputMode="decimal"
+                  value={h.pct}
+                  onChange={(e) => setHeirs((l) => l.map((x, k) => (k === i ? { ...x, pct: e.target.value } : x)))}
+                />
+                <button className="btn ghost sm" onClick={() => setHeirs((l) => l.filter((_, k) => k !== i))} aria-label="Remove">
+                  ×
+                </button>
+              </div>
+            ))}
+            {heirs.length < 4 && (
+              <button
+                className="self-start text-[11px] uppercase tracking-[0.14em] text-dim hover:text-teal"
+                onClick={() => setHeirs((l) => [...l, { addr: "", pct: l.length ? "" : "100" }])}
+              >
+                [+ add heir]
+              </button>
+            )}
+            {heirs.length > 0 && (
+              <label className="flex flex-wrap items-center gap-3 text-[12.5px] text-mute">
+                Anyone may distribute the vault to the heirs after
+                <input className="field !w-24" inputMode="numeric" value={testDays} onChange={(e) => setTestDays(e.target.value)} />
+                days without owner activity. Shares must add up to 100%.
+              </label>
             )}
           </div>
 
@@ -411,15 +558,34 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
             <Note kind="warn">{built.error}</Note>
           ) : (
             <>
-              <dl className="grid grid-cols-[150px_1fr] gap-x-3 gap-y-1.5 text-[12.5px] [&>dd]:min-w-0">
-                <dt className="text-dim">one-time keys</dt>
-                <dd>256 (primary tree, root {hex(config!.primaryRoot).slice(0, 16)}…)</dd>
+<dl className="grid grid-cols-[150px_1fr] gap-x-3 gap-y-1.5 text-[12.5px] [&>dd]:min-w-0">
+                <dt className="text-dim">signers</dt>
+                <dd>
+                  {signerCountOf(config!)} ({signerCountOf(config!) === 1 ? "you" : `you + ${signerCountOf(config!) - 1} co-signer${signerCountOf(config!) > 2 ? "s" : ""}`}) ·{" "}
+                  {config!.threshold} must approve each action · 256 one-time keys each
+                </dd>
                 <dt className="text-dim">recovery</dt>
-                <dd>{config!.recoveryHeight ? `yes, 16 keys · full control after ${duration(Number(config!.recoveryDelay))} inactivity` : "none"}</dd>
+                <dd>
+                  {config!.trees[RECOVERY_TREE].height
+                    ? `yes, 16 keys · may always cancel; full control after ${duration(Number(config!.recoveryDelay))} of owner inactivity`
+                    : "none"}
+                </dd>
                 <dt className="text-dim">whitelist</dt>
                 <dd>{config!.whitelist.length ? config!.whitelist.map((k) => short(new PublicKey(k).toBase58(), 4)).join(", ") : "none"}</dd>
                 <dt className="text-dim">other addresses</dt>
-                <dd>{!config!.whitelist.length ? "allowed immediately" : config!.slowDelay === 0n ? "refused" : `wait ${duration(Number(config!.slowDelay))}`}</dd>
+                <dd>
+                  {!config!.whitelist.length && config!.instantLimit === 0n
+                    ? "allowed immediately"
+                    : `${config!.instantLimit > 0n ? `up to ${sol(config!.instantLimit)} SOL / 24 h at once, then ` : ""}${
+                        config!.slowDelay === 0n ? "refused" : `wait ${duration(Number(config!.slowDelay))} (cancellable)`
+                      }; tokens always wait`}
+                </dd>
+                <dt className="text-dim">testament</dt>
+                <dd>
+                  {config!.heirs.length
+                    ? `${config!.heirs.map((h) => `${short(new PublicKey(h.addr).toBase58(), 4)} ${h.bps / 100}%`).join(", ")} after ${duration(Number(config!.testamentDelay))} of inactivity`
+                    : "none"}
+                </dd>
                 <dt className="text-dim">status</dt>
                 <dd>
                   {initialized === null ? "checking…" : initialized ? <span className="text-teal">initialized</span> : "not initialized yet"} ·{" "}

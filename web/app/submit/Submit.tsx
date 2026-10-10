@@ -3,14 +3,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { PublicKey } from "@solana/web3.js";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { SOL_MINT, actionDigest, buildSteps, mintTokenProgram, packSteps, remainingSteps, type SignedAction } from "@nox/sdk/client";
+import { RECOVERY_TREE, SOL_MINT, actionDigest, buildSteps, completesApproval, mintTokenProgram, packSteps, remainingSteps, type SignedAction } from "@nox/sdk/client";
 import { Copy, Label, Note, PageHead, Panel } from "@/components/ui";
 import WalletButton from "@/components/WalletButton";
 import { useNox } from "@/lib/hooks";
 import { fetchRelayerInfo, relayAction, sendIxs, type RelayerInfo } from "@/lib/unlock";
 import { explorerUrl } from "@/lib/config";
 import { errMsg, fromBaseUnits, hex, short } from "@/lib/format";
-import { PartCollector, checkSigned, parseSubmitInput, prepareLeaves, summarize, type Check } from "@/lib/offline";
+import { PartCollector, SLOT_LABEL, actionMint, checkSigned, parseSubmitInput, prepareLeaves, summarize, type Check } from "@/lib/offline";
 import { tokenInfo } from "@/lib/tokens";
 import Summary from "../offline/Summary";
 import Scanner from "./Scanner";
@@ -32,7 +32,7 @@ function Prepare() {
     try {
       const v = new PublicKey(vault.trim());
       const [p, r] = await Promise.all([prepareLeaves(program, v), fetchRelayerInfo().catch(() => null)]);
-      if (!p) throw new Error("No v2 vault state found for this address on this network.");
+      if (!p) throw new Error("No v3 vault state found for this address on this network.");
       setRes(p);
       setRelayer(r);
     } catch (e) {
@@ -61,16 +61,19 @@ function Prepare() {
           <>
             <table className="tbl">
               <tbody>
-                <tr>
-                  <td className="w-40 text-dim">next primary leaf</td>
-                  <td className="text-[15px] font-bold text-teal">{res.primaryLeaf === -1 ? "none left" : `#${res.primaryLeaf}`}</td>
-                </tr>
-                {res.recoveryLeaf !== null && (
-                  <tr>
-                    <td className="text-dim">next recovery leaf</td>
-                    <td className="text-bone">{res.recoveryLeaf === -1 ? "none left" : `#${res.recoveryLeaf}`}</td>
+                {res.slots.map((x) => (
+                  <tr key={x.slot}>
+                    <td className="w-48 text-dim">next leaf · {SLOT_LABEL(x.slot)} (slot {x.slot})</td>
+                    <td className={x.slot === 0 ? "text-[15px] font-bold text-teal" : "text-bone"}>{x.next === -1 ? "none left" : `#${x.next}`}</td>
                   </tr>
-                )}
+                ))}
+                <tr>
+                  <td className="text-dim">rules</td>
+                  <td>
+                    {res.state.config.threshold} of {res.slots.filter((x) => x.slot < 3).length} signers must approve
+                    {res.state.migrateTo ? ` · migrating to ${short(res.state.migrateTo.toBase58())}` : ""}
+                  </td>
+                </tr>
                 <tr>
                   <td className="text-dim">balance</td>
                   <td>{fromBaseUnits(BigInt(res.balance), 9)} SOL</td>
@@ -80,14 +83,14 @@ function Prepare() {
                   <td>{res.state.actions}</td>
                 </tr>
                 <tr>
-                  <td className="text-dim">pending withdrawal</td>
+                  <td className="text-dim">pending</td>
                   <td>
                     {res.state.pending
-                      ? `${res.state.pending.mint.equals(SOL_MINT) ? fromBaseUnits(res.state.pending.amount, 9) + " SOL" : res.state.pending.amount + " base units"} to ${short(res.state.pending.dest.toBase58())}, executable ${new Date(res.state.pending.executableAt * 1000).toLocaleString()}`
+                      ? `${res.state.pending.kind === "migrate" ? "migration: " : ""}${res.state.pending.mint.equals(SOL_MINT) ? fromBaseUnits(res.state.pending.amount, 9) + " SOL" : res.state.pending.amount + " base units"} to ${short(res.state.pending.dest.toBase58())}, executable ${new Date(res.state.pending.executableAt * 1000).toLocaleString()}`
                       : "none"}
                   </td>
                 </tr>
-                {res.state.config.recoveryHeight > 0 && (
+                {res.state.config.trees[RECOVERY_TREE].height > 0 && (
                   <tr>
                     <td className="text-dim">recovery full control</td>
                     <td>
@@ -108,10 +111,13 @@ function Prepare() {
                 )}
               </tbody>
             </table>
-            {(res.seenPrimary.length > 0 || res.seenRecovery.length > 0) && (
+            {res.slots.some((x) => x.seen.length > 0) && (
               <div className="text-[11.5px] text-dim">
-                Keys seen in history (skipped): primary {res.seenPrimary.join(", ") || "–"}
-                {res.state.config.recoveryHeight > 0 && <> · recovery {res.seenRecovery.join(", ") || "–"}</>}
+                Keys seen in history (skipped):{" "}
+                {res.slots
+                  .filter((x) => x.seen.length)
+                  .map((x) => `${SLOT_LABEL(x.slot)} ${x.seen.join(", ")}`)
+                  .join(" · ")}
               </div>
             )}
             <Note kind="warn">
@@ -159,9 +165,16 @@ export default function Submit() {
     setSent(null);
     setSendErr(null);
     setDecimals(undefined);
-    if (!signed || signed.action.kind !== "withdraw" || new PublicKey(signed.action.mint).equals(SOL_MINT)) return;
+    const mint = signed ? actionMint(signed.action) : null;
+    if (!mint) return;
     let live = true;
-    tokenInfo(connection, new PublicKey(signed.action.mint)).then((t) => live && t.known && setDecimals(t.decimals));
+    tokenInfo(connection, mint).then(async (t) => {
+      if (t.known) return live && setDecimals(t.decimals);
+      // no metadata: read decimals straight from the mint account
+      const r = await connection.getParsedAccountInfo(mint).catch(() => null);
+      const d = (r?.value?.data as { parsed?: { info?: { decimals?: number } } } | undefined)?.parsed?.info?.decimals;
+      if (live && typeof d === "number") setDecimals(d);
+    });
     return () => {
       live = false;
     };
@@ -241,7 +254,9 @@ export default function Submit() {
         signed.action.kind === "withdraw" && !new PublicKey(signed.action.mint).equals(SOL_MINT)
           ? await mintTokenProgram(connection, new PublicKey(signed.action.mint))
           : undefined;
-      const steps = await buildSteps(program, payer, signed, { tokenProgram });
+      // Execute only when this approval completes the vault's rules; otherwise it only records the approval.
+      const status = await completesApproval(program, signed.vault, signed.tree, signed.action);
+      const steps = await buildSteps(program, payer, signed, { tokenProgram, execute: status.willExecute, creator: status.creator ?? payer });
       const todo = await remainingSteps(program, payer, signed, steps);
       const txs = packSteps(payer, todo);
       for (let i = 0; i < txs.length; i++) {
@@ -276,7 +291,7 @@ export default function Submit() {
         }
       />
 
-      {deployed === false && <Note kind="warn">The Noxvault v2 program is not deployed on this network yet, so checks and sending will fail.</Note>}
+      {deployed === false && <Note kind="warn">The Noxvault v3 program is not deployed on this network yet, so checks and sending will fail.</Note>}
 
       <Prepare />
 

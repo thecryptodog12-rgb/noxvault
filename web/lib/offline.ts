@@ -5,9 +5,13 @@ import { PublicKey } from "@solana/web3.js";
 import { sha256 } from "@noble/hashes/sha256";
 import {
   SOL_MINT,
-  TREE_PRIMARY,
+  RECOVERY_TREE,
+  actionFromAnchor,
   actionDigest,
+  canExecute,
+  fetchApproval,
   fetchState,
+  isRestricted,
   leafUsed,
   withRetry,
   type Noxvault,
@@ -18,17 +22,51 @@ import { decodeRelayRequest, type RelayRequest } from "@nox/sdk/relayer";
 import { STEPS, chain, digits, encodeAction, equal, recoverRoot, type Action } from "@nox/sdk/wots";
 import { fromBaseUnits, toBaseUnits } from "./format";
 
-export const ACTION_KINDS = ["withdraw", "stake", "unstake", "collectStake", "cancel", "ping"] as const;
+export const ACTION_KINDS = [
+  "withdraw",
+  "schedule",
+  "budget",
+  "stake",
+  "unstake",
+  "collectStake",
+  "cancelSchedule",
+  "cancelBudget",
+  "migrate",
+  "ping",
+  "cancel",
+] as const;
 export type ActionKind = (typeof ACTION_KINDS)[number];
 
 export const KIND_LABEL: Record<ActionKind, string> = {
   withdraw: "Withdraw",
+  schedule: "Schedule recurring payments",
+  budget: "Budget for a session wallet",
   stake: "Stake",
   unstake: "Unstake",
   collectStake: "Collect stake",
-  cancel: "Cancel pending withdrawal",
+  cancelSchedule: "Stop a schedule",
+  cancelBudget: "Stop a budget",
+  migrate: "Migrate to a new vault",
   ping: "Ping (prove you are alive)",
+  cancel: "Cancel pending withdrawal / migration",
 };
+
+/** Which form fields an action kind uses. */
+export const KIND_FIELDS: Record<ActionKind, ("asset" | "dest" | "amount" | "seed" | "vote" | "id" | "interval" | "count" | "start" | "session" | "period" | "expires" | "newVault")[]> = {
+  withdraw: ["asset", "dest", "amount"],
+  schedule: ["id", "asset", "dest", "amount", "interval", "count", "start"],
+  budget: ["id", "session", "asset", "amount", "period", "expires"],
+  stake: ["seed", "vote", "amount"],
+  unstake: ["seed"],
+  collectStake: ["seed"],
+  cancelSchedule: ["id"],
+  cancelBudget: ["id"],
+  migrate: ["newVault"],
+  ping: [],
+  cancel: [],
+};
+
+export const SLOT_LABEL = (slot: number) => (slot === RECOVERY_TREE ? "recovery" : `signer ${slot + 1}`);
 
 // ---------- form → action ----------
 
@@ -38,9 +76,19 @@ export interface ActionForm {
   mint: string;
   decimals: string;
   dest: string;
-  amount: string; // SOL, or token units with `decimals`
+  amount: string; // SOL, or token units with `decimals` (schedule: per payment; budget: limit per period)
   seed: string;
   vote: string;
+  id: string; // schedule / budget slot
+  interval: string;
+  intervalUnit: "h" | "d";
+  count: string;
+  start: string; // datetime-local
+  session: string;
+  period: string;
+  periodUnit: "h" | "d";
+  expires: string; // datetime-local
+  newVault: string;
   fee: string; // SOL
   feePayee: string;
 }
@@ -54,6 +102,16 @@ export const EMPTY_FORM: ActionForm = {
   amount: "",
   seed: "0",
   vote: "",
+  id: "0",
+  interval: "30",
+  intervalUnit: "d",
+  count: "12",
+  start: "",
+  session: "",
+  period: "1",
+  periodUnit: "d",
+  expires: "",
+  newVault: "",
   fee: "0",
   feePayee: "",
 };
@@ -66,43 +124,89 @@ function key(label: string, v: string): Uint8Array {
   }
 }
 
-function seedOf(v: string): number {
+function u8Of(v: string, what: string): number {
   const n = Number(v);
-  if (!Number.isInteger(n) || n < 0 || n > 255) throw new Error("Stake slot must be 0–255");
+  if (!Number.isInteger(n) || n < 0 || n > 255) throw new Error(`${what} must be 0–255`);
   return n;
+}
+
+const UNIT = { h: 3600, d: 86400 } as const;
+
+function secs(v: string, unit: "h" | "d", what: string): bigint {
+  const n = Number(v);
+  if (!(n > 0)) throw new Error(`${what} must be more than 0`);
+  return BigInt(Math.round(n * UNIT[unit]));
+}
+
+function when(v: string, what: string): bigint {
+  const t = new Date(v).getTime();
+  if (!v || !Number.isFinite(t)) throw new Error(`Pick ${what}`);
+  return BigInt(Math.floor(t / 1000));
+}
+
+function assetOf(f: ActionForm): { mint: Uint8Array; decimals: number } {
+  const sol = f.asset === "sol";
+  const decimals = sol ? 9 : Number(f.decimals);
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) throw new Error("Decimals must be 0–18");
+  return { mint: sol ? SOL_MINT.toBytes() : key("Mint", f.mint), decimals };
+}
+
+function amountOf(f: ActionForm, decimals: number): bigint {
+  const amount = toBaseUnits(f.amount, decimals);
+  if (amount === 0n) throw new Error("Amount must be more than 0");
+  return amount;
 }
 
 /** Turns form input into an Action. Throws a readable error on bad input. */
 export function actionFromForm(f: ActionForm): Action {
   const fee = toBaseUnits(f.fee || "0", 9);
   const feePayee = fee > 0n ? key("Fee payee", f.feePayee) : new Uint8Array(32);
+  const withFee = <K extends object>(k: K) => ({ ...k, fee, feePayee }) as unknown as Action;
   switch (f.kind) {
     case "withdraw": {
-      const sol = f.asset === "sol";
-      const decimals = sol ? 9 : Number(f.decimals);
-      if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) throw new Error("Decimals must be 0–18");
-      const amount = toBaseUnits(f.amount, decimals);
-      if (amount === 0n) throw new Error("Amount must be more than 0");
-      return {
-        kind: "withdraw",
-        mint: sol ? SOL_MINT.toBytes() : key("Mint", f.mint),
+      const { mint, decimals } = assetOf(f);
+      return withFee({ kind: "withdraw", mint, dest: key("Destination", f.dest), amount: amountOf(f, decimals) });
+    }
+    case "schedule": {
+      const { mint, decimals } = assetOf(f);
+      const count = Number(f.count);
+      if (!Number.isInteger(count) || count < 1 || count > 65535) throw new Error("Number of payments must be 1–65535");
+      return withFee({
+        kind: "schedule",
+        id: u8Of(f.id, "Schedule slot"),
+        mint,
         dest: key("Destination", f.dest),
-        amount,
-        fee,
-        feePayee,
-      };
+        amount: amountOf(f, decimals),
+        interval: secs(f.interval, f.intervalUnit, "Interval"),
+        count,
+        start: when(f.start, "the first payment time"),
+      });
     }
-    case "stake": {
-      const amount = toBaseUnits(f.amount, 9);
-      if (amount === 0n) throw new Error("Amount must be more than 0");
-      return { kind: "stake", seed: seedOf(f.seed), vote: key("Vote account", f.vote), amount, fee, feePayee };
+    case "budget": {
+      const { mint, decimals } = assetOf(f);
+      return withFee({
+        kind: "budget",
+        id: u8Of(f.id, "Budget slot"),
+        session: key("Session wallet", f.session),
+        mint,
+        limit: amountOf(f, decimals),
+        period: secs(f.period, f.periodUnit, "Period"),
+        expires: when(f.expires, "an expiry time"),
+      });
     }
+    case "stake":
+      return withFee({ kind: "stake", seed: u8Of(f.seed, "Stake slot"), vote: key("Vote account", f.vote), amount: amountOf(f, 9) });
     case "unstake":
     case "collectStake":
-      return { kind: f.kind, seed: seedOf(f.seed), fee, feePayee };
+      return withFee({ kind: f.kind, seed: u8Of(f.seed, "Stake slot") });
+    case "cancelSchedule":
+    case "cancelBudget":
+      return withFee({ kind: f.kind, id: u8Of(f.id, f.kind === "cancelSchedule" ? "Schedule slot" : "Budget slot") });
+    case "migrate":
+      return withFee({ kind: "migrate", newVault: key("New vault", f.newVault) });
     case "cancel":
     case "ping":
-      return { kind: f.kind, fee, feePayee };
+      return withFee({ kind: f.kind });
   }
 }
 
@@ -116,6 +220,13 @@ export interface SummaryRow {
 
 const b58 = (b: Uint8Array) => new PublicKey(b).toBase58();
 const solStr = (l: bigint) => `${fromBaseUnits(l, 9)} SOL`;
+const dur = (secs: bigint) => {
+  const s = Number(secs);
+  if (s % 86400 === 0) return `${s / 86400} day${s === 86400 ? "" : "s"}`;
+  if (s % 3600 === 0) return `${s / 3600} hour${s === 3600 ? "" : "s"}`;
+  return `${s} seconds`;
+};
+const dateStr = (t: bigint) => new Date(Number(t) * 1000).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
 
 /**
  * A plain-language description of what a signed action does. `decimals` formats token amounts
@@ -124,47 +235,73 @@ const solStr = (l: bigint) => `${fromBaseUnits(l, 9)} SOL`;
 export function summarize(vault: string, tree: number, leaf: number, a: Action, decimals?: number): { headline: string; rows: SummaryRow[] } {
   const rows: SummaryRow[] = [
     { k: "vault", v: vault },
-    { k: "key", v: `${tree === TREE_PRIMARY ? "primary" : "recovery"} tree, one-time key #${leaf}` },
+    { k: "key", v: `${SLOT_LABEL(tree)} tree (slot ${tree}), one-time key #${leaf}` },
   ];
+  const amt = (mint: Uint8Array, n: bigint) =>
+    equal(mint, SOL_MINT.toBytes())
+      ? solStr(n)
+      : decimals !== undefined
+        ? `${fromBaseUnits(n, decimals)} tokens (${n} base units)`
+        : `${n} base units`;
+  const asset = (mint: Uint8Array) => (equal(mint, SOL_MINT.toBytes()) ? "SOL" : `token ${b58(mint)}`);
   let headline = "";
   switch (a.kind) {
-    case "withdraw": {
-      const sol = equal(a.mint, SOL_MINT.toBytes());
-      const amt = sol
-        ? solStr(a.amount)
-        : decimals !== undefined
-          ? `${fromBaseUnits(a.amount, decimals)} tokens (${a.amount} base units)`
-          : `${a.amount} base units`;
-      headline = `Withdraw ${amt} to ${b58(a.dest)}`;
-      rows.push({ k: "action", v: "withdraw", strong: true });
-      rows.push({ k: "asset", v: sol ? "SOL" : `token ${b58(a.mint)}` });
-      rows.push({ k: "amount", v: amt, strong: true });
-      rows.push({ k: "to", v: b58(a.dest), strong: true });
+    case "withdraw":
+      headline = `Withdraw ${amt(a.mint, a.amount)} to ${b58(a.dest)}`;
+      rows.push({ k: "action", v: "withdraw", strong: true }, { k: "asset", v: asset(a.mint) }, { k: "amount", v: amt(a.mint, a.amount), strong: true }, { k: "to", v: b58(a.dest), strong: true });
       break;
-    }
+    case "schedule":
+      headline = `Pay ${amt(a.mint, a.amount)} to ${b58(a.dest)} every ${dur(a.interval)}, ${a.count} times, starting ${dateStr(a.start)}`;
+      rows.push(
+        { k: "action", v: `create schedule #${a.id}`, strong: true },
+        { k: "asset", v: asset(a.mint) },
+        { k: "per payment", v: amt(a.mint, a.amount), strong: true },
+        { k: "to", v: b58(a.dest), strong: true },
+        { k: "every", v: dur(a.interval), strong: true },
+        { k: "payments", v: `${a.count} (total ${amt(a.mint, a.amount * BigInt(a.count))})`, strong: true },
+        { k: "first", v: dateStr(a.start) }
+      );
+      break;
+    case "budget":
+      headline = `Let wallet ${b58(a.session)} spend up to ${amt(a.mint, a.limit)} per ${dur(a.period)} until ${dateStr(a.expires)}`;
+      rows.push(
+        { k: "action", v: `create budget #${a.id}`, strong: true },
+        { k: "session wallet", v: b58(a.session), strong: true },
+        { k: "asset", v: asset(a.mint) },
+        { k: "limit", v: `${amt(a.mint, a.limit)} per ${dur(a.period)}`, strong: true },
+        { k: "expires", v: dateStr(a.expires), strong: true }
+      );
+      break;
     case "stake":
       headline = `Stake ${solStr(a.amount)} with vote account ${b58(a.vote)} (slot #${a.seed})`;
-      rows.push({ k: "action", v: "stake", strong: true });
-      rows.push({ k: "amount", v: solStr(a.amount), strong: true });
-      rows.push({ k: "validator", v: b58(a.vote), strong: true });
-      rows.push({ k: "stake slot", v: `#${a.seed}` });
+      rows.push({ k: "action", v: "stake", strong: true }, { k: "amount", v: solStr(a.amount), strong: true }, { k: "validator", v: b58(a.vote), strong: true }, { k: "stake slot", v: `#${a.seed}` });
       break;
     case "unstake":
       headline = `Unstake stake slot #${a.seed}`;
-      rows.push({ k: "action", v: "unstake (deactivate)", strong: true });
-      rows.push({ k: "stake slot", v: `#${a.seed}`, strong: true });
+      rows.push({ k: "action", v: "unstake (deactivate)", strong: true }, { k: "stake slot", v: `#${a.seed}`, strong: true });
       break;
     case "collectStake":
       headline = `Collect deactivated stake from slot #${a.seed} back into the vault`;
-      rows.push({ k: "action", v: "collect stake", strong: true });
-      rows.push({ k: "stake slot", v: `#${a.seed}`, strong: true });
+      rows.push({ k: "action", v: "collect stake", strong: true }, { k: "stake slot", v: `#${a.seed}`, strong: true });
+      break;
+    case "cancelSchedule":
+      headline = `Stop schedule #${a.id}`;
+      rows.push({ k: "action", v: `stop schedule #${a.id}`, strong: true });
+      break;
+    case "cancelBudget":
+      headline = `Stop budget #${a.id}`;
+      rows.push({ k: "action", v: `stop budget #${a.id}`, strong: true });
+      break;
+    case "migrate":
+      headline = `Move everything in this vault to vault ${b58(a.newVault)}`;
+      rows.push({ k: "action", v: "migrate", strong: true }, { k: "new vault", v: b58(a.newVault), strong: true });
       break;
     case "cancel":
-      headline = "Cancel the vault's pending withdrawal";
-      rows.push({ k: "action", v: "cancel pending withdrawal", strong: true });
+      headline = "Cancel the vault's pending withdrawal or migration";
+      rows.push({ k: "action", v: "cancel pending", strong: true });
       break;
     case "ping":
-      headline = "Ping: mark the owner as active (resets the recovery timer)";
+      headline = "Ping: mark the owner as active (resets the recovery and testament timers)";
       rows.push({ k: "action", v: "ping", strong: true });
       break;
   }
@@ -173,6 +310,12 @@ export function summarize(vault: string, tree: number, leaf: number, a: Action, 
     v: a.fee > 0n ? `${solStr(a.fee)} from the vault to ${b58(a.feePayee)}` : "none (whoever submits pays network fees)",
   });
   return { headline, rows };
+}
+
+/** The mint whose decimals a summary needs, if any. */
+export function actionMint(a: Action): PublicKey | null {
+  if ((a.kind === "withdraw" || a.kind === "schedule" || a.kind === "budget") && !equal(a.mint, SOL_MINT.toBytes())) return new PublicKey(a.mint);
+  return null;
 }
 
 // ---------- QR framing ----------
@@ -313,7 +456,7 @@ export async function readVaultHistory(program: Program<Noxvault>, vault: Public
             tree: data.tree,
             leaf: data.leaf,
             pkSeed: Uint8Array.from(data.pkSeed ?? data.pk_seed),
-            action: anchorToAction(data.action),
+            action: actionFromAnchor(data.action),
             buffer: acct(3)!.toBase58(),
           });
         } else if (decoded.name === "writeSigs" || decoded.name === "write_sigs") {
@@ -327,25 +470,7 @@ export async function readVaultHistory(program: Program<Noxvault>, vault: Public
   return out;
 }
 
-function anchorToAction(a: Record<string, Record<string, any>>): Action {
-  const [kind, f] = Object.entries(a)[0];
-  const k = (p: PublicKey) => p.toBytes();
-  const n = (x: { toString(): string }) => BigInt(x.toString());
-  const payee = k(f.feePayee ?? f.fee_payee);
-  switch (kind) {
-    case "withdraw":
-      return { kind, mint: k(f.mint), dest: k(f.dest), amount: n(f.amount), fee: n(f.fee), feePayee: payee };
-    case "stake":
-      return { kind, seed: f.seed, vote: k(f.vote), amount: n(f.amount), fee: n(f.fee), feePayee: payee };
-    case "unstake":
-    case "collectStake":
-      return { kind, seed: f.seed, fee: n(f.fee), feePayee: payee };
-    case "cancel":
-    case "ping":
-      return { kind, fee: n(f.fee), feePayee: payee };
-  }
-  throw new Error(`unknown action ${kind}`);
-}
+
 
 /**
  * Checks a signed request against chain state, like the relayer's checkRelay, plus a history
@@ -356,12 +481,12 @@ export async function checkSigned(program: Program<Noxvault>, s: SignedAction): 
   const checks: Check[] = [];
   const conn = program.provider.connection;
   const state = await withRetry(() => fetchState(program, s.vault));
-  if (!state) return { checks: [{ level: "bad", text: "This vault is not initialized on this network (or it is not a v2 vault)." }], state };
+  if (!state) return { checks: [{ level: "bad", text: "This vault is not initialized on this network (or it is not a v3 vault)." }], state };
 
-  const primary = s.tree === TREE_PRIMARY;
-  const root = primary ? state.config.primaryRoot : state.config.recoveryRoot;
-  const height = primary ? state.config.primaryHeight : state.config.recoveryHeight;
-  if (!height) checks.push({ level: "bad", text: "This vault has no recovery tree." });
+  const slot = state.config.trees[s.tree];
+  const root = slot?.root ?? new Uint8Array(32);
+  const height = slot?.height ?? 0;
+  if (!height) checks.push({ level: "bad", text: s.tree === RECOVERY_TREE ? "This vault has no recovery tree." : `This vault has no signer in slot ${s.tree + 1}.` });
   else if (s.authPath.length !== height) checks.push({ level: "bad", text: `Wrong tree: auth path has ${s.authPath.length} levels, the vault's tree has ${height}.` });
 
   const digest = actionDigest(program.programId, s.vault, s.tree, s.leaf, s.action);
@@ -378,18 +503,44 @@ export async function checkSigned(program: Program<Noxvault>, s: SignedAction): 
   if (leafUsed(state, s.tree, s.leaf)) checks.push({ level: "bad", text: `One-time key #${s.leaf} is already used on chain.` });
   else checks.push({ level: "ok", text: `One-time key #${s.leaf} is unused on chain.` });
 
-  if (!primary && s.action.kind !== "cancel") {
+  if (s.tree === RECOVERY_TREE && !["cancel", "cancelSchedule", "cancelBudget"].includes(s.action.kind)) {
     const opensAt = state.lastActive + Number(state.config.recoveryDelay);
     if (Date.now() / 1000 < opensAt)
       checks.push({ level: "bad", text: `The recovery key can only cancel until ${new Date(opensAt * 1000).toLocaleString()}.` });
   }
   if (s.action.kind === "cancel" && !state.pending) checks.push({ level: "warn", text: "Nothing is pending: this cancel only uses up a one-time key." });
+  const restrictedDest =
+    s.action.kind === "withdraw" || s.action.kind === "schedule" ? new PublicKey(s.action.dest) : s.action.kind === "migrate" ? new PublicKey(s.action.newVault) : null;
+  if (restrictedDest && s.tree !== RECOVERY_TREE && isRestricted(state.config, restrictedDest)) {
+    if (state.config.slowDelay === 0n && !(s.action.kind === "withdraw" && equal(s.action.mint, SOL_MINT.toBytes()) && state.config.instantLimit > 0n))
+      checks.push({ level: "bad", text: "The vault's rules do not allow this destination." });
+    else checks.push({ level: "warn", text: "Restricted destination: unless it fits the daily instant limit, it becomes a pending action that waits and can be cancelled." });
+  }
+
+  // Approvals: does this signature complete the vault's rules, or record one approval of several?
+  try {
+    const existing = await fetchApproval(program, s.vault, s.action);
+    const bits = (existing?.trees ?? 0) | (1 << s.tree);
+    const signers = [0, 1, 2].filter((t) => state.config.trees[t].height > 0).length;
+    const have = [0, 1, 2].filter((t) => bits & (1 << t)).length;
+    if (existing && existing.trees & (1 << s.tree)) checks.push({ level: "warn", text: `Slot ${s.tree} already approved this exact action.` });
+    if (canExecute(state, bits, s.action))
+      checks.push({ level: "ok", text: s.tree === RECOVERY_TREE ? "This will execute: the recovery key may do this now." : `This will execute: with this signature ${have} of ${state.config.threshold} required signer approval${state.config.threshold === 1 ? " is" : "s are"} in place.` });
+    else
+      checks.push({
+        level: "ok",
+        text: `This records approval ${have} of ${state.config.threshold} (from ${signers} signers). It executes once the other signer(s) approve this exact action.`,
+      });
+  } catch (e) {
+    checks.push({ level: "warn", text: `Could not read existing approvals (${(e as Error).message}).` });
+  }
 
   // Balance.
   const lamports = BigInt(await withRetry(() => conn.getBalance(s.vault, "confirmed")));
   let solOut = s.action.fee;
   if (s.action.kind === "withdraw" && new PublicKey(s.action.mint).equals(SOL_MINT)) solOut += s.action.amount;
   if (s.action.kind === "stake") solOut += s.action.amount;
+  if (s.action.kind === "withdraw" && new PublicKey(s.action.mint).equals(SOL_MINT) && isRestricted(state.config, new PublicKey(s.action.dest))) solOut = s.action.fee; // may wait as pending
   if (solOut > lamports) checks.push({ level: "bad", text: `The vault holds ${fromBaseUnits(lamports, 9)} SOL, less than this needs.` });
 
   // History: same key, other message?
@@ -438,25 +589,25 @@ export async function checkSigned(program: Program<Noxvault>, s: SignedAction): 
   return { checks, state };
 }
 
-/** The lowest leaf per tree that is unused in state and never appeared in any open_unlock. */
+/** Per tree slot: the lowest leaf that is unused in state and never appeared in any open_unlock. */
 export async function prepareLeaves(program: Program<Noxvault>, vault: PublicKey) {
   const state = await withRetry(() => fetchState(program, vault));
   if (!state) return null;
   const hist = await readVaultHistory(program, vault);
-  const seen = [new Set<number>(), new Set<number>()];
+  const seen = [new Set<number>(), new Set<number>(), new Set<number>(), new Set<number>()];
   for (const e of hist) for (const o of e.opens) seen[o.tree]?.add(o.leaf);
-  const lowest = (tree: number, height: number) => {
-    if (!height) return null;
-    for (let l = 0; l < 1 << height; l++) if (!leafUsed(state, tree, l) && !seen[tree].has(l)) return l;
-    return -1;
-  };
+  const slots = [0, 1, 2, 3]
+    .filter((t) => state.config.trees[t].height > 0)
+    .map((t) => {
+      const h = state.config.trees[t].height;
+      let next = -1;
+      for (let l = 0; l < 1 << h; l++)
+        if (!leafUsed(state, t, l) && !seen[t].has(l)) {
+          next = l;
+          break;
+        }
+      return { slot: t, next, seen: [...seen[t]].sort((a, b) => a - b) };
+    });
   const balance = await withRetry(() => program.provider.connection.getBalance(vault, "confirmed"));
-  return {
-    state,
-    balance,
-    primaryLeaf: lowest(0, state.config.primaryHeight),
-    recoveryLeaf: lowest(1, state.config.recoveryHeight),
-    seenPrimary: [...seen[0]].sort((a, b) => a - b),
-    seenRecovery: [...seen[1]].sort((a, b) => a - b),
-  };
+  return { state, balance, slots };
 }
