@@ -13,8 +13,10 @@ import { createMint, getAccount, getAssociatedTokenAddressSync, getOrCreateAssoc
 import { expect } from "chai";
 import { Noxvault } from "../target/types/noxvault";
 import * as wots from "../sdk/wots";
+import { checkRelay, decodeRelayRequest, encodeRelayRequest, relay } from "../sdk/relayer";
 import {
   ActionPlan,
+  SignedAction,
   HASHES_PER_TX,
   Signer,
   TREE_PRIMARY,
@@ -169,6 +171,29 @@ describe("noxvault v2", () => {
     const after = await conn.getBalance(relayer.publicKey);
     expect(after - before).to.be.greaterThan(0);
     expect(after - before).to.be.at.most(Number(fee));
+  });
+
+  it("relays a signed action through the relayer module, which checks it first", async () => {
+    const relayer = Keypair.generate();
+    await fund(relayer.publicKey, 0.1);
+    const rp = new Program<Noxvault>(program.idl, new anchor.AnchorProvider(conn, new anchor.Wallet(relayer), { commitment: "confirmed" }));
+    const policy = { minFee: SOL(0.001) };
+    const st = (await fetchState(program, vault))!;
+    const { leaf } = pickLeaf(st, primary, await findSignedMessages(program, vault, primary));
+    const sign = (action: wots.Action): SignedAction => {
+      const d = wots.messageDigest(program.programId.toBytes(), vault.toBytes(), 0, leaf, wots.encodeAction(action));
+      return { vault, tree: 0, leaf, pkSeed: primary.seeds.pkSeed, authPath: wots.authPath(primary.pub, leaf), signature: wots.sign(primary.seeds, leaf, d), action };
+    };
+    const dest = Keypair.generate().publicKey;
+    // Too low a fee and a forged signature are refused before anything is sent.
+    expect(await checkRelay(rp, relayer.publicKey, sign(withdraw(dest, SOL(0.01), 1000n, relayer.publicKey)), policy)).to.contain("fee must be at least");
+    const good = sign(withdraw(dest, SOL(0.01), SOL(0.001), relayer.publicKey));
+    const forged = { ...good, action: withdraw(Keypair.generate().publicKey, SOL(0.01), SOL(0.001), relayer.publicKey) };
+    expect(await checkRelay(rp, relayer.publicKey, forged, policy)).to.contain("signature does not match");
+    // The request survives JSON (as it would over HTTP) and is sent.
+    const wire = decodeRelayRequest(JSON.parse(JSON.stringify(encodeRelayRequest(good))));
+    await relay(rp, relayer, wire, policy);
+    expect(await conn.getBalance(dest)).to.eq(Number(SOL(0.01)));
   });
 
   it("never accepts a used key", async () => {

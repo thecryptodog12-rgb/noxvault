@@ -1,0 +1,175 @@
+// Relayer: sends a user's already-signed action as fee payer and is repaid by the vault
+// (docs/SPEC.md §7). It never sees a secret and cannot change the action: it is signed.
+import { Program } from "@coral-xyz/anchor";
+import { Connection, Keypair, PublicKey, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
+import { getAssociatedTokenAddressSync, getAccount, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import type { Noxvault } from "./idl/noxvault";
+import {
+  SignedAction,
+  SOL_MINT,
+  TREE_PRIMARY,
+  actionDigest,
+  buildSteps,
+  fetchState,
+  leafUsed,
+  mintTokenProgram,
+  packSteps,
+  remainingSteps,
+} from "./client";
+import { Action, LEN, N, equal, recoverRoot } from "./wots";
+
+/** JSON shape of a relay request: bytes as hex, keys as base58, amounts as decimal strings. */
+export interface RelayRequest {
+  vault: string;
+  tree: number;
+  leaf: number;
+  pkSeed: string;
+  authPath: string[];
+  signature: string[];
+  action: Record<string, string | number> & { kind: Action["kind"] };
+}
+
+export interface RelayPolicy {
+  /** Lowest fee accepted, in lamports. Covers a few transaction fees with a margin. */
+  minFee: bigint;
+  /** Holders of at least `threshold` base units of this mint (at the withdrawal's destination) relay for free. */
+  discount?: { mint: PublicKey; threshold: bigint };
+}
+
+const fromHex = (h: string, len?: number) => {
+  if (!/^[0-9a-f]*$/i.test(h) || h.length % 2 || (len && h.length !== len * 2)) throw new Error("bad hex");
+  return Uint8Array.from(Buffer.from(h, "hex"));
+};
+
+export function encodeRelayRequest(s: SignedAction): RelayRequest {
+  const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
+  const a: Record<string, string | number> = { kind: s.action.kind };
+  for (const [k, v] of Object.entries(s.action)) {
+    if (k === "kind") continue;
+    a[k] = v instanceof Uint8Array ? new PublicKey(v).toBase58() : typeof v === "bigint" ? v.toString() : (v as number);
+  }
+  return {
+    vault: s.vault.toBase58(),
+    tree: s.tree,
+    leaf: s.leaf,
+    pkSeed: hex(s.pkSeed),
+    authPath: s.authPath.map(hex),
+    signature: s.signature.map(hex),
+    action: a as RelayRequest["action"],
+  };
+}
+
+export function decodeRelayRequest(r: RelayRequest): SignedAction {
+  const key = (v: unknown) => new PublicKey(String(v)).toBytes();
+  const big = (v: unknown) => {
+    if (!/^\d+$/.test(String(v))) throw new Error("bad amount");
+    return BigInt(String(v));
+  };
+  const seed = (v: unknown) => {
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 0 || n > 255) throw new Error("bad seed");
+    return n;
+  };
+  const a = r.action;
+  const fee = big(a.fee);
+  const feePayee = key(a.feePayee);
+  let action: Action;
+  switch (a.kind) {
+    case "withdraw":
+      action = { kind: "withdraw", mint: key(a.mint), dest: key(a.dest), amount: big(a.amount), fee, feePayee };
+      break;
+    case "stake":
+      action = { kind: "stake", seed: seed(a.seed), vote: key(a.vote), amount: big(a.amount), fee, feePayee };
+      break;
+    case "unstake":
+    case "collectStake":
+      action = { kind: a.kind, seed: seed(a.seed), fee, feePayee };
+      break;
+    case "cancel":
+    case "ping":
+      action = { kind: a.kind, fee, feePayee };
+      break;
+    default:
+      throw new Error("unknown action");
+  }
+  if (r.tree !== 0 && r.tree !== 1) throw new Error("bad tree");
+  if (!Number.isInteger(r.leaf) || r.leaf < 0 || r.leaf > 255) throw new Error("bad leaf");
+  if (!Array.isArray(r.signature) || r.signature.length !== LEN) throw new Error("bad signature");
+  if (!Array.isArray(r.authPath) || r.authPath.length > 8) throw new Error("bad auth path");
+  return {
+    vault: new PublicKey(r.vault),
+    tree: r.tree,
+    leaf: r.leaf,
+    pkSeed: fromHex(r.pkSeed, N),
+    authPath: r.authPath.map((h) => fromHex(h, N)),
+    signature: r.signature.map((h) => fromHex(h, N)),
+    action,
+  };
+}
+
+/**
+ * Checks a signed action off-chain before spending anything on it. Returns the reason it would
+ * be refused, or null. Everything here is re-checked on chain; this only protects the relayer.
+ */
+export async function checkRelay(program: Program<Noxvault>, relayer: PublicKey, s: SignedAction, policy: RelayPolicy): Promise<string | null> {
+  const conn = program.provider.connection;
+  const state = await fetchState(program, s.vault);
+  if (!state) return "vault not initialized";
+  const root = s.tree === TREE_PRIMARY ? state.config.primaryRoot : state.config.recoveryRoot;
+  const height = s.tree === TREE_PRIMARY ? state.config.primaryHeight : state.config.recoveryHeight;
+  if (!height || s.authPath.length !== height) return "wrong tree";
+  if (leafUsed(state, s.tree, s.leaf)) return "one-time key already used";
+  const digest = actionDigest(program.programId, s.vault, s.tree, s.leaf, s.action);
+  if (!equal(recoverRoot(s.pkSeed, s.leaf, digest, s.signature, s.authPath), root)) return "signature does not match this vault";
+
+  const free = await discounted(conn, s.action, policy);
+  if (!free) {
+    if (!equal(s.action.feePayee, relayer.toBytes())) return `fee must be paid to ${relayer.toBase58()}`;
+    if (s.action.fee < policy.minFee) return `fee must be at least ${policy.minFee} lamports`;
+  }
+  const lamports = BigInt(await conn.getBalance(s.vault, "confirmed"));
+  const solOut = s.action.fee + (s.action.kind === "withdraw" && new PublicKey(s.action.mint).equals(SOL_MINT) ? s.action.amount : 0n);
+  if (solOut > lamports) return "vault cannot pay this";
+  return null;
+}
+
+async function discounted(conn: Connection, a: Action, policy: RelayPolicy): Promise<boolean> {
+  if (!policy.discount || a.kind !== "withdraw") return false;
+  const dest = new PublicKey(a.dest);
+  for (const program of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+    try {
+      const acct = await getAccount(conn, getAssociatedTokenAddressSync(policy.discount.mint, dest, true, program), "confirmed", program);
+      if (acct.amount >= policy.discount.threshold) return true;
+    } catch {
+      /* no account under this program */
+    }
+  }
+  return false;
+}
+
+/** Checks, then sends the action as fee payer. Safe to call again with the same request. */
+export async function relay(program: Program<Noxvault>, relayer: Keypair, s: SignedAction, policy: RelayPolicy): Promise<string[]> {
+  const why = await checkRelay(program, relayer.publicKey, s, policy);
+  if (why) throw new Error(why);
+  const conn = program.provider.connection;
+  const tokenProgram =
+    s.action.kind === "withdraw" && !new PublicKey(s.action.mint).equals(SOL_MINT)
+      ? await mintTokenProgram(conn, new PublicKey(s.action.mint))
+      : undefined;
+  const steps = await buildSteps(program, relayer.publicKey, s, { tokenProgram });
+  const todo = await remainingSteps(program, relayer.publicKey, s, steps);
+  const sigs: string[] = [];
+  for (const t of packSteps(relayer.publicKey, todo)) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const tx = new Transaction().add(...t.instructions);
+        tx.feePayer = relayer.publicKey;
+        sigs.push(await sendAndConfirmTransaction(conn, tx, [relayer], { commitment: "confirmed" }));
+        break;
+      } catch (e) {
+        if (attempt >= 4 || !/Blockhash not found|block height exceeded/.test(String(e))) throw e;
+      }
+    }
+  }
+  return sigs;
+}

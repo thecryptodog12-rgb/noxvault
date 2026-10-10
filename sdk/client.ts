@@ -490,18 +490,41 @@ export async function finishIx(p: Omit<ActionParams, "leaf" | "signer" | "hashes
   }
 }
 
-export async function planAction(p: ActionParams): Promise<ActionPlan> {
-  const { program, payer, vault, signer, leaf, action } = p;
+export interface PlanStep {
+  label: string;
+  ix: TransactionInstruction;
+  cost: number;
+  kind: "open" | "write" | "verify" | "execute";
+  chains?: [number, number]; // write / verify: chain range [from, to)
+}
+
+/** Everything needed to build the transactions of an already-signed action. All public. */
+export interface SignedAction {
+  vault: PublicKey;
+  tree: number;
+  leaf: number;
+  pkSeed: Uint8Array;
+  authPath: Uint8Array[];
+  signature: Uint8Array[];
+  action: Action;
+}
+
+export async function buildSteps(
+  program: Program<Noxvault>,
+  payer: PublicKey,
+  s: SignedAction,
+  opts: { tokenProgram?: PublicKey; hashesPerTx?: number } = {}
+): Promise<PlanStep[]> {
   const programId = program.programId;
+  const { vault, tree, leaf, action, signature } = s;
   const actionBytes = encodeAction(action);
-  const digest = messageDigest(programId.toBytes(), vault.toBytes(), signer.tree, leaf, actionBytes);
-  const signature = sign(signer.seeds, leaf, digest);
+  const digest = messageDigest(programId.toBytes(), vault.toBytes(), tree, leaf, actionBytes);
   const unlock = unlockPda(vault, payer, programId);
   const m = program.methods;
   const arr = (b: Uint8Array) => Array.from(b);
 
   const open = await m
-    .openUnlock(signer.tree, leaf, arr(signer.seeds.pkSeed), authPath(signer.pub, leaf).map(arr), toAnchorAction(action) as never)
+    .openUnlock(tree, leaf, arr(s.pkSeed), s.authPath.map(arr), toAnchorAction(action) as never)
     .accountsPartial({ payer, vault, state: statePda(vault, programId), unlock, systemProgram: SystemProgram.programId })
     .instruction();
   // The program signs over the action bytes it decodes. If Anchor's encoding ever differed from
@@ -509,26 +532,27 @@ export async function planAction(p: ActionParams): Promise<ActionPlan> {
   if (!Buffer.from(open.data).includes(Buffer.from(actionBytes)))
     throw new Error("Action encoding mismatch between SDK and program. Refusing to sign.");
 
-  const steps: { label: string; ix: TransactionInstruction; cost: number }[] = [{ label: "open", ix: open, cost: 100 }];
-  for (let s = 0, n = 1; s < LEN; s += SIGS_PER_WRITE, n++) {
-    const ix = await m
-      .writeSigs(s, signature.slice(s, s + SIGS_PER_WRITE).map(arr))
-      .accountsPartial({ payer, vault, unlock })
-      .instruction();
-    steps.push({ label: `write ${n}/${Math.ceil(LEN / SIGS_PER_WRITE)}`, ix, cost: 50 });
+  const steps: PlanStep[] = [{ label: "open", ix: open, cost: 100, kind: "open" }];
+  for (let from = 0, n = 1; from < LEN; from += SIGS_PER_WRITE, n++) {
+    const to = Math.min(from + SIGS_PER_WRITE, LEN);
+    const ix = await m.writeSigs(from, signature.slice(from, to).map(arr)).accountsPartial({ payer, vault, unlock }).instruction();
+    steps.push({ label: `write ${n}/${Math.ceil(LEN / SIGS_PER_WRITE)}`, ix, cost: 50, kind: "write", chains: [from, to] });
   }
   const costs = verifyCost(digest);
-  const hashBudget = p.hashesPerTx ?? HASHES_PER_TX;
-  for (const [from, to] of verifyRanges(costs, hashBudget)) {
+  for (const [from, to] of verifyRanges(costs, opts.hashesPerTx ?? HASHES_PER_TX)) {
     const ix = await m.verify(from, to).accountsPartial({ unlock }).instruction();
-    steps.push({ label: `verify ${from}–${to - 1}`, ix, cost: costs.slice(from, to).reduce((a, b) => a + b, 0) });
+    steps.push({ label: `verify ${from}–${to - 1}`, ix, cost: costs.slice(from, to).reduce((a, b) => a + b, 0), kind: "verify", chains: [from, to] });
   }
-  steps.push({ label: "execute", ix: await finishIx(p), cost: action.kind === "stake" ? 900 : 700 });
+  const execute = await finishIx({ program, payer, vault, action, tokenProgram: opts.tokenProgram });
+  steps.push({ label: "execute", ix: execute, cost: action.kind === "stake" ? 900 : 700, kind: "execute" });
+  return steps;
+}
 
-  // Pack steps greedily into as few transactions as fit both the size limit and the budget.
+/** Packs steps greedily into as few transactions as fit both the size limit and the compute budget. */
+export function packSteps(payer: PublicKey, steps: PlanStep[], hashBudget = HASHES_PER_TX): ActionPlan["transactions"] {
   const budget = ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 });
   const transactions: ActionPlan["transactions"] = [];
-  let cur: typeof steps = [];
+  let cur: PlanStep[] = [];
   const flush = () => {
     if (!cur.length) return;
     transactions.push({ label: cur.map((s) => s.label).join(" + "), instructions: [budget, ...cur.map((s) => s.ix)] });
@@ -541,7 +565,83 @@ export async function planAction(p: ActionParams): Promise<ActionPlan> {
     cur.push(step);
   }
   flush();
-  return { digest, signature, transactions, steps: steps.map(({ label, ix }) => ({ label, ix })) };
+  return transactions;
+}
+
+export async function planAction(p: ActionParams): Promise<ActionPlan> {
+  const { program, payer, vault, signer, leaf, action } = p;
+  const digest = actionDigest(program.programId, vault, signer.tree, leaf, action);
+  const signature = sign(signer.seeds, leaf, digest);
+  const steps = await buildSteps(
+    program,
+    payer,
+    { vault, tree: signer.tree, leaf, pkSeed: signer.seeds.pkSeed, authPath: authPath(signer.pub, leaf), signature, action },
+    { tokenProgram: p.tokenProgram, hashesPerTx: p.hashesPerTx }
+  );
+  return {
+    digest,
+    signature,
+    transactions: packSteps(payer, steps, p.hashesPerTx),
+    steps: steps.map(({ label, ix }) => ({ label, ix })),
+  };
+}
+
+// ---------- buffers ----------
+
+export interface UnlockBuffer {
+  vault: PublicKey;
+  payer: PublicKey;
+  pkSeed: Uint8Array;
+  tree: number;
+  leaf: number;
+  actionBytes: Uint8Array;
+  frozen: boolean;
+  written: bigint;
+  verified: bigint;
+}
+
+export async function fetchBuffer(program: Program<Noxvault>, vault: PublicKey, payer: PublicKey): Promise<UnlockBuffer | null> {
+  const u = await program.account.unlock.fetchNullable(unlockPda(vault, payer, program.programId), "confirmed");
+  if (!u) return null;
+  return {
+    vault: u.vault,
+    payer: u.payer,
+    pkSeed: Uint8Array.from(u.pkSeed),
+    tree: u.tree,
+    leaf: u.leaf,
+    actionBytes: Uint8Array.from(u.action).slice(0, u.actionLen),
+    frozen: u.frozen !== 0,
+    written: BigInt(u.written.toString()),
+    verified: BigInt(u.verified.toString()),
+  };
+}
+
+/** Whether a buffer holds exactly this signed action (same key, leaf and message). */
+export function bufferHolds(b: UnlockBuffer, s: SignedAction): boolean {
+  return b.tree === s.tree && b.leaf === s.leaf && equal(b.pkSeed, s.pkSeed) && equal(b.actionBytes, encodeAction(s.action));
+}
+
+/**
+ * The steps still to send given the payer's buffer. A buffer only counts as progress if it holds
+ * exactly this action; anything else in it is closed first (cancel_unlock).
+ */
+export async function remainingSteps(program: Program<Noxvault>, payer: PublicKey, s: SignedAction, steps: PlanStep[]): Promise<PlanStep[]> {
+  const buf = await fetchBuffer(program, s.vault, payer);
+  if (!buf) return steps;
+  if (!bufferHolds(buf, s)) {
+    const ix = await program.methods.cancelUnlock().accountsPartial({ payer, unlock: unlockPda(s.vault, payer, program.programId) }).instruction();
+    return [{ label: "close stale buffer", ix, cost: 50, kind: "open" }, ...steps];
+  }
+  const all = (word: bigint, [from, to]: [number, number]) => {
+    for (let j = from; j < to; j++) if (((word >> BigInt(j)) & 1n) === 0n) return false;
+    return true;
+  };
+  return steps.filter((st) => {
+    if (st.kind === "open") return false;
+    if (st.kind === "write") return !(buf.frozen || all(buf.written, st.chains!));
+    if (st.kind === "verify") return !all(buf.verified, st.chains!);
+    return true;
+  });
 }
 
 /** Serialized size of a legacy transaction with one signer; Infinity if it cannot fit. */
