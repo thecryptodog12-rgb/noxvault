@@ -1,6 +1,8 @@
-# Only web/ and sdk/ are needed to build the site.
+# Only web/, sdk/ and the whitepaper text are needed to build the site.
 /*
 !/web
 !/sdk
+!/docs
+/docs/design
 /web/node_modules
 /web/.next
