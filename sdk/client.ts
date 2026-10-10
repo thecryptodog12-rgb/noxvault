@@ -1,9 +1,12 @@
-// Noxvault v2 client: secrets, vault configs, addresses, action plans, history and preflight.
-// See docs/SPEC.md; every rule there that a client must follow lives in this file.
+// Noxvault v3 client: secrets, vault configs, addresses, action plans, history, preflight and
+// builders for every permissionless instruction. See docs/SPEC.md; every rule a client must
+// follow lives in this file.
 import { BN, BorshInstructionCoder, Program } from "@coral-xyz/anchor";
 import {
   ComputeBudgetProgram,
   Connection,
+  NONCE_ACCOUNT_LENGTH,
+  NonceAccount,
   PublicKey,
   StakeProgram,
   SystemProgram,
@@ -18,6 +21,8 @@ import {
   ExtensionType,
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
+  createApproveInstruction,
+  createAssociatedTokenAccountIdempotentInstruction,
   getAccount,
   getAssociatedTokenAddressSync,
   getExtensionTypes,
@@ -31,11 +36,14 @@ import idl from "./idl/noxvault.json";
 import {
   Action,
   Config,
+  Heir,
+  Kind,
   LEN,
   PRIMARY_HEIGHT,
   PublicTree,
   RECOVERY_HEIGHT,
   TreeSeeds,
+  actionHash,
   authPath,
   buildTree,
   configHash,
@@ -49,14 +57,18 @@ import {
   verifyCost,
 } from "./wots";
 
-export { idl };
+export { idl, normalizeWords };
 export type { Noxvault };
 export const PROGRAM_ID = new PublicKey(idl.address);
 export const SOL_MINT = PublicKey.default;
 export const STAKE_CONFIG_ID = new PublicKey("StakeConfig11111111111111111111111111111111");
 export const VOTE_PROGRAM_ID = new PublicKey("Vote111111111111111111111111111111111111111");
-export const TREE_PRIMARY = 0;
-export const TREE_RECOVERY = 1;
+/** docs/SPEC.md §7: first i with SHA256("noxvault/canary/v1" || u32le(i)) on the curve (i = 0). */
+export const CANARY_ADDRESS = new PublicKey("6S396A19NFHWdABtBP17tjfFCZA9LJuuvuPK7hWzj7w9");
+export const SIGNER_SLOTS = 3;
+export const RECOVERY_TREE = 3;
+export const TREE_PRIMARY = 0; // the creating owner's slot
+export const DAY = 86_400;
 
 /** Hash calls one transaction may spend. Measured ~180 CU each; 6500 stays well under 1.4M CU. */
 export const HASHES_PER_TX = 6500;
@@ -65,205 +77,9 @@ export const SIGS_PER_WRITE = 12;
 
 const enc = new TextEncoder();
 const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
+const ZERO32 = new Uint8Array(32);
 
-// ---------- secrets ----------
-
-export function newMasterSecret(): Uint8Array {
-  return randomBytes(32);
-}
-
-export function secretToWords(master: Uint8Array): string {
-  return entropyToMnemonic(master, wordlist);
-}
-
-export { normalizeWords };
-
-export function wordsToSecret(words: string): Uint8Array {
-  const clean = normalizeWords(words).join(" ");
-  if (!validateMnemonic(clean, wordlist)) throw new Error("Those words are not a valid Noxvault phrase");
-  const master = mnemonicToEntropy(clean, wordlist);
-  if (master.length !== 32) throw new Error("A Noxvault phrase is 24 words");
-  return master;
-}
-
-// ---------- trees and configs ----------
-
-/** A tree whose secret this client holds: it can sign with it. */
-export interface Signer {
-  tree: typeof TREE_PRIMARY | typeof TREE_RECOVERY;
-  seeds: TreeSeeds;
-  pub: PublicTree;
-}
-
-/**
- * Builds the tree of vault number `vaultNumber` from a phrase (a few seconds for the primary
- * tree). The recovery tree of a phrase uses a separate index range, so one phrase can never
- * produce the same keys as primary and recovery.
- */
-export function makeSigner(
-  master: Uint8Array,
-  vaultNumber: number,
-  tree: Signer["tree"],
-  onLeaf?: (done: number, total: number) => void
-): Signer {
-  const seeds = treeSeeds(master, seedIndex(vaultNumber, tree));
-  return { tree, seeds, pub: buildTree(seeds, tree === TREE_PRIMARY ? PRIMARY_HEIGHT : RECOVERY_HEIGHT, onLeaf) };
-}
-
-export interface VaultSettings {
-  recoveryRoot?: Uint8Array; // from the recovery holder; omit for no recovery
-  recoveryDelaySecs?: number; // inactivity before recovery may act fully
-  whitelist?: PublicKey[]; // up to 4
-  slowDelaySecs?: number; // delay for withdrawals outside the whitelist; 0 = refuse them
-}
-
-export function makeConfig(primary: Signer, s: VaultSettings = {}): Config {
-  const hasRecovery = !!s.recoveryRoot;
-  return {
-    primaryRoot: primary.pub.root,
-    primaryHeight: primary.pub.height,
-    recoveryRoot: s.recoveryRoot ?? new Uint8Array(32),
-    recoveryHeight: hasRecovery ? RECOVERY_HEIGHT : 0,
-    recoveryDelay: BigInt(hasRecovery ? s.recoveryDelaySecs ?? 180 * 86400 : 0),
-    whitelist: (s.whitelist ?? []).map((k) => k.toBytes()),
-    slowDelay: BigInt(s.slowDelaySecs ?? 0),
-  };
-}
-
-export function toAnchorConfig(c: Config) {
-  const slots = [...c.whitelist, ...Array(4 - c.whitelist.length).fill(new Uint8Array(32))];
-  return {
-    primaryRoot: Array.from(c.primaryRoot),
-    primaryHeight: c.primaryHeight,
-    recoveryRoot: Array.from(c.recoveryRoot),
-    recoveryHeight: c.recoveryHeight,
-    recoveryDelay: new BN(c.recoveryDelay.toString()),
-    whitelist: slots.map((k: Uint8Array) => new PublicKey(k)),
-    slowDelay: new BN(c.slowDelay.toString()),
-  };
-}
-
-export function toAnchorAction(a: Action) {
-  const pk = (b: Uint8Array) => new PublicKey(b);
-  const bn = (n: bigint) => new BN(n.toString());
-  switch (a.kind) {
-    case "withdraw":
-      return { withdraw: { mint: pk(a.mint), dest: pk(a.dest), amount: bn(a.amount), fee: bn(a.fee), feePayee: pk(a.feePayee) } };
-    case "stake":
-      return { stake: { seed: a.seed, vote: pk(a.vote), amount: bn(a.amount), fee: bn(a.fee), feePayee: pk(a.feePayee) } };
-    case "unstake":
-      return { unstake: { seed: a.seed, fee: bn(a.fee), feePayee: pk(a.feePayee) } };
-    case "collectStake":
-      return { collectStake: { seed: a.seed, fee: bn(a.fee), feePayee: pk(a.feePayee) } };
-    case "cancel":
-      return { cancel: { fee: bn(a.fee), feePayee: pk(a.feePayee) } };
-    case "ping":
-      return { ping: { fee: bn(a.fee), feePayee: pk(a.feePayee) } };
-  }
-}
-
-// ---------- addresses ----------
-
-export function vaultPda(hash: Uint8Array, programId = PROGRAM_ID): PublicKey {
-  return PublicKey.findProgramAddressSync([enc.encode("vault"), hash], programId)[0];
-}
-
-export function vaultOf(config: Config, programId = PROGRAM_ID): PublicKey {
-  return vaultPda(configHash(config), programId);
-}
-
-export function statePda(vault: PublicKey, programId = PROGRAM_ID): PublicKey {
-  return PublicKey.findProgramAddressSync([enc.encode("state"), vault.toBytes()], programId)[0];
-}
-
-export function unlockPda(vault: PublicKey, payer: PublicKey, programId = PROGRAM_ID): PublicKey {
-  return PublicKey.findProgramAddressSync([enc.encode("unlock"), vault.toBytes(), payer.toBytes()], programId)[0];
-}
-
-export function stakePda(vault: PublicKey, seed: number, programId = PROGRAM_ID): PublicKey {
-  return PublicKey.findProgramAddressSync([enc.encode("stake"), vault.toBytes(), Uint8Array.of(seed)], programId)[0];
-}
-
-export async function initVaultIx(program: Program<Noxvault>, payer: PublicKey, config: Config) {
-  const vault = vaultOf(config, program.programId);
-  return program.methods
-    .initVault(toAnchorConfig(config))
-    .accountsPartial({ payer, vault, state: statePda(vault, program.programId), systemProgram: SystemProgram.programId })
-    .instruction();
-}
-
-// ---------- state ----------
-
-export interface VaultStateView {
-  vault: PublicKey;
-  config: Config;
-  usedPrimary: Uint8Array;
-  usedRecovery: Uint8Array;
-  lastActive: number;
-  createdAt: number;
-  actions: number;
-  pending: null | { mint: PublicKey; dest: PublicKey; amount: bigint; executableAt: number; leaf: number };
-}
-
-export function decodeState(program: Program<Noxvault>, data: Buffer): VaultStateView {
-  const s = program.coder.accounts.decode("vaultState", data);
-  const c = s.config;
-  return {
-    vault: s.vault,
-    config: {
-      primaryRoot: Uint8Array.from(c.primaryRoot),
-      primaryHeight: c.primaryHeight,
-      recoveryRoot: Uint8Array.from(c.recoveryRoot),
-      recoveryHeight: c.recoveryHeight,
-      recoveryDelay: BigInt(c.recoveryDelay.toString()),
-      whitelist: (c.whitelist as PublicKey[]).filter((k) => !k.equals(PublicKey.default)).map((k) => k.toBytes()),
-      slowDelay: BigInt(c.slowDelay.toString()),
-    },
-    usedPrimary: Uint8Array.from(s.usedPrimary),
-    usedRecovery: Uint8Array.from(s.usedRecovery),
-    lastActive: Number(s.lastActive),
-    createdAt: Number(s.createdAt),
-    actions: s.actions,
-    pending: s.pending
-      ? {
-          mint: s.pending.mint,
-          dest: s.pending.dest,
-          amount: BigInt(s.pending.amount.toString()),
-          executableAt: Number(s.pending.executableAt),
-          leaf: s.pending.leaf,
-        }
-      : null,
-  };
-}
-
-export async function fetchState(program: Program<Noxvault>, vault: PublicKey): Promise<VaultStateView | null> {
-  const info = await program.provider.connection.getAccountInfo(statePda(vault, program.programId), "confirmed");
-  return info ? decodeState(program, info.data) : null;
-}
-
-export function leafUsed(state: VaultStateView, tree: number, leaf: number): boolean {
-  const map = tree === TREE_PRIMARY ? state.usedPrimary : state.usedRecovery;
-  return (map[leaf >> 3] & (1 << (leaf & 7))) !== 0;
-}
-
-/** Byte offset of config.primary_root inside a VaultState account (discriminator, vault, bump, hash). */
-export const PRIMARY_ROOT_OFFSET = 8 + 32 + 1 + 32;
-export const RECOVERY_ROOT_OFFSET = PRIMARY_ROOT_OFFSET + 32 + 1;
-
-/** Vaults whose primary (or recovery) tree is this signer's. Needs an RPC that allows getProgramAccounts. */
-export async function findVaultsFor(program: Program<Noxvault>, signer: Signer): Promise<VaultStateView[]> {
-  const offset = signer.tree === TREE_PRIMARY ? PRIMARY_ROOT_OFFSET : RECOVERY_ROOT_OFFSET;
-  const accts = await program.provider.connection.getProgramAccounts(program.programId, {
-    commitment: "confirmed",
-    filters: [{ memcmp: { offset, bytes: Buffer.from(signer.pub.root).toString("base64"), encoding: "base64" } as never }],
-  });
-  return accts.map((a) => decodeState(program, a.account.data));
-}
-
-// ---------- signature history ----------
-
-/** Transactions fetched per request; public RPCs reject large batches with 429. */
-const HISTORY_BATCH = 5;
+// ---------- rate limits ----------
 
 /** Retries an RPC call on rate limits (429) with exponential backoff; other errors pass through. */
 export async function withRetry<T>(fn: () => Promise<T>, attempts = 6): Promise<T> {
@@ -277,44 +93,363 @@ export async function withRetry<T>(fn: () => Promise<T>, attempts = 6): Promise<
   }
 }
 
+// ---------- secrets ----------
+
+export function newMasterSecret(): Uint8Array {
+  return randomBytes(32);
+}
+
+export function secretToWords(master: Uint8Array): string {
+  return entropyToMnemonic(master, wordlist);
+}
+
+export function wordsToSecret(words: string): Uint8Array {
+  const clean = normalizeWords(words).join(" ");
+  if (!validateMnemonic(clean, wordlist)) throw new Error("Those words are not a valid Noxvault phrase");
+  const master = mnemonicToEntropy(clean, wordlist);
+  if (master.length !== 32) throw new Error("A Noxvault phrase is 24 words");
+  return master;
+}
+
+// ---------- trees and configs ----------
+
+/** A tree whose secret this client holds. `tree` is its slot in the vault: 0..2 signer, 3 recovery. */
+export interface Signer {
+  tree: number;
+  seeds: TreeSeeds;
+  pub: PublicTree;
+}
+
+/**
+ * Builds a phrase's tree for vault number `vaultNumber` (a few seconds for a signer tree).
+ * `slot` is where the tree sits in the vault config; a recovery tree uses its own seed range.
+ */
+export function makeSigner(master: Uint8Array, vaultNumber: number, slot: number, onLeaf?: (done: number, total: number) => void): Signer {
+  const recovery = slot === RECOVERY_TREE;
+  const seeds = treeSeeds(master, seedIndex(vaultNumber, recovery ? 1 : 0));
+  return { tree: slot, seeds, pub: buildTree(seeds, recovery ? RECOVERY_HEIGHT : PRIMARY_HEIGHT, onLeaf) };
+}
+
+/** Re-labels a signer for another slot (a co-signer's tree is built once, then placed). */
+export function inSlot(s: Signer, slot: number): Signer {
+  return { ...s, tree: slot };
+}
+
+export interface VaultSettings {
+  coSigners?: Uint8Array[]; // roots of up to 2 more signer trees (other people's phrases)
+  threshold?: number; // signer approvals needed (default 1)
+  recoveryRoot?: Uint8Array; // a recovery holder's tree root; omit for none
+  recoveryDelaySecs?: number; // inactivity before recovery may act fully (default 180 days)
+  whitelist?: PublicKey[]; // up to 4
+  slowDelaySecs?: number; // wait for restricted withdrawals; 0 = refuse them
+  instantLimitLamports?: bigint; // restricted SOL that may skip the wait per 24 h
+  heirs?: { addr: PublicKey; bps: number }[]; // testament; bps sum to 10000
+  testamentDelaySecs?: number; // inactivity before the testament runs (default 365 days if heirs)
+}
+
+export function makeConfig(primary: Signer, s: VaultSettings = {}): Config {
+  const signerRoots = [primary.pub.root, ...(s.coSigners ?? [])];
+  if (signerRoots.length > SIGNER_SLOTS) throw new Error("at most 3 signer trees");
+  const trees = [0, 1, 2].map((i) => (signerRoots[i] ? { root: signerRoots[i], height: PRIMARY_HEIGHT } : { root: ZERO32, height: 0 }));
+  trees.push(s.recoveryRoot ? { root: s.recoveryRoot, height: RECOVERY_HEIGHT } : { root: ZERO32, height: 0 });
+  const heirs: Heir[] = (s.heirs ?? []).map((h) => ({ addr: h.addr.toBytes(), bps: h.bps }));
+  return {
+    trees,
+    threshold: s.threshold ?? 1,
+    recoveryDelay: BigInt(s.recoveryRoot ? s.recoveryDelaySecs ?? 180 * DAY : 0),
+    whitelist: (s.whitelist ?? []).map((k) => k.toBytes()),
+    slowDelay: BigInt(s.slowDelaySecs ?? 0),
+    instantLimit: s.instantLimitLamports ?? 0n,
+    heirs,
+    testamentDelay: BigInt(heirs.length ? s.testamentDelaySecs ?? 365 * DAY : 0),
+  };
+}
+
+const pk = (b: Uint8Array) => new PublicKey(b);
+const bn = (n: bigint) => new BN(n.toString());
+
+export function toAnchorConfig(c: Config) {
+  const pad = <T>(xs: T[], e: T) => [...xs, ...Array(4 - xs.length).fill(e)];
+  return {
+    trees: c.trees.map((t) => ({ root: Array.from(t.root), height: t.height })),
+    threshold: c.threshold,
+    recoveryDelay: bn(c.recoveryDelay),
+    whitelist: pad(c.whitelist, ZERO32).map(pk),
+    slowDelay: bn(c.slowDelay),
+    instantLimit: bn(c.instantLimit),
+    heirs: pad(c.heirs, { addr: ZERO32, bps: 0 }).map((h) => ({ addr: pk(h.addr), bps: h.bps })),
+    testamentDelay: bn(c.testamentDelay),
+  };
+}
+
+export function toAnchorAction(a: Action) {
+  const kind = (() => {
+    switch (a.kind) {
+      case "withdraw":
+        return { withdraw: { mint: pk(a.mint), dest: pk(a.dest), amount: bn(a.amount) } };
+      case "stake":
+        return { stake: { seed: a.seed, vote: pk(a.vote), amount: bn(a.amount) } };
+      case "unstake":
+        return { unstake: { seed: a.seed } };
+      case "collectStake":
+        return { collectStake: { seed: a.seed } };
+      case "cancel":
+        return { cancel: {} };
+      case "ping":
+        return { ping: {} };
+      case "schedule":
+        return { schedule: { id: a.id, mint: pk(a.mint), dest: pk(a.dest), amount: bn(a.amount), interval: bn(a.interval), count: a.count, start: bn(a.start) } };
+      case "cancelSchedule":
+        return { cancelSchedule: { id: a.id } };
+      case "budget":
+        return { budget: { id: a.id, session: pk(a.session), mint: pk(a.mint), limit: bn(a.limit), period: bn(a.period), expires: bn(a.expires) } };
+      case "cancelBudget":
+        return { cancelBudget: { id: a.id } };
+      case "migrate":
+        return { migrate: { newVault: pk(a.newVault) } };
+    }
+  })();
+  return { kind, fee: bn(a.fee), feePayee: pk(a.feePayee) };
+}
+
+export function actionFromAnchor(a: { kind: Record<string, Record<string, any>>; fee: BN; feePayee?: PublicKey; fee_payee?: PublicKey }): Action {
+  const [kind, f] = Object.entries(a.kind)[0];
+  const k = (p: PublicKey) => p.toBytes();
+  const n = (x: BN) => BigInt(x.toString());
+  const fee = { fee: n(a.fee), feePayee: k((a.feePayee ?? a.fee_payee)!) };
+  switch (kind) {
+    case "withdraw":
+      return { kind, mint: k(f.mint), dest: k(f.dest), amount: n(f.amount), ...fee };
+    case "stake":
+      return { kind, seed: f.seed, vote: k(f.vote), amount: n(f.amount), ...fee };
+    case "unstake":
+    case "collectStake":
+      return { kind, seed: f.seed, ...fee };
+    case "cancel":
+    case "ping":
+      return { kind, ...fee };
+    case "schedule":
+      return { kind, id: f.id, mint: k(f.mint), dest: k(f.dest), amount: n(f.amount), interval: n(f.interval), count: f.count, start: n(f.start), ...fee };
+    case "cancelSchedule":
+    case "cancelBudget":
+      return { kind, id: f.id, ...fee };
+    case "budget":
+      return { kind, id: f.id, session: k(f.session), mint: k(f.mint), limit: n(f.limit), period: n(f.period), expires: n(f.expires), ...fee };
+    case "migrate":
+      return { kind, newVault: k(f.newVault ?? f.new_vault), ...fee };
+  }
+  throw new Error(`unknown action ${kind}`);
+}
+
+// ---------- addresses ----------
+
+const seed = (s: string) => enc.encode(s);
+
+export function vaultPda(hash: Uint8Array, programId = PROGRAM_ID): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("vault"), hash], programId)[0];
+}
+export function vaultOf(config: Config, programId = PROGRAM_ID): PublicKey {
+  return vaultPda(configHash(config), programId);
+}
+export function statePda(vault: PublicKey, programId = PROGRAM_ID): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("state"), vault.toBytes()], programId)[0];
+}
+export function unlockPda(vault: PublicKey, payer: PublicKey, programId = PROGRAM_ID): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("unlock"), vault.toBytes(), payer.toBytes()], programId)[0];
+}
+export function approvalPda(vault: PublicKey, action: Action, programId = PROGRAM_ID): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("approval"), vault.toBytes(), actionHash(action)], programId)[0];
+}
+export function stakePda(vault: PublicKey, s: number, programId = PROGRAM_ID): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("stake"), vault.toBytes(), Uint8Array.of(s)], programId)[0];
+}
+export function schedulePda(vault: PublicKey, id: number, programId = PROGRAM_ID): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("schedule"), vault.toBytes(), Uint8Array.of(id)], programId)[0];
+}
+export function budgetPda(vault: PublicKey, id: number, programId = PROGRAM_ID): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("budget"), vault.toBytes(), Uint8Array.of(id)], programId)[0];
+}
+export function inboxPda(vault: PublicKey, id: number, programId = PROGRAM_ID): PublicKey {
+  const b = new Uint8Array(4);
+  new DataView(b.buffer).setUint32(0, id, true);
+  return PublicKey.findProgramAddressSync([seed("inbox"), vault.toBytes(), b], programId)[0];
+}
+export function linkPda(wallet: PublicKey, programId = PROGRAM_ID): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("link"), wallet.toBytes()], programId)[0];
+}
+export function escapePda(wallet: PublicKey, programId = PROGRAM_ID): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("escape"), wallet.toBytes()], programId)[0];
+}
+export function canaryPda(programId = PROGRAM_ID): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("canary")], programId)[0];
+}
+
+const ata = (mint: PublicKey, owner: PublicKey, tokenProgram = TOKEN_PROGRAM_ID) => getAssociatedTokenAddressSync(mint, owner, true, tokenProgram);
+
+export async function initVaultIx(program: Program<Noxvault>, payer: PublicKey, config: Config) {
+  const vault = vaultOf(config, program.programId);
+  return program.methods
+    .initVault(toAnchorConfig(config) as never)
+    .accountsPartial({ payer, vault, state: statePda(vault, program.programId), systemProgram: SystemProgram.programId })
+    .instruction();
+}
+
+// ---------- state ----------
+
+export interface PendingView {
+  kind: "withdraw" | "migrate";
+  mint: PublicKey;
+  dest: PublicKey;
+  amount: bigint;
+  executableAt: number;
+}
+
+export interface VaultStateView {
+  vault: PublicKey;
+  config: Config;
+  used: Uint8Array[];
+  lastActive: number;
+  createdAt: number;
+  actions: number;
+  pending: PendingView | null;
+  windowStart: number;
+  windowSpent: bigint;
+  migrateTo: PublicKey | null;
+}
+
+export function decodeState(program: Program<Noxvault>, data: Buffer): VaultStateView {
+  const s = program.coder.accounts.decode("vaultState", data);
+  const c = s.config;
+  const live = (k: PublicKey) => !k.equals(PublicKey.default);
+  return {
+    vault: s.vault,
+    config: {
+      trees: c.trees.map((t: { root: number[]; height: number }) => ({ root: Uint8Array.from(t.root), height: t.height })),
+      threshold: c.threshold,
+      recoveryDelay: BigInt(c.recoveryDelay.toString()),
+      whitelist: (c.whitelist as PublicKey[]).filter(live).map((k) => k.toBytes()),
+      slowDelay: BigInt(c.slowDelay.toString()),
+      instantLimit: BigInt(c.instantLimit.toString()),
+      heirs: (c.heirs as { addr: PublicKey; bps: number }[]).filter((h) => live(h.addr)).map((h) => ({ addr: h.addr.toBytes(), bps: h.bps })),
+      testamentDelay: BigInt(c.testamentDelay.toString()),
+    },
+    used: (s.used as number[][]).map((u) => Uint8Array.from(u)),
+    lastActive: Number(s.lastActive),
+    createdAt: Number(s.createdAt),
+    actions: s.actions,
+    pending: s.pending
+      ? {
+          kind: s.pending.kind === 1 ? "migrate" : "withdraw",
+          mint: s.pending.mint,
+          dest: s.pending.dest,
+          amount: BigInt(s.pending.amount.toString()),
+          executableAt: Number(s.pending.executableAt),
+        }
+      : null,
+    windowStart: Number(s.windowStart),
+    windowSpent: BigInt(s.windowSpent.toString()),
+    migrateTo: s.migrateTo ?? null,
+  };
+}
+
+export async function fetchState(program: Program<Noxvault>, vault: PublicKey): Promise<VaultStateView | null> {
+  const info = await withRetry(() => program.provider.connection.getAccountInfo(statePda(vault, program.programId), "confirmed"));
+  return info ? decodeState(program, info.data) : null;
+}
+
+export function leafUsed(state: VaultStateView, tree: number, leaf: number): boolean {
+  return (state.used[tree][leaf >> 3] & (1 << (leaf & 7))) !== 0;
+}
+
+export function keysLeft(state: VaultStateView, tree: number): number {
+  const h = state.config.trees[tree].height;
+  let used = 0;
+  for (let l = 0; l < 1 << h; l++) if (leafUsed(state, tree, l)) used++;
+  return (1 << h) - used;
+}
+
+export function isRestricted(c: Config, dest: PublicKey): boolean {
+  if (c.whitelist.length) return !c.whitelist.some((k) => equal(k, dest.toBytes()));
+  return c.instantLimit > 0n;
+}
+
+/** Byte offset of config.trees[slot].root inside a VaultState account. */
+export const treeRootOffset = (slot: number) => 8 + 32 + 1 + 32 + slot * 33;
+
+/** Vaults in which this signer's tree sits in its slot range. Needs an RPC that allows getProgramAccounts. */
+export async function findVaultsFor(program: Program<Noxvault>, signer: Signer): Promise<{ state: VaultStateView; slot: number }[]> {
+  const slots = signer.tree === RECOVERY_TREE ? [RECOVERY_TREE] : [0, 1, 2];
+  const out: { state: VaultStateView; slot: number }[] = [];
+  for (const slot of slots) {
+    const accts = await withRetry(() =>
+      program.provider.connection.getProgramAccounts(program.programId, {
+        commitment: "confirmed",
+        filters: [{ memcmp: { offset: treeRootOffset(slot), bytes: Buffer.from(signer.pub.root).toString("base64"), encoding: "base64" } as never }],
+      })
+    );
+    for (const a of accts) out.push({ state: decodeState(program, a.account.data), slot });
+  }
+  return out;
+}
+
+export interface ApprovalView {
+  address: PublicKey;
+  trees: number; // bitmap
+  creator: PublicKey;
+  createdAt: number;
+  action: Action;
+}
+
+export async function fetchApproval(program: Program<Noxvault>, vault: PublicKey, action: Action): Promise<ApprovalView | null> {
+  const address = approvalPda(vault, action, program.programId);
+  const a = await withRetry(() => program.account.approval.fetchNullable(address, "confirmed"));
+  if (!a) return null;
+  return { address, trees: a.trees, creator: a.creator, createdAt: Number(a.createdAt), action };
+}
+
+/** Every open approval of a vault (e.g. waiting for a co-signer). */
+export async function vaultApprovals(program: Program<Noxvault>, vault: PublicKey): Promise<ApprovalView[]> {
+  const coder = program.coder.types;
+  const all = await withRetry(() => program.account.approval.all([{ memcmp: { offset: 8, bytes: vault.toBase58() } }]));
+  return all.map((x) => {
+    const bytes = Buffer.from(x.account.action.slice(0, x.account.actionLen));
+    const action = actionFromAnchor(coder.decode("action", bytes));
+    return { address: x.publicKey, trees: x.account.trees, creator: x.account.creator, createdAt: Number(x.account.createdAt), action };
+  });
+}
+
+/** Whether an approval set (bitmap) lets the action execute now (docs/SPEC.md §4). */
+export function canExecute(state: VaultStateView, trees: number, action: Action, now = Math.floor(Date.now() / 1000)): boolean {
+  const signers = [0, 1, 2].filter((t) => trees & (1 << t)).length;
+  if (signers >= state.config.threshold) return true;
+  if (trees & (1 << RECOVERY_TREE)) {
+    if (action.kind === "cancel" || action.kind === "cancelSchedule" || action.kind === "cancelBudget") return true;
+    return now >= state.lastActive + Number(state.config.recoveryDelay);
+  }
+  return false;
+}
+
+// ---------- signature history ----------
+
 export interface SignedMessage {
   tree: number;
   leaf: number;
   action: Action;
   actionBytes: Uint8Array;
   digest: Uint8Array;
-  /** Chain indexes whose signature values have been published for this message. */
   chains: number[];
   buffers: PublicKey[];
   txs: string[];
 }
 
-function actionFromAnchor(a: Record<string, Record<string, unknown>>): Action {
-  const [kind, f] = Object.entries(a)[0] as [string, Record<string, any>];
-  const k = (p: PublicKey) => p.toBytes();
-  const n = (x: BN) => BigInt(x.toString());
-  const payee = k(f.feePayee ?? f.fee_payee);
-  switch (kind) {
-    case "withdraw":
-      return { kind, mint: k(f.mint), dest: k(f.dest), amount: n(f.amount), fee: n(f.fee), feePayee: payee };
-    case "stake":
-      return { kind, seed: f.seed, vote: k(f.vote), amount: n(f.amount), fee: n(f.fee), feePayee: payee };
-    case "unstake":
-    case "collectStake":
-      return { kind, seed: f.seed, fee: n(f.fee), feePayee: payee };
-    case "cancel":
-    case "ping":
-      return { kind, fee: n(f.fee), feePayee: payee };
-  }
-  throw new Error(`unknown action ${kind}`);
-}
+/** Transactions fetched per request; public RPCs reject large batches with 429. */
+const HISTORY_BATCH = 5;
 
 /**
  * Every message this signer's tree has ever signed for this vault, read from the vault's full
- * transaction history (failed transactions included: their bytes are public too).
- * A write counts only if its values equal what this key signs for that buffer's message, so
- * values someone copied into a buffer with a different message do not count.
- * Throws if the history cannot be read; callers must then refuse to sign.
+ * transaction history (failed transactions included: their bytes are public too). A write
+ * counts only if its values equal what this key signs for that buffer's message, so values
+ * copied into a buffer with a different message do not count. Throws if history is unreadable.
  */
 export async function findSignedMessages(program: Program<Noxvault>, vault: PublicKey, signer: Signer): Promise<SignedMessage[]> {
   const conn = program.provider.connection;
@@ -328,7 +463,7 @@ export async function findSignedMessages(program: Program<Noxvault>, vault: Publ
     if (page.length < 1000) break;
     before = page[page.length - 1].signature;
   }
-  sigs.reverse(); // oldest first
+  sigs.reverse();
 
   type Opened = { tree: number; leaf: number; pkSeed: Uint8Array; action: Action };
   const lastOpen = new Map<string, Opened>();
@@ -351,12 +486,7 @@ export async function findSignedMessages(program: Program<Noxvault>, vault: Publ
         const data = decoded.data as Record<string, any>;
         if (decoded.name === "openUnlock" || decoded.name === "open_unlock") {
           if (!acct(1)?.equals(vault)) continue;
-          const o: Opened = {
-            tree: data.tree,
-            leaf: data.leaf,
-            pkSeed: Uint8Array.from(data.pkSeed ?? data.pk_seed),
-            action: actionFromAnchor(data.action),
-          };
+          const o: Opened = { tree: data.tree, leaf: data.leaf, pkSeed: Uint8Array.from(data.pkSeed ?? data.pk_seed), action: actionFromAnchor(data.action) };
           const buf = acct(3)!.toBase58();
           opensHere.set(buf, o);
           lastOpen.set(buf, o);
@@ -373,9 +503,7 @@ export async function findSignedMessages(program: Program<Noxvault>, vault: Publ
           const values = (data.sigs as number[][]).map((v) => Uint8Array.from(v));
           const start = data.start as number;
           if (!values.length || !values.every((v, k) => start + k < LEN && equal(v, want[start + k]))) continue;
-          const m =
-            found.get(id) ??
-            ({ tree: o.tree, leaf: o.leaf, action: o.action, actionBytes, digest, chains: [], buffers: [], txs: [] } as SignedMessage);
+          const m = found.get(id) ?? ({ tree: o.tree, leaf: o.leaf, action: o.action, actionBytes, digest, chains: [], buffers: [], txs: [] } as SignedMessage);
           values.forEach((_, k) => m.chains.includes(start + k) || m.chains.push(start + k));
           if (!m.buffers.some((b) => b.toBase58() === buf)) m.buffers.push(new PublicKey(buf));
           if (!m.txs.includes(batch[t])) m.txs.push(batch[t]);
@@ -388,15 +516,15 @@ export async function findSignedMessages(program: Program<Noxvault>, vault: Publ
 }
 
 /**
- * The leaf to sign with: a leaf whose signed message is still unfinished comes first (it can
- * only ever complete that message); otherwise the lowest leaf never used and never signed.
+ * The leaf to sign with: a leaf whose signed message is unfinished comes first (it can only
+ * ever complete that message); otherwise the lowest leaf never used and never signed.
  */
 export function pickLeaf(state: VaultStateView, signer: Signer, signed: SignedMessage[]): { leaf: number; resume?: SignedMessage } {
   const unfinished = signed.find((m) => !leafUsed(state, signer.tree, m.leaf));
   if (unfinished) return { leaf: unfinished.leaf, resume: unfinished };
   const taken = new Set(signed.map((m) => m.leaf));
   for (let l = 0; l < 1 << signer.pub.height; l++) if (!leafUsed(state, signer.tree, l) && !taken.has(l)) return { leaf: l };
-  throw new Error("Every one-time key of this tree is used. Move the funds to a new vault.");
+  throw new Error("Every one-time key of this tree is used. Migrate to a new vault.");
 }
 
 // ---------- plan ----------
@@ -408,20 +536,20 @@ export interface ActionParams {
   signer: Signer;
   leaf: number;
   action: Action;
-  tokenProgram?: PublicKey; // for token withdrawals: TOKEN_PROGRAM_ID or TOKEN_2022_PROGRAM_ID
+  tokenProgram?: PublicKey; // for token actions: TOKEN_PROGRAM_ID or TOKEN_2022_PROGRAM_ID
   hashesPerTx?: number;
+  /** Execute right after approving. Default: when this approval completes the rules. */
+  execute?: boolean;
 }
 
 export interface ActionPlan {
   digest: Uint8Array;
   signature: Uint8Array[];
-  /** Send in order. Each entry is one transaction; all are safe to retry. */
+  willExecute: boolean;
   transactions: { label: string; instructions: TransactionInstruction[] }[];
-  /** The same instructions unpacked, one per step (verify steps need a 1.4M CU budget). */
   steps: { label: string; ix: TransactionInstruction }[];
 }
 
-/** Split chain indices into contiguous ranges whose hash cost fits one transaction. */
 export function verifyRanges(costs: number[], budget: number): [number, number][] {
   const ranges: [number, number][] = [];
   let from = 0;
@@ -442,47 +570,46 @@ export function actionDigest(programId: PublicKey, vault: PublicKey, tree: numbe
   return messageDigest(programId.toBytes(), vault.toBytes(), tree, leaf, encodeAction(action));
 }
 
-export async function finishIx(p: Omit<ActionParams, "leaf" | "signer" | "hashesPerTx">): Promise<TransactionInstruction> {
-  const { program, payer, vault, action } = p;
+/**
+ * The instruction that executes an approved action. `creator` is whoever opened the approval
+ * (gets its rent back). `extra` carries accounts some actions need.
+ */
+export async function executeIx(
+  program: Program<Noxvault>,
+  payer: PublicKey,
+  vault: PublicKey,
+  action: Action,
+  creator: PublicKey,
+  extra: { tokenProgram?: PublicKey } = {}
+): Promise<TransactionInstruction> {
   const programId = program.programId;
   const m = program.methods;
-  const feePayee = action.fee > 0n ? new PublicKey(action.feePayee) : payer;
   const base = {
-    unlock: unlockPda(vault, payer, programId),
-    rentReceiver: payer,
+    approval: approvalPda(vault, action, programId),
+    creator,
     state: statePda(vault, programId),
     vault,
-    feePayee,
+    feePayee: action.fee > 0n ? pk(action.feePayee) : payer,
     systemProgram: SystemProgram.programId,
   };
+  const tokenProgram = extra.tokenProgram ?? TOKEN_PROGRAM_ID;
   switch (action.kind) {
     case "withdraw": {
-      const mint = new PublicKey(action.mint);
-      const dest = new PublicKey(action.dest);
-      if (mint.equals(SOL_MINT)) return m.finishWithdraw().accountsPartial({ ...base, dest }).instruction();
-      const tokenProgram = p.tokenProgram ?? TOKEN_PROGRAM_ID;
-      const ata = (o: PublicKey) => getAssociatedTokenAddressSync(mint, o, true, tokenProgram);
+      const mint = pk(action.mint);
+      const dest = pk(action.dest);
+      if (mint.equals(SOL_MINT)) return m.executeWithdraw().accountsPartial({ ...base, dest }).instruction();
       return m
-        .finishWithdrawToken()
-        .accountsPartial({
-          ...base,
-          payer,
-          mint,
-          vaultAta: ata(vault),
-          dest,
-          destAta: ata(dest),
-          tokenProgram,
-          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-        })
+        .executeWithdrawToken()
+        .accountsPartial({ ...base, payer, mint, vaultAta: ata(mint, vault, tokenProgram), dest, destAta: ata(mint, dest, tokenProgram), tokenProgram, associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID })
         .instruction();
     }
     case "stake":
       return m
-        .finishStake()
+        .executeStake()
         .accountsPartial({
           ...base,
           stake: stakePda(vault, action.seed, programId),
-          vote: new PublicKey(action.vote),
+          vote: pk(action.vote),
           clock: SYSVAR_CLOCK_PUBKEY,
           rent: SYSVAR_RENT_PUBKEY,
           stakeHistory: SYSVAR_STAKE_HISTORY_PUBKEY,
@@ -491,21 +618,29 @@ export async function finishIx(p: Omit<ActionParams, "leaf" | "signer" | "hashes
         })
         .instruction();
     case "unstake":
-    case "collectStake": {
-      const accts = {
-        ...base,
-        stake: stakePda(vault, action.seed, programId),
-        clock: SYSVAR_CLOCK_PUBKEY,
-        stakeHistory: SYSVAR_STAKE_HISTORY_PUBKEY,
-        stakeProgram: StakeProgram.programId,
-      };
-      return action.kind === "unstake"
-        ? m.finishUnstake().accountsPartial(accts).instruction()
-        : m.finishCollectStake().accountsPartial(accts).instruction();
-    }
+    case "collectStake":
+      return m
+        .executeStakeAuthority()
+        .accountsPartial({ ...base, stake: stakePda(vault, action.seed, programId), clock: SYSVAR_CLOCK_PUBKEY, stakeHistory: SYSVAR_STAKE_HISTORY_PUBKEY, stakeProgram: StakeProgram.programId })
+        .instruction();
+    case "schedule":
+      return m.executeCreateSchedule(action.id).accountsPartial({ ...base, payer, schedule: schedulePda(vault, action.id, programId) }).instruction();
+    case "budget":
+      return m.executeCreateBudget(action.id).accountsPartial({ ...base, payer, budget: budgetPda(vault, action.id, programId) }).instruction();
     case "cancel":
     case "ping":
-      return m.finishAdmin().accountsPartial(base).instruction();
+    case "cancelSchedule":
+    case "cancelBudget":
+    case "migrate":
+      return m
+        .executeAdmin()
+        .accountsPartial({
+          ...base,
+          schedule: action.kind === "cancelSchedule" ? schedulePda(vault, action.id, programId) : null,
+          budget: action.kind === "cancelBudget" ? budgetPda(vault, action.id, programId) : null,
+          newState: action.kind === "migrate" ? statePda(pk(action.newVault), programId) : null,
+        })
+        .instruction();
   }
 }
 
@@ -513,8 +648,8 @@ export interface PlanStep {
   label: string;
   ix: TransactionInstruction;
   cost: number;
-  kind: "open" | "write" | "verify" | "execute";
-  chains?: [number, number]; // write / verify: chain range [from, to)
+  kind: "open" | "write" | "verify" | "approve" | "execute";
+  chains?: [number, number];
 }
 
 /** Everything needed to build the transactions of an already-signed action. All public. */
@@ -532,7 +667,7 @@ export async function buildSteps(
   program: Program<Noxvault>,
   payer: PublicKey,
   s: SignedAction,
-  opts: { tokenProgram?: PublicKey; hashesPerTx?: number } = {}
+  opts: { tokenProgram?: PublicKey; hashesPerTx?: number; execute?: boolean; creator?: PublicKey } = {}
 ): Promise<PlanStep[]> {
   const programId = program.programId;
   const { vault, tree, leaf, action, signature } = s;
@@ -548,8 +683,7 @@ export async function buildSteps(
     .instruction();
   // The program signs over the action bytes it decodes. If Anchor's encoding ever differed from
   // encodeAction, the published signature would not match the on-chain message: refuse.
-  if (!Buffer.from(open.data).includes(Buffer.from(actionBytes)))
-    throw new Error("Action encoding mismatch between SDK and program. Refusing to sign.");
+  if (!Buffer.from(open.data).includes(Buffer.from(actionBytes))) throw new Error("Action encoding mismatch between SDK and program. Refusing to sign.");
 
   const steps: PlanStep[] = [{ label: "open", ix: open, cost: 100, kind: "open" }];
   for (let from = 0, n = 1; from < LEN; from += SIGS_PER_WRITE, n++) {
@@ -562,12 +696,18 @@ export async function buildSteps(
     const ix = await m.verify(from, to).accountsPartial({ unlock }).instruction();
     steps.push({ label: `verify ${from}–${to - 1}`, ix, cost: costs.slice(from, to).reduce((a, b) => a + b, 0), kind: "verify", chains: [from, to] });
   }
-  const execute = await finishIx({ program, payer, vault, action, tokenProgram: opts.tokenProgram });
-  steps.push({ label: "execute", ix: execute, cost: action.kind === "stake" ? 900 : 700, kind: "execute" });
+  const approve = await m
+    .approve(Array.from(actionHash(action)))
+    .accountsPartial({ payer, unlock, rentReceiver: payer, state: statePda(vault, programId), vault, approval: approvalPda(vault, action, programId), systemProgram: SystemProgram.programId })
+    .instruction();
+  steps.push({ label: "approve", ix: approve, cost: 300, kind: "approve" });
+  if (opts.execute !== false) {
+    const exec = await executeIx(program, payer, vault, action, opts.creator ?? payer, { tokenProgram: opts.tokenProgram });
+    steps.push({ label: "execute", ix: exec, cost: action.kind === "stake" ? 900 : 700, kind: "execute" });
+  }
   return steps;
 }
 
-/** Packs steps greedily into as few transactions as fit both the size limit and the compute budget. */
 export function packSteps(payer: PublicKey, steps: PlanStep[], hashBudget = HASHES_PER_TX): ActionPlan["transactions"] {
   const budget = ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 });
   const transactions: ActionPlan["transactions"] = [];
@@ -587,22 +727,41 @@ export function packSteps(payer: PublicKey, steps: PlanStep[], hashBudget = HASH
   return transactions;
 }
 
+/** Whether this signer's approval, added to the existing ones, lets the action execute. */
+export async function completesApproval(program: Program<Noxvault>, vault: PublicKey, tree: number, action: Action) {
+  const [state, existing] = await Promise.all([fetchState(program, vault), fetchApproval(program, vault, action)]);
+  if (!state) throw new Error("This vault is not initialized.");
+  const trees = (existing?.trees ?? 0) | (1 << tree);
+  return { willExecute: canExecute(state, trees, action), creator: existing?.creator };
+}
+
 export async function planAction(p: ActionParams): Promise<ActionPlan> {
   const { program, payer, vault, signer, leaf, action } = p;
   const digest = actionDigest(program.programId, vault, signer.tree, leaf, action);
   const signature = sign(signer.seeds, leaf, digest);
+  const status = p.execute === undefined ? await completesApproval(program, vault, signer.tree, action) : { willExecute: p.execute, creator: undefined };
   const steps = await buildSteps(
     program,
     payer,
     { vault, tree: signer.tree, leaf, pkSeed: signer.seeds.pkSeed, authPath: authPath(signer.pub, leaf), signature, action },
-    { tokenProgram: p.tokenProgram, hashesPerTx: p.hashesPerTx }
+    { tokenProgram: p.tokenProgram, hashesPerTx: p.hashesPerTx, execute: status.willExecute, creator: status.creator ?? payer }
   );
   return {
     digest,
     signature,
+    willExecute: status.willExecute,
     transactions: packSteps(payer, steps, p.hashesPerTx),
     steps: steps.map(({ label, ix }) => ({ label, ix })),
   };
+}
+
+export function txSize(payer: PublicKey, ixs: TransactionInstruction[]): number {
+  const tx = new Transaction({ feePayer: payer, recentBlockhash: PublicKey.default.toBase58() }).add(...ixs);
+  try {
+    return 1 + 64 + tx.serializeMessage().length;
+  } catch {
+    return Infinity;
+  }
 }
 
 // ---------- buffers ----------
@@ -620,7 +779,7 @@ export interface UnlockBuffer {
 }
 
 export async function fetchBuffer(program: Program<Noxvault>, vault: PublicKey, payer: PublicKey): Promise<UnlockBuffer | null> {
-  const u = await program.account.unlock.fetchNullable(unlockPda(vault, payer, program.programId), "confirmed");
+  const u = await withRetry(() => program.account.unlock.fetchNullable(unlockPda(vault, payer, program.programId), "confirmed"));
   if (!u) return null;
   return {
     vault: u.vault,
@@ -635,16 +794,21 @@ export async function fetchBuffer(program: Program<Noxvault>, vault: PublicKey, 
   };
 }
 
-/** Whether a buffer holds exactly this signed action (same key, leaf and message). */
 export function bufferHolds(b: UnlockBuffer, s: SignedAction): boolean {
   return b.tree === s.tree && b.leaf === s.leaf && equal(b.pkSeed, s.pkSeed) && equal(b.actionBytes, encodeAction(s.action));
 }
 
 /**
- * The steps still to send given the payer's buffer. A buffer only counts as progress if it holds
- * exactly this action; anything else in it is closed first (cancel_unlock).
+ * The steps still to send given the payer's buffer and the chain. A buffer only counts as
+ * progress if it holds exactly this action; anything else in it is closed first. If the leaf
+ * is already burned (approved), only execution can remain.
  */
 export async function remainingSteps(program: Program<Noxvault>, payer: PublicKey, s: SignedAction, steps: PlanStep[]): Promise<PlanStep[]> {
+  const state = await fetchState(program, s.vault);
+  if (state && leafUsed(state, s.tree, s.leaf)) {
+    const approval = await fetchApproval(program, s.vault, s.action);
+    return approval ? steps.filter((st) => st.kind === "execute") : [];
+  }
   const buf = await fetchBuffer(program, s.vault, payer);
   if (!buf) return steps;
   if (!bufferHolds(buf, s)) {
@@ -663,38 +827,294 @@ export async function remainingSteps(program: Program<Noxvault>, payer: PublicKe
   });
 }
 
-/** Serialized size of a legacy transaction with one signer; Infinity if it cannot fit. */
-export function txSize(payer: PublicKey, ixs: TransactionInstruction[]): number {
-  const tx = new Transaction({ feePayer: payer, recentBlockhash: PublicKey.default.toBase58() }).add(...ixs);
-  try {
-    return 1 + 64 + tx.serializeMessage().length;
-  } catch {
-    return Infinity;
-  }
-}
+// ---------- permissionless follow-ups ----------
 
 export async function executePendingIx(program: Program<Noxvault>, payer: PublicKey, vault: PublicKey, state: VaultStateView, tokenProgram = TOKEN_PROGRAM_ID) {
-  if (!state.pending) throw new Error("No withdrawal is pending");
-  const { mint, dest } = state.pending;
+  if (!state.pending) throw new Error("Nothing is pending");
+  const { mint, dest, kind } = state.pending;
   const st = statePda(vault, program.programId);
-  if (mint.equals(SOL_MINT))
+  if (kind === "migrate" || mint.equals(SOL_MINT))
     return program.methods.executePending().accountsPartial({ state: st, vault, dest, systemProgram: SystemProgram.programId }).instruction();
-  const ata = (o: PublicKey) => getAssociatedTokenAddressSync(mint, o, true, tokenProgram);
   return program.methods
     .executePendingToken()
+    .accountsPartial({ payer, state: st, vault, mint, vaultAta: ata(mint, vault, tokenProgram), dest, destAta: ata(mint, dest, tokenProgram), tokenProgram, associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID, systemProgram: SystemProgram.programId })
+    .instruction();
+}
+
+export interface ScheduleView {
+  address: PublicKey;
+  id: number;
+  mint: PublicKey;
+  dest: PublicKey;
+  amount: bigint;
+  interval: number;
+  remaining: number;
+  nextAt: number;
+}
+
+export async function vaultSchedules(program: Program<Noxvault>, vault: PublicKey): Promise<ScheduleView[]> {
+  const all = await withRetry(() => program.account.schedule.all([{ memcmp: { offset: 8, bytes: vault.toBase58() } }]));
+  return all.map(({ publicKey, account: s }) => ({
+    address: publicKey,
+    id: s.id,
+    mint: s.mint,
+    dest: s.dest,
+    amount: BigInt(s.amount.toString()),
+    interval: Number(s.interval),
+    remaining: s.remaining,
+    nextAt: Number(s.nextAt),
+  }));
+}
+
+export async function runScheduleIx(program: Program<Noxvault>, payer: PublicKey, vault: PublicKey, s: ScheduleView, tokenProgram = TOKEN_PROGRAM_ID) {
+  const state = statePda(vault, program.programId);
+  if (s.mint.equals(SOL_MINT))
+    return program.methods.runSchedule().accountsPartial({ schedule: s.address, state, vault, dest: s.dest, systemProgram: SystemProgram.programId }).instruction();
+  return program.methods
+    .runScheduleToken()
+    .accountsPartial({ payer, schedule: s.address, state, vault, mint: s.mint, vaultAta: ata(s.mint, vault, tokenProgram), dest: s.dest, destAta: ata(s.mint, s.dest, tokenProgram), tokenProgram, associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID, systemProgram: SystemProgram.programId })
+    .instruction();
+}
+
+export interface BudgetView {
+  address: PublicKey;
+  id: number;
+  session: PublicKey;
+  mint: PublicKey;
+  limit: bigint;
+  period: number;
+  expires: number;
+  windowStart: number;
+  spent: bigint;
+}
+
+export async function vaultBudgets(program: Program<Noxvault>, vault: PublicKey): Promise<BudgetView[]> {
+  const all = await withRetry(() => program.account.budget.all([{ memcmp: { offset: 8, bytes: vault.toBase58() } }]));
+  return all.map(({ publicKey, account: b }) => ({
+    address: publicKey,
+    id: b.id,
+    session: b.session,
+    mint: b.mint,
+    limit: BigInt(b.limit.toString()),
+    period: Number(b.period),
+    expires: Number(b.expires),
+    windowStart: Number(b.windowStart),
+    spent: BigInt(b.spent.toString()),
+  }));
+}
+
+/** Left in a budget's current period. */
+export function budgetLeft(b: BudgetView, now = Math.floor(Date.now() / 1000)): bigint {
+  if (now >= b.expires) return 0n;
+  return now >= b.windowStart + b.period ? b.limit : b.limit - b.spent;
+}
+
+/** A session key spends from its budget. The session key signs (and pays). */
+export async function spendBudgetIx(program: Program<Noxvault>, vault: PublicKey, b: BudgetView, dest: PublicKey, amount: bigint, tokenProgram = TOKEN_PROGRAM_ID) {
+  const state = statePda(vault, program.programId);
+  if (b.mint.equals(SOL_MINT))
+    return program.methods.spendBudget(bn(amount)).accountsPartial({ session: b.session, budget: b.address, state, vault, dest, systemProgram: SystemProgram.programId }).instruction();
+  return program.methods
+    .spendBudgetToken(bn(amount))
+    .accountsPartial({ session: b.session, budget: b.address, state, vault, mint: b.mint, vaultAta: ata(b.mint, vault, tokenProgram), dest, destAta: ata(b.mint, dest, tokenProgram), tokenProgram, associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID, systemProgram: SystemProgram.programId })
+    .instruction();
+}
+
+export async function migrateIxs(program: Program<Noxvault>, payer: PublicKey, vault: PublicKey, state: VaultStateView, mints: { mint: PublicKey; tokenProgram: PublicKey }[]) {
+  if (!state.migrateTo) throw new Error("No migration has been approved");
+  const st = statePda(vault, program.programId);
+  const newVault = state.migrateTo;
+  const ixs: TransactionInstruction[] = [];
+  for (const { mint, tokenProgram } of mints)
+    ixs.push(
+      await program.methods
+        .migrateToken()
+        .accountsPartial({ payer, state: st, vault, mint, vaultAta: ata(mint, vault, tokenProgram), newVault, newAta: ata(mint, newVault, tokenProgram), tokenProgram, associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID, systemProgram: SystemProgram.programId })
+        .instruction()
+    );
+  ixs.push(await program.methods.migrateSol().accountsPartial({ state: st, vault, newVault, systemProgram: SystemProgram.programId }).instruction());
+  return ixs;
+}
+
+export function testamentOpensAt(state: VaultStateView): number | null {
+  if (!state.config.testamentDelay || !state.config.heirs.length) return null;
+  return state.lastActive + Number(state.config.testamentDelay);
+}
+
+/** Testament payout for SOL (or one token): heirs in config order; ATAs created as needed. */
+export async function testamentIxs(program: Program<Noxvault>, payer: PublicKey, vault: PublicKey, state: VaultStateView, token?: { mint: PublicKey; tokenProgram: PublicKey }) {
+  const st = statePda(vault, program.programId);
+  const heirs = state.config.heirs.map((h) => pk(h.addr));
+  if (!token) {
+    const ix = await program.methods.testamentSol().accountsPartial({ state: st, vault, systemProgram: SystemProgram.programId }).remainingAccounts(heirs.map((h) => ({ pubkey: h, isSigner: false, isWritable: true }))).instruction();
+    return [ix];
+  }
+  const { mint, tokenProgram } = token;
+  const heirAtas = heirs.map((h) => ata(mint, h, tokenProgram));
+  const creates = heirs.map((h, i) => createAssociatedTokenAccountIdempotentInstruction(payer, heirAtas[i], h, mint, tokenProgram));
+  const ix = await program.methods
+    .testamentToken()
+    .accountsPartial({ state: st, vault, mint, vaultAta: ata(mint, vault, tokenProgram), tokenProgram })
+    .remainingAccounts(heirAtas.map((a) => ({ pubkey: a, isSigner: false, isWritable: true })))
+    .instruction();
+  return [...creates, ix];
+}
+
+export async function testamentStakeIx(program: Program<Noxvault>, vault: PublicKey, s: number, collect: boolean) {
+  return program.methods
+    .testamentStake(s, collect)
+    .accountsPartial({ state: statePda(vault, program.programId), vault, stake: stakePda(vault, s, program.programId), clock: SYSVAR_CLOCK_PUBKEY, stakeHistory: SYSVAR_STAKE_HISTORY_PUBKEY, stakeProgram: StakeProgram.programId })
+    .instruction();
+}
+
+export async function sweepInboxIxs(program: Program<Noxvault>, payer: PublicKey, vault: PublicKey, id: number, mints: { mint: PublicKey; tokenProgram: PublicKey }[] = []) {
+  const st = statePda(vault, program.programId);
+  const inbox = inboxPda(vault, id, program.programId);
+  const ixs: TransactionInstruction[] = [];
+  for (const { mint, tokenProgram } of mints)
+    ixs.push(
+      await program.methods
+        .sweepInboxToken(id)
+        .accountsPartial({ payer, state: st, vault, inbox, mint, inboxAta: ata(mint, inbox, tokenProgram), vaultAta: ata(mint, vault, tokenProgram), tokenProgram, associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID, systemProgram: SystemProgram.programId })
+        .instruction()
+    );
+  ixs.push(await program.methods.sweepInbox(id).accountsPartial({ state: st, vault, inbox, systemProgram: SystemProgram.programId }).instruction());
+  return ixs;
+}
+
+// ---------- Escape Hatch, registry and canary ----------
+
+export interface LinkView {
+  wallet: PublicKey;
+  vault: PublicKey;
+  createdAt: number;
+  panic: boolean;
+  change: { vault: PublicKey; at: number } | null;
+  escapeTx: Uint8Array;
+}
+
+export async function fetchLink(program: Program<Noxvault>, wallet: PublicKey): Promise<LinkView | null> {
+  const l = await withRetry(() => program.account.link.fetchNullable(linkPda(wallet, program.programId), "confirmed"));
+  if (!l) return null;
+  return {
+    wallet: l.wallet,
+    vault: l.vault,
+    createdAt: Number(l.createdAt),
+    panic: l.panic,
+    change: l.change ? { vault: l.change.vault, at: Number(l.change.at) } : null,
+    escapeTx: Uint8Array.from(l.escapeTx),
+  };
+}
+
+export async function registerLinkIx(program: Program<Noxvault>, wallet: PublicKey, vault: PublicKey) {
+  return program.methods
+    .registerLink()
+    .accountsPartial({ wallet, state: statePda(vault, program.programId), vault, link: linkPda(wallet, program.programId), systemProgram: SystemProgram.programId })
+    .instruction();
+}
+
+export async function requestLinkChangeIx(program: Program<Noxvault>, wallet: PublicKey, newVault: PublicKey) {
+  return program.methods
+    .requestLinkChange()
+    .accountsPartial({ wallet, link: linkPda(wallet, program.programId), newState: statePda(newVault, program.programId), newVault, canary: canaryPda(program.programId) })
+    .instruction();
+}
+
+export async function applyLinkChangeIx(program: Program<Noxvault>, wallet: PublicKey) {
+  return program.methods.applyLinkChange().accountsPartial({ link: linkPda(wallet, program.programId), canary: canaryPda(program.programId) }).instruction();
+}
+
+export async function setPanicIx(program: Program<Noxvault>, wallet: PublicKey, on: boolean) {
+  return program.methods.setPanic(on).accountsPartial({ wallet, link: linkPda(wallet, program.programId) }).instruction();
+}
+
+export async function setEscapeTxIx(program: Program<Noxvault>, wallet: PublicKey, tx: Uint8Array) {
+  return program.methods.setEscapeTx(Buffer.from(tx)).accountsPartial({ wallet, link: linkPda(wallet, program.programId) }).instruction();
+}
+
+/** Lets the Escape Hatch move this token account (the wallet signs). */
+export function escapeApproveIx(wallet: PublicKey, tokenAccount: PublicKey, tokenProgram = TOKEN_PROGRAM_ID, programId = PROGRAM_ID) {
+  return createApproveInstruction(tokenAccount, escapePda(wallet, programId), wallet, BigInt("18446744073709551615"), [], tokenProgram);
+}
+
+export async function escapeTokenIx(program: Program<Noxvault>, payer: PublicKey, link: LinkView, source: PublicKey, mint: PublicKey, tokenProgram = TOKEN_PROGRAM_ID) {
+  return program.methods
+    .escapeToken()
     .accountsPartial({
       payer,
-      state: st,
-      vault,
+      link: linkPda(link.wallet, program.programId),
+      canary: canaryPda(program.programId),
+      escape: escapePda(link.wallet, program.programId),
+      source,
       mint,
-      vaultAta: ata(vault),
-      dest,
-      destAta: ata(dest),
+      vault: link.vault,
+      vaultAta: ata(mint, link.vault, tokenProgram),
       tokenProgram,
       associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
     })
     .instruction();
+}
+
+export async function escapeSolIx(program: Program<Noxvault>, wallet: PublicKey, vault: PublicKey) {
+  return program.methods.escapeSol().accountsPartial({ wallet, link: linkPda(wallet, program.programId), vault, systemProgram: SystemProgram.programId }).instruction();
+}
+
+/**
+ * Instructions that create a durable nonce account controlled by the wallet. The escape
+ * transaction uses it instead of a recent blockhash, so it never expires.
+ */
+export async function createNonceIxs(conn: Connection, wallet: PublicKey, nonce: PublicKey) {
+  const lamports = await conn.getMinimumBalanceForRentExemption(NONCE_ACCOUNT_LENGTH);
+  return SystemProgram.createNonceAccount({ fromPubkey: wallet, noncePubkey: nonce, authorizedPubkey: wallet, lamports }).instructions;
+}
+
+/** The unsigned escape transaction: advance the nonce, then move all SOL to the vault. */
+export async function buildEscapeSolTx(program: Program<Noxvault>, wallet: PublicKey, vault: PublicKey, nonce: PublicKey): Promise<Transaction> {
+  const info = await withRetry(() => program.provider.connection.getAccountInfo(nonce, "confirmed"));
+  if (!info) throw new Error("Nonce account not found");
+  const n = NonceAccount.fromAccountData(info.data);
+  const tx = new Transaction({ feePayer: wallet, nonceInfo: { nonce: n.nonce, nonceInstruction: SystemProgram.nonceAdvance({ noncePubkey: nonce, authorizedPubkey: wallet }) } });
+  tx.add(await escapeSolIx(program, wallet, vault));
+  return tx;
+}
+
+export interface CanaryView {
+  watched: PublicKey;
+  baseline: bigint;
+  tripped: boolean;
+  trippedAt: number;
+  balance: number;
+}
+
+export async function fetchCanary(program: Program<Noxvault>): Promise<CanaryView | null> {
+  const c = await withRetry(() => program.account.canary.fetchNullable(canaryPda(program.programId), "confirmed"));
+  if (!c) return null;
+  const balance = await withRetry(() => program.provider.connection.getBalance(CANARY_ADDRESS, "confirmed"));
+  return { watched: c.watched, baseline: BigInt(c.baseline.toString()), tripped: c.tripped, trippedAt: Number(c.trippedAt), balance };
+}
+
+export async function initCanaryIx(program: Program<Noxvault>, payer: PublicKey) {
+  return program.methods.initCanary().accountsPartial({ payer, canary: canaryPda(program.programId), watched: CANARY_ADDRESS, systemProgram: SystemProgram.programId }).instruction();
+}
+export async function raiseBaselineIx(program: Program<Noxvault>) {
+  return program.methods.raiseBaseline().accountsPartial({ canary: canaryPda(program.programId), watched: CANARY_ADDRESS }).instruction();
+}
+export async function tripCanaryIx(program: Program<Noxvault>) {
+  return program.methods.tripCanary().accountsPartial({ canary: canaryPda(program.programId), watched: CANARY_ADDRESS }).instruction();
+}
+
+/** Every linked wallet (for keepers: evacuate them all once the canary trips). */
+export async function allLinks(program: Program<Noxvault>): Promise<LinkView[]> {
+  const all = await withRetry(() => program.account.link.all());
+  return all.map(({ account: l }) => ({
+    wallet: l.wallet,
+    vault: l.vault,
+    createdAt: Number(l.createdAt),
+    panic: l.panic,
+    change: l.change ? { vault: l.change.vault, at: Number(l.change.at) } : null,
+    escapeTx: Uint8Array.from(l.escapeTx),
+  }));
 }
 
 // ---------- preflight ----------
@@ -704,21 +1124,20 @@ export async function executePendingIx(program: Program<Noxvault>, payer: Public
  * that can never execute would burn a key for nothing or tempt a second signature.
  * `errors` must be empty before signing; `warnings` need the user's explicit consent.
  */
-export async function preflightAction(p: Omit<ActionParams, "hashesPerTx">): Promise<{ errors: string[]; warnings: string[] }> {
+export async function preflightAction(p: Omit<ActionParams, "hashesPerTx" | "execute">): Promise<{ errors: string[]; warnings: string[] }> {
   const { program, vault, signer, leaf, action } = p;
   const conn = program.provider.connection;
   const programId = program.programId;
   const errors: string[] = [];
   const warnings: string[] = [];
+  const now = Math.floor(Date.now() / 1000);
 
   const state = await fetchState(program, vault);
   if (!state) return { errors: ["This vault is not initialized yet."], warnings };
   const c = state.config;
-  const root = signer.tree === TREE_PRIMARY ? c.primaryRoot : c.recoveryRoot;
-  if (!equal(root, signer.pub.root)) errors.push("These words do not belong to this vault.");
+  if (!equal(c.trees[signer.tree].root, signer.pub.root)) errors.push("These words do not belong to this vault (or not to this slot).");
   if (leafUsed(state, signer.tree, leaf)) errors.push(`One-time key #${leaf} is already used.`);
 
-  // The one rule that matters most: this key may only ever sign one message.
   try {
     const digest = actionDigest(programId, vault, signer.tree, leaf, action);
     const forLeaf = (await findSignedMessages(program, vault, signer)).filter((m) => m.leaf === leaf);
@@ -729,55 +1148,107 @@ export async function preflightAction(p: Omit<ActionParams, "hashesPerTx">): Pro
     errors.push(`Could not read this vault's history, so it is not safe to sign (${(e as Error).message}).`);
   }
 
-  const now = Math.floor(Date.now() / 1000);
-  if (signer.tree === TREE_RECOVERY && action.kind !== "cancel") {
+  const isCancel = action.kind === "cancel" || action.kind === "cancelSchedule" || action.kind === "cancelBudget";
+  let unrestricted = false;
+  if (signer.tree === RECOVERY_TREE && !isCancel) {
     const opensAt = state.lastActive + Number(c.recoveryDelay);
     if (now < opensAt) errors.push(`The recovery key can only cancel until ${new Date(opensAt * 1000).toISOString()}.`);
+    unrestricted = true;
+  }
+  if (signer.tree !== RECOVERY_TREE && c.threshold > 1) {
+    const existing = await fetchApproval(program, vault, action);
+    const have = [0, 1, 2].filter((t) => ((existing?.trees ?? 0) | (1 << signer.tree)) & (1 << t)).length;
+    if (have < c.threshold) warnings.push(`This vault needs ${c.threshold} signers: after you, ${c.threshold - have} more must approve this exact action.`);
   }
   if (action.kind === "cancel" && !state.pending) warnings.push("Nothing is pending; this only uses up a one-time key.");
+  if (state.migrateTo && action.kind !== "ping") warnings.push("This vault is migrating; funds can be moved to the new vault by anyone.");
 
-  const [vaultInfo, rentMin] = await Promise.all([
-    conn.getAccountInfo(vault, "confirmed"),
-    conn.getMinimumBalanceForRentExemption(0),
-  ]);
+  const [vaultInfo, rentMin] = await Promise.all([withRetry(() => conn.getAccountInfo(vault, "confirmed")), withRetry(() => conn.getMinimumBalanceForRentExemption(0))]);
   const lamports = BigInt(vaultInfo?.lamports ?? 0);
   let solOut = action.fee;
   if (action.fee > 0n && equal(action.feePayee, vault.toBytes())) errors.push("The fee cannot be paid to the vault itself.");
 
-  if (action.kind === "withdraw") {
-    const mint = new PublicKey(action.mint);
-    const dest = new PublicKey(action.dest);
-    if (dest.equals(vault)) errors.push("The destination cannot be the vault itself.");
-    const wl = c.whitelist.map((k) => new PublicKey(k));
-    const outside = signer.tree === TREE_PRIMARY && wl.length > 0 && !wl.some((k) => k.equals(dest));
-    if (outside && c.slowDelay === 0n) errors.push("This vault only pays out to its whitelist.");
-    if (outside && c.slowDelay > 0n) {
-      if (state.pending) errors.push("A withdrawal is already pending. Wait for it or cancel it first.");
-      warnings.push(`This address is not on the whitelist: the withdrawal waits ${Number(c.slowDelay) / 3600} h and can be cancelled meanwhile.`);
+  const restrictedCheck = (dest: PublicKey, mint: PublicKey, amount: bigint): boolean => {
+    if (unrestricted || !isRestricted(c, dest)) return false;
+    if (mint.equals(SOL_MINT) && c.instantLimit > 0n) {
+      const spent = now >= state.windowStart + DAY ? 0n : state.windowSpent;
+      if (spent + amount <= c.instantLimit) return false;
     }
-    if (mint.equals(SOL_MINT)) {
-      if (!outside) solOut += action.amount;
-      const destInfo = await conn.getAccountInfo(dest, "confirmed");
-      if (!destInfo && action.amount < BigInt(rentMin))
-        errors.push(`The destination is empty, so it must receive at least ${rentMin / 1e9} SOL.`);
-    } else {
-      errors.push(...(await tokenChecks(conn, vault, mint, action.amount, p.tokenProgram ?? TOKEN_PROGRAM_ID, warnings)));
+    if (c.slowDelay === 0n) errors.push("The vault's rules do not allow this destination (whitelist only).");
+    else {
+      if (state.pending) errors.push("Something is already pending. Wait for it or cancel it first.");
+      warnings.push(`This destination is restricted: it waits ${Number(c.slowDelay) / 3600} h and can be cancelled meanwhile.`);
     }
-  } else if (action.kind === "stake") {
-    solOut += action.amount;
-    const [voteInfo, stakeInfo, minDelegation, stakeRent] = await Promise.all([
-      conn.getAccountInfo(new PublicKey(action.vote), "confirmed"),
-      conn.getAccountInfo(stakePda(vault, action.seed, programId), "confirmed"),
-      conn.getStakeMinimumDelegation().then((r) => r.value).catch(() => 1),
-      conn.getMinimumBalanceForRentExemption(200),
-    ]);
-    if (!voteInfo || !voteInfo.owner.equals(VOTE_PROGRAM_ID)) errors.push("That is not a validator vote account.");
-    if (stakeInfo) errors.push(`Stake slot #${action.seed} is already in use; pick another.`);
-    if (action.amount < BigInt(stakeRent + minDelegation)) errors.push(`Stake at least ${(stakeRent + minDelegation) / 1e9} SOL.`);
-  } else if (action.kind === "unstake" || action.kind === "collectStake") {
-    const info = await conn.getAccountInfo(stakePda(vault, action.seed, programId), "confirmed");
-    if (!info) errors.push(`Stake slot #${action.seed} is empty.`);
-    if (action.kind === "collectStake") warnings.push("Collecting only works once the stake is fully deactivated (the epoch after unstaking).");
+    return true;
+  };
+
+  switch (action.kind) {
+    case "withdraw": {
+      const mint = pk(action.mint);
+      const dest = pk(action.dest);
+      if (dest.equals(vault)) errors.push("The destination cannot be the vault itself.");
+      const queued = restrictedCheck(dest, mint, action.amount);
+      if (mint.equals(SOL_MINT)) {
+        if (!queued) solOut += action.amount;
+        const destInfo = await withRetry(() => conn.getAccountInfo(dest, "confirmed"));
+        if (!destInfo && action.amount < BigInt(rentMin)) errors.push(`The destination is empty, so it must receive at least ${rentMin / 1e9} SOL.`);
+      } else errors.push(...(await tokenChecks(conn, vault, mint, action.amount, p.tokenProgram ?? TOKEN_PROGRAM_ID, warnings)));
+      break;
+    }
+    case "stake": {
+      solOut += action.amount;
+      const [voteInfo, stakeInfo, minDelegation, stakeRent] = await Promise.all([
+        withRetry(() => conn.getAccountInfo(pk(action.vote), "confirmed")),
+        withRetry(() => conn.getAccountInfo(stakePda(vault, action.seed, programId), "confirmed")),
+        conn.getStakeMinimumDelegation().then((r) => r.value).catch(() => 1),
+        withRetry(() => conn.getMinimumBalanceForRentExemption(200)),
+      ]);
+      if (!voteInfo || !voteInfo.owner.equals(VOTE_PROGRAM_ID)) errors.push("That is not a validator vote account.");
+      if (stakeInfo) errors.push(`Stake slot #${action.seed} is already in use; pick another.`);
+      if (action.amount < BigInt(stakeRent + minDelegation)) errors.push(`Stake at least ${(stakeRent + minDelegation) / 1e9} SOL.`);
+      break;
+    }
+    case "unstake":
+    case "collectStake": {
+      const info = await withRetry(() => conn.getAccountInfo(stakePda(vault, action.seed, programId), "confirmed"));
+      if (!info) errors.push(`Stake slot #${action.seed} is empty.`);
+      if (action.kind === "collectStake") warnings.push("Collecting only works once the stake is fully deactivated (the epoch after unstaking).");
+      break;
+    }
+    case "schedule": {
+      const exists = await withRetry(() => conn.getAccountInfo(schedulePda(vault, action.id, programId), "confirmed"));
+      if (exists) errors.push(`Schedule slot #${action.id} is in use.`);
+      if (action.amount <= 0n || action.interval <= 0n || action.count <= 0) errors.push("Amount, interval and count must be positive.");
+      if (!unrestricted && isRestricted(c, pk(action.dest))) {
+        if (c.slowDelay === 0n) errors.push("The vault's rules do not allow this destination.");
+        else warnings.push(`Restricted destination: the first payment starts after ${Number(c.slowDelay) / 3600} h at the earliest.`);
+      }
+      break;
+    }
+    case "budget": {
+      const exists = await withRetry(() => conn.getAccountInfo(budgetPda(vault, action.id, programId), "confirmed"));
+      if (exists) errors.push(`Budget slot #${action.id} is in use.`);
+      if (action.expires <= BigInt(now)) errors.push("The budget must expire in the future.");
+      warnings.push("The session key is an ordinary wallet key: whoever holds it can spend up to the budget per period. Keep the limit small.");
+      break;
+    }
+    case "cancelSchedule": {
+      if (!(await withRetry(() => conn.getAccountInfo(schedulePda(vault, action.id, programId), "confirmed")))) errors.push(`There is no schedule #${action.id}.`);
+      break;
+    }
+    case "cancelBudget": {
+      if (!(await withRetry(() => conn.getAccountInfo(budgetPda(vault, action.id, programId), "confirmed")))) errors.push(`There is no budget #${action.id}.`);
+      break;
+    }
+    case "migrate": {
+      const target = await fetchState(program, pk(action.newVault));
+      if (!target) errors.push("The new vault is not an initialized Noxvault.");
+      if (!unrestricted && c.whitelist.length && !c.whitelist.some((k) => equal(k, action.newVault))) {
+        if (c.slowDelay === 0n) errors.push("The vault's rules do not allow migrating to a vault outside the whitelist.");
+        else warnings.push(`The new vault is not whitelisted: the migration waits ${Number(c.slowDelay) / 3600} h and can be cancelled.`);
+      }
+      break;
+    }
   }
 
   if (solOut > lamports) errors.push("The vault holds less SOL than this needs (amount plus fee).");
@@ -790,22 +1261,16 @@ export async function preflightAction(p: Omit<ActionParams, "hashesPerTx">): Pro
 async function tokenChecks(conn: Connection, vault: PublicKey, mint: PublicKey, amount: bigint, tokenProgram: PublicKey, warnings: string[]): Promise<string[]> {
   const errors: string[] = [];
   try {
-    const acct = await getAccount(conn, getAssociatedTokenAddressSync(mint, vault, true, tokenProgram), "confirmed", tokenProgram);
+    const acct = await withRetry(() => getAccount(conn, ata(mint, vault, tokenProgram), "confirmed", tokenProgram));
     if (amount > acct.amount) errors.push("The vault holds less of this token than this amount.");
     if (acct.isFrozen) errors.push("The vault's token account is frozen by the token's issuer.");
   } catch {
     errors.push("The vault has no account for this token.");
   }
   try {
-    const m = await getMint(conn, mint, "confirmed", tokenProgram);
+    const m = await withRetry(() => getMint(conn, mint, "confirmed", tokenProgram));
     if (m.freezeAuthority) warnings.push("This token has a freeze authority: its issuer could block the withdrawal.");
-    const blocking = [
-      ExtensionType.TransferFeeConfig,
-      ExtensionType.TransferHook,
-      ExtensionType.NonTransferable,
-      ExtensionType.PermanentDelegate,
-      ExtensionType.ConfidentialTransferMint,
-    ];
+    const blocking = [ExtensionType.TransferFeeConfig, ExtensionType.TransferHook, ExtensionType.NonTransferable, ExtensionType.PermanentDelegate, ExtensionType.ConfidentialTransferMint];
     const exts = getExtensionTypes(m.tlvData).filter((e) => blocking.includes(e));
     if (exts.length) errors.push(`This token uses Token-2022 extensions Noxvault does not support (${exts.map((e) => ExtensionType[e]).join(", ")}).`);
   } catch {
@@ -814,17 +1279,17 @@ async function tokenChecks(conn: Connection, vault: PublicKey, mint: PublicKey, 
   return errors;
 }
 
-/** Token program that owns a mint, read from chain. */
 export async function mintTokenProgram(conn: Connection, mint: PublicKey): Promise<PublicKey> {
-  const info = await conn.getAccountInfo(mint, "confirmed");
+  const info = await withRetry(() => conn.getAccountInfo(mint, "confirmed"));
   if (!info) throw new Error("Mint not found");
   if (!info.owner.equals(TOKEN_PROGRAM_ID) && !info.owner.equals(TOKEN_2022_PROGRAM_ID)) throw new Error("Not a token mint");
   return info.owner;
 }
 
-/** The vault's stake accounts in slots 0..slots-1 (null where empty). */
 export async function vaultStakes(program: Program<Noxvault>, vault: PublicKey, slots = 8) {
   const keys = Array.from({ length: slots }, (_, s) => stakePda(vault, s, program.programId));
-  const infos = await program.provider.connection.getMultipleAccountsInfo(keys, "confirmed");
+  const infos = await withRetry(() => program.provider.connection.getMultipleAccountsInfo(keys, "confirmed"));
   return keys.map((k, s) => (infos[s] ? { seed: s, address: k, lamports: infos[s]!.lamports } : null));
 }
+
+export type { Action, Config, Kind };

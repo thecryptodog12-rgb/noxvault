@@ -8,6 +8,8 @@ resolver = "2"
 overflow-checks = true
 lto = "fat"
 codegen-units = 1
+# Smaller program = less rent on deploy; compute per hash is dominated by the sha256 syscall.
+opt-level = "s"
 [profile.release.build-override]
 opt-level = 3
 incremental = false

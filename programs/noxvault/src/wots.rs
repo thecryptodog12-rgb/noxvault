@@ -10,7 +10,7 @@ pub const MAX_HEIGHT: usize = 8;
 
 pub fn message_digest(vault: &[u8], tree: u8, leaf: u16, action: &[u8]) -> [u8; N] {
     hashv(&[
-        b"nox2/msg",
+        b"nox3/msg",
         crate::ID.as_ref(),
         vault,
         &[tree],
@@ -70,5 +70,9 @@ pub fn root_from_path(pk_seed: &[u8; N], leaf: u16, leaf_hash: [u8; N], path: &[
 }
 
 pub fn config_hash(config_bytes: &[u8]) -> [u8; N] {
-    hashv(&[b"nox2/config", config_bytes]).to_bytes()
+    hashv(&[b"nox3/config", config_bytes]).to_bytes()
+}
+
+pub fn action_hash(action_bytes: &[u8]) -> [u8; N] {
+    hashv(&[b"nox3/action", action_bytes]).to_bytes()
 }

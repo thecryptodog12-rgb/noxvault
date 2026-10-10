@@ -17,8 +17,9 @@ const D_PK = enc.encode("nox2/pk");
 const D_CHAIN = enc.encode("nox2/chain");
 const D_LEAF = enc.encode("nox2/leaf");
 const D_NODE = enc.encode("nox2/node");
-const D_MSG = enc.encode("nox2/msg");
-const D_CONFIG = enc.encode("nox2/config");
+const D_MSG = enc.encode("nox3/msg");
+const D_CONFIG = enc.encode("nox3/config");
+const D_ACTION = enc.encode("nox3/action");
 
 // ---------- bytes ----------
 
@@ -191,56 +192,101 @@ export function verifyCost(digest: Uint8Array): number[] {
   return digits(digest).map((a) => STEPS - a);
 }
 
-// ---------- borsh encodings (docs/SPEC.md §4–5) ----------
+// ---------- borsh encodings (docs/SPEC.md §3–4) ----------
 
 export type Key32 = Uint8Array; // a 32-byte public key
 
-export type Action =
-  | { kind: "withdraw"; mint: Key32; dest: Key32; amount: bigint; fee: bigint; feePayee: Key32 }
-  | { kind: "stake"; seed: number; vote: Key32; amount: bigint; fee: bigint; feePayee: Key32 }
-  | { kind: "unstake"; seed: number; fee: bigint; feePayee: Key32 }
-  | { kind: "collectStake"; seed: number; fee: bigint; feePayee: Key32 }
-  | { kind: "cancel"; fee: bigint; feePayee: Key32 }
-  | { kind: "ping"; fee: bigint; feePayee: Key32 };
+export type Kind =
+  | { kind: "withdraw"; mint: Key32; dest: Key32; amount: bigint }
+  | { kind: "stake"; seed: number; vote: Key32; amount: bigint }
+  | { kind: "unstake"; seed: number }
+  | { kind: "collectStake"; seed: number }
+  | { kind: "cancel" }
+  | { kind: "ping" }
+  | { kind: "schedule"; id: number; mint: Key32; dest: Key32; amount: bigint; interval: bigint; count: number; start: bigint }
+  | { kind: "cancelSchedule"; id: number }
+  | { kind: "budget"; id: number; session: Key32; mint: Key32; limit: bigint; period: bigint; expires: bigint }
+  | { kind: "cancelBudget"; id: number }
+  | { kind: "migrate"; newVault: Key32 };
 
-export function encodeAction(a: Action): Uint8Array {
-  switch (a.kind) {
+/** An action plus the fee the vault pays (lamports) to whoever executes it. */
+export type Action = Kind & { fee: bigint; feePayee: Key32 };
+
+export const KIND_TAGS: Kind["kind"][] = [
+  "withdraw", "stake", "unstake", "collectStake", "cancel", "ping",
+  "schedule", "cancelSchedule", "budget", "cancelBudget", "migrate",
+];
+
+export function encodeKind(k: Kind): Uint8Array {
+  const tag = u8(KIND_TAGS.indexOf(k.kind));
+  switch (k.kind) {
     case "withdraw":
-      return concat(u8(0), a.mint, a.dest, u64le(a.amount), u64le(a.fee), a.feePayee);
+      return concat(tag, k.mint, k.dest, u64le(k.amount));
     case "stake":
-      return concat(u8(1), u8(a.seed), a.vote, u64le(a.amount), u64le(a.fee), a.feePayee);
+      return concat(tag, u8(k.seed), k.vote, u64le(k.amount));
     case "unstake":
-      return concat(u8(2), u8(a.seed), u64le(a.fee), a.feePayee);
     case "collectStake":
-      return concat(u8(3), u8(a.seed), u64le(a.fee), a.feePayee);
+      return concat(tag, u8(k.seed));
     case "cancel":
-      return concat(u8(4), u64le(a.fee), a.feePayee);
     case "ping":
-      return concat(u8(5), u64le(a.fee), a.feePayee);
+      return tag;
+    case "schedule":
+      return concat(tag, u8(k.id), k.mint, k.dest, u64le(k.amount), i64le(k.interval), u16le(k.count), i64le(k.start));
+    case "cancelSchedule":
+    case "cancelBudget":
+      return concat(tag, u8(k.id));
+    case "budget":
+      return concat(tag, u8(k.id), k.session, k.mint, u64le(k.limit), i64le(k.period), i64le(k.expires));
+    case "migrate":
+      return concat(tag, k.newVault);
   }
 }
 
-export interface Config {
-  primaryRoot: Uint8Array;
-  primaryHeight: number;
-  recoveryRoot: Uint8Array; // 32 zero bytes = none
-  recoveryHeight: number;
-  recoveryDelay: bigint; // seconds
-  whitelist: Key32[]; // up to 4; missing slots are empty
-  slowDelay: bigint; // seconds; 0 = outside the whitelist is refused
+export function encodeAction(a: Action): Uint8Array {
+  return concat(encodeKind(a), u64le(a.fee), a.feePayee);
 }
 
+export function actionHash(a: Action): Uint8Array {
+  return sha256(concat(D_ACTION, encodeAction(a)));
+}
+
+export interface TreeCfg {
+  root: Uint8Array; // all zero = slot unused
+  height: number;
+}
+
+export interface Heir {
+  addr: Key32;
+  bps: number;
+}
+
+export interface Config {
+  trees: TreeCfg[]; // exactly 4: three signer slots, then recovery
+  threshold: number;
+  recoveryDelay: bigint;
+  whitelist: Key32[]; // up to 4
+  slowDelay: bigint;
+  instantLimit: bigint; // lamports per 24 h
+  heirs: Heir[]; // up to 4, bps sum 10000
+  testamentDelay: bigint;
+}
+
+const pad4 = <T>(xs: T[], empty: T): T[] => {
+  if (xs.length > 4) throw new Error("at most 4 entries");
+  return [...xs, ...Array(4 - xs.length).fill(empty)];
+};
+
 export function encodeConfig(c: Config): Uint8Array {
-  if (c.whitelist.length > 4) throw new Error("at most 4 whitelisted addresses");
-  const slots = [...c.whitelist, ...Array(4 - c.whitelist.length).fill(new Uint8Array(32))];
+  if (c.trees.length !== 4) throw new Error("config needs exactly 4 tree slots");
   return concat(
-    c.primaryRoot,
-    u8(c.primaryHeight),
-    c.recoveryRoot,
-    u8(c.recoveryHeight),
+    ...c.trees.map((t) => concat(t.root, u8(t.height))),
+    u8(c.threshold),
     i64le(c.recoveryDelay),
-    ...slots,
-    i64le(c.slowDelay)
+    ...pad4(c.whitelist, new Uint8Array(32)),
+    i64le(c.slowDelay),
+    u64le(c.instantLimit),
+    ...pad4(c.heirs, { addr: new Uint8Array(32), bps: 0 }).map((h) => concat(h.addr, u16le(h.bps))),
+    i64le(c.testamentDelay)
   );
 }
 

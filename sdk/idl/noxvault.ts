@@ -14,10 +14,148 @@ export type Noxvault = {
   },
   "instructions": [
     {
-      "name": "cancelUnlock",
-      "docs": [
-        "Closes an unlock buffer and returns its rent. Only the payer who opened it."
+      "name": "applyLinkChange",
+      "discriminator": [
+        75,
+        79,
+        194,
+        237,
+        147,
+        88,
+        89,
+        179
       ],
+      "accounts": [
+        {
+          "name": "link",
+          "writable": true
+        },
+        {
+          "name": "canary",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  110,
+                  97,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "approve",
+      "docs": [
+        "Turns a verified signature into an approval of its action and burns the key."
+      ],
+      "discriminator": [
+        69,
+        74,
+        217,
+        36,
+        115,
+        117,
+        97,
+        76
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "unlock",
+          "writable": true
+        },
+        {
+          "name": "rentReceiver",
+          "writable": true
+        },
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "approval",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  112,
+                  112,
+                  114,
+                  111,
+                  118,
+                  97,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "arg",
+                "path": "actionHash"
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "actionHash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cancelUnlock",
       "discriminator": [
         116,
         58,
@@ -45,9 +183,506 @@ export type Noxvault = {
       "args": []
     },
     {
+      "name": "discardApproval",
+      "docs": [
+        "Closes an approval that never reached its threshold, after 7 days."
+      ],
+      "discriminator": [
+        252,
+        8,
+        158,
+        25,
+        35,
+        99,
+        43,
+        27
+      ],
+      "accounts": [
+        {
+          "name": "approval",
+          "writable": true
+        },
+        {
+          "name": "creator",
+          "writable": true,
+          "relations": [
+            "approval"
+          ]
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "escapeSol",
+      "docs": [
+        "Moves all of a wallet's SOL into its linked vault. Signed by the wallet, usually in a",
+        "pre-signed durable-nonce transaction stored in the link (docs/SPEC.md §7)."
+      ],
+      "discriminator": [
+        193,
+        113,
+        112,
+        207,
+        247,
+        132,
+        61,
+        217
+      ],
+      "accounts": [
+        {
+          "name": "wallet",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "link"
+          ]
+        },
+        {
+          "name": "link",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  110,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "wallet"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "link"
+          ]
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "escapeToken",
+      "docs": [
+        "Moves a delegated token account of a linked wallet into its vault. Permissionless once",
+        "the canary has tripped or the wallet pressed panic."
+      ],
+      "discriminator": [
+        221,
+        213,
+        228,
+        68,
+        24,
+        252,
+        108,
+        85
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "link",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  110,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "link.wallet",
+                "account": "link"
+              }
+            ]
+          }
+        },
+        {
+          "name": "canary",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  110,
+                  97,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "escape",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  101,
+                  115,
+                  99,
+                  97,
+                  112,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "link.wallet",
+                "account": "link"
+              }
+            ]
+          }
+        },
+        {
+          "name": "source",
+          "writable": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "relations": [
+            "link"
+          ]
+        },
+        {
+          "name": "vaultAta",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "account",
+                "path": "tokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "tokenProgram"
+        },
+        {
+          "name": "associatedTokenProgram",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "executeAdmin",
+      "docs": [
+        "Cancel, Ping, CancelSchedule, CancelBudget and Migrate."
+      ],
+      "discriminator": [
+        194,
+        19,
+        107,
+        147,
+        207,
+        128,
+        26,
+        106
+      ],
+      "accounts": [
+        {
+          "name": "approval",
+          "writable": true
+        },
+        {
+          "name": "creator",
+          "writable": true,
+          "relations": [
+            "approval"
+          ]
+        },
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "approval",
+            "state"
+          ]
+        },
+        {
+          "name": "feePayee",
+          "writable": true
+        },
+        {
+          "name": "schedule",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "budget",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "newState",
+          "optional": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "executeCreateBudget",
+      "discriminator": [
+        165,
+        175,
+        253,
+        208,
+        235,
+        187,
+        82,
+        152
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "approval",
+          "writable": true
+        },
+        {
+          "name": "creator",
+          "writable": true,
+          "relations": [
+            "approval"
+          ]
+        },
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "approval",
+            "state"
+          ]
+        },
+        {
+          "name": "budget",
+          "writable": true
+        },
+        {
+          "name": "feePayee",
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "id",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "executeCreateSchedule",
+      "discriminator": [
+        109,
+        194,
+        113,
+        4,
+        86,
+        129,
+        168,
+        130
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "approval",
+          "writable": true
+        },
+        {
+          "name": "creator",
+          "writable": true,
+          "relations": [
+            "approval"
+          ]
+        },
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "approval",
+            "state"
+          ]
+        },
+        {
+          "name": "schedule",
+          "writable": true
+        },
+        {
+          "name": "feePayee",
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "id",
+          "type": "u8"
+        }
+      ]
+    },
+    {
       "name": "executePending",
       "docs": [
-        "Pays out the pending SOL withdrawal once its delay has passed. Permissionless."
+        "Pays the pending SOL withdrawal, or starts the pending migration, once due."
       ],
       "discriminator": [
         207,
@@ -102,9 +737,6 @@ export type Noxvault = {
     },
     {
       "name": "executePendingToken",
-      "docs": [
-        "Pays out the pending token withdrawal once its delay has passed. Permissionless."
-      ],
       "discriminator": [
         154,
         74,
@@ -284,94 +916,30 @@ export type Noxvault = {
       "args": []
     },
     {
-      "name": "finishAdmin",
-      "docs": [
-        "Cancel (drops the pending withdrawal) and Ping (proves the owner is alive)."
-      ],
+      "name": "executeStake",
       "discriminator": [
-        59,
-        221,
-        148,
-        135,
-        221,
-        17,
-        113,
-        147
+        123,
+        140,
+        82,
+        174,
+        137,
+        211,
+        238,
+        49
       ],
       "accounts": [
         {
-          "name": "unlock",
+          "name": "approval",
           "writable": true
         },
         {
-          "name": "rentReceiver",
-          "writable": true
-        },
-        {
-          "name": "state",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  116,
-                  97,
-                  116,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ]
-          }
-        },
-        {
-          "name": "vault",
+          "name": "creator",
           "writable": true,
           "relations": [
-            "state"
+            "approval"
           ]
         },
         {
-          "name": "feePayee",
-          "writable": true
-        },
-        {
-          "name": "systemProgram",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": []
-    },
-    {
-      "name": "finishCollectStake",
-      "docs": [
-        "Moves everything in a deactivated stake account back into the vault."
-      ],
-      "discriminator": [
-        11,
-        112,
-        175,
-        231,
-        205,
-        225,
-        187,
-        113
-      ],
-      "accounts": [
-        {
-          "name": "unlock",
-          "writable": true
-        },
-        {
-          "name": "rentReceiver",
-          "writable": true
-        },
-        {
           "name": "state",
           "writable": true,
           "pda": {
@@ -397,86 +965,7 @@ export type Noxvault = {
           "name": "vault",
           "writable": true,
           "relations": [
-            "state"
-          ]
-        },
-        {
-          "name": "stake",
-          "writable": true
-        },
-        {
-          "name": "feePayee",
-          "writable": true
-        },
-        {
-          "name": "clock",
-          "address": "SysvarC1ock11111111111111111111111111111111"
-        },
-        {
-          "name": "stakeHistory",
-          "address": "SysvarStakeHistory1111111111111111111111111"
-        },
-        {
-          "name": "stakeProgram",
-          "address": "Stake11111111111111111111111111111111111111"
-        },
-        {
-          "name": "systemProgram",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": []
-    },
-    {
-      "name": "finishStake",
-      "docs": [
-        "Opens a stake account owned by the vault and delegates it. Permissionless once verified."
-      ],
-      "discriminator": [
-        96,
-        239,
-        26,
-        63,
-        103,
-        215,
-        246,
-        139
-      ],
-      "accounts": [
-        {
-          "name": "unlock",
-          "writable": true
-        },
-        {
-          "name": "rentReceiver",
-          "writable": true
-        },
-        {
-          "name": "state",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  116,
-                  97,
-                  116,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ]
-          }
-        },
-        {
-          "name": "vault",
-          "writable": true,
-          "relations": [
+            "approval",
             "state"
           ]
         },
@@ -519,28 +1008,31 @@ export type Noxvault = {
       "args": []
     },
     {
-      "name": "finishUnstake",
+      "name": "executeStakeAuthority",
       "docs": [
-        "Deactivates one of the vault's stake accounts. Permissionless once verified."
+        "Unstake and CollectStake."
       ],
       "discriminator": [
-        36,
-        39,
-        141,
-        104,
-        51,
-        93,
-        247,
-        144
+        135,
+        96,
+        6,
+        219,
+        111,
+        189,
+        26,
+        39
       ],
       "accounts": [
         {
-          "name": "unlock",
+          "name": "approval",
           "writable": true
         },
         {
-          "name": "rentReceiver",
-          "writable": true
+          "name": "creator",
+          "writable": true,
+          "relations": [
+            "approval"
+          ]
         },
         {
           "name": "state",
@@ -568,6 +1060,7 @@ export type Noxvault = {
           "name": "vault",
           "writable": true,
           "relations": [
+            "approval",
             "state"
           ]
         },
@@ -599,28 +1092,28 @@ export type Noxvault = {
       "args": []
     },
     {
-      "name": "finishWithdraw",
-      "docs": [
-        "Withdraws SOL (or queues it as the pending withdrawal). Permissionless once verified."
-      ],
+      "name": "executeWithdraw",
       "discriminator": [
-        225,
-        43,
-        3,
-        149,
-        27,
-        183,
-        245,
-        27
+        255,
+        93,
+        15,
+        141,
+        187,
+        94,
+        246,
+        162
       ],
       "accounts": [
         {
-          "name": "unlock",
+          "name": "approval",
           "writable": true
         },
         {
-          "name": "rentReceiver",
-          "writable": true
+          "name": "creator",
+          "writable": true,
+          "relations": [
+            "approval"
+          ]
         },
         {
           "name": "state",
@@ -648,6 +1141,7 @@ export type Noxvault = {
           "name": "vault",
           "writable": true,
           "relations": [
+            "approval",
             "state"
           ]
         },
@@ -667,19 +1161,16 @@ export type Noxvault = {
       "args": []
     },
     {
-      "name": "finishWithdrawToken",
-      "docs": [
-        "Withdraws an SPL / Token-2022 token (or queues it). Permissionless once verified."
-      ],
+      "name": "executeWithdrawToken",
       "discriminator": [
-        6,
-        225,
-        56,
-        120,
-        204,
-        57,
-        216,
-        186
+        18,
+        107,
+        61,
+        210,
+        131,
+        233,
+        159,
+        214
       ],
       "accounts": [
         {
@@ -688,12 +1179,15 @@ export type Noxvault = {
           "signer": true
         },
         {
-          "name": "unlock",
+          "name": "approval",
           "writable": true
         },
         {
-          "name": "rentReceiver",
-          "writable": true
+          "name": "creator",
+          "writable": true,
+          "relations": [
+            "approval"
+          ]
         },
         {
           "name": "state",
@@ -721,6 +1215,7 @@ export type Noxvault = {
           "name": "vault",
           "writable": true,
           "relations": [
+            "approval",
             "state"
           ]
         },
@@ -863,11 +1358,55 @@ export type Noxvault = {
       "args": []
     },
     {
-      "name": "initVault",
-      "docs": [
-        "Creates the state of a vault from its config. Permissionless: the vault address is the",
-        "hash of the config, so nobody can register different rules for it."
+      "name": "initCanary",
+      "discriminator": [
+        195,
+        221,
+        148,
+        71,
+        32,
+        85,
+        6,
+        118
       ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "canary",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  110,
+                  97,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "watched",
+          "address": "6S396A19NFHWdABtBP17tjfFCZA9LJuuvuPK7hWzj7w9"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "initVault",
       "discriminator": [
         77,
         79,
@@ -924,6 +1463,238 @@ export type Noxvault = {
           }
         }
       ]
+    },
+    {
+      "name": "migrateSol",
+      "discriminator": [
+        105,
+        160,
+        47,
+        234,
+        197,
+        31,
+        168,
+        60
+      ],
+      "accounts": [
+        {
+          "name": "state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "newVault",
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "migrateToken",
+      "discriminator": [
+        122,
+        231,
+        115,
+        178,
+        231,
+        187,
+        185,
+        75
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vaultAta",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "account",
+                "path": "tokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "newVault",
+          "writable": true
+        },
+        {
+          "name": "newAta",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "newVault"
+              },
+              {
+                "kind": "account",
+                "path": "tokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "tokenProgram"
+        },
+        {
+          "name": "associatedTokenProgram",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
     },
     {
       "name": "openUnlock",
@@ -1042,6 +1813,1369 @@ export type Noxvault = {
       ]
     },
     {
+      "name": "raiseBaseline",
+      "docs": [
+        "Records a higher bounty as the new baseline (anyone may top the canary up)."
+      ],
+      "discriminator": [
+        94,
+        82,
+        159,
+        121,
+        123,
+        195,
+        193,
+        125
+      ],
+      "accounts": [
+        {
+          "name": "canary",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  110,
+                  97,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "watched",
+          "address": "6S396A19NFHWdABtBP17tjfFCZA9LJuuvuPK7hWzj7w9"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "registerLink",
+      "discriminator": [
+        107,
+        165,
+        116,
+        196,
+        1,
+        176,
+        74,
+        123
+      ],
+      "accounts": [
+        {
+          "name": "wallet",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "link",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  110,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "wallet"
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "requestLinkChange",
+      "discriminator": [
+        229,
+        138,
+        199,
+        183,
+        86,
+        158,
+        85,
+        123
+      ],
+      "accounts": [
+        {
+          "name": "wallet",
+          "signer": true,
+          "relations": [
+            "link"
+          ]
+        },
+        {
+          "name": "link",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  110,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "wallet"
+              }
+            ]
+          }
+        },
+        {
+          "name": "newState",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "newVault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "newVault"
+        },
+        {
+          "name": "canary",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  110,
+                  97,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "runSchedule",
+      "discriminator": [
+        179,
+        112,
+        243,
+        195,
+        32,
+        69,
+        224,
+        206
+      ],
+      "accounts": [
+        {
+          "name": "schedule",
+          "writable": true
+        },
+        {
+          "name": "state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "schedule",
+            "state"
+          ]
+        },
+        {
+          "name": "dest",
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "runScheduleToken",
+      "discriminator": [
+        148,
+        4,
+        104,
+        76,
+        50,
+        201,
+        40,
+        5
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "schedule",
+          "writable": true
+        },
+        {
+          "name": "state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "schedule",
+            "state"
+          ]
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vaultAta",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "account",
+                "path": "tokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "dest"
+        },
+        {
+          "name": "destAta",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "dest"
+              },
+              {
+                "kind": "account",
+                "path": "tokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "tokenProgram"
+        },
+        {
+          "name": "associatedTokenProgram",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "setEscapeTx",
+      "discriminator": [
+        119,
+        71,
+        209,
+        119,
+        227,
+        212,
+        172,
+        63
+      ],
+      "accounts": [
+        {
+          "name": "wallet",
+          "signer": true,
+          "relations": [
+            "link"
+          ]
+        },
+        {
+          "name": "link",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  110,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "wallet"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "tx",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "setPanic",
+      "discriminator": [
+        210,
+        198,
+        251,
+        142,
+        23,
+        5,
+        70,
+        145
+      ],
+      "accounts": [
+        {
+          "name": "wallet",
+          "signer": true,
+          "relations": [
+            "link"
+          ]
+        },
+        {
+          "name": "link",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  110,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "wallet"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "on",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "spendBudget",
+      "docs": [
+        "An ordinary session key spends from its budget (docs/SPEC.md §4)."
+      ],
+      "discriminator": [
+        227,
+        32,
+        78,
+        174,
+        128,
+        2,
+        160,
+        7
+      ],
+      "accounts": [
+        {
+          "name": "session",
+          "signer": true,
+          "relations": [
+            "budget"
+          ]
+        },
+        {
+          "name": "budget",
+          "writable": true
+        },
+        {
+          "name": "state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "budget",
+            "state"
+          ]
+        },
+        {
+          "name": "dest",
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "spendBudgetToken",
+      "discriminator": [
+        130,
+        186,
+        45,
+        152,
+        124,
+        10,
+        119,
+        95
+      ],
+      "accounts": [
+        {
+          "name": "session",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "budget"
+          ]
+        },
+        {
+          "name": "budget",
+          "writable": true
+        },
+        {
+          "name": "state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "relations": [
+            "budget",
+            "state"
+          ]
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vaultAta",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "account",
+                "path": "tokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "dest"
+        },
+        {
+          "name": "destAta",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "dest"
+              },
+              {
+                "kind": "account",
+                "path": "tokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "tokenProgram"
+        },
+        {
+          "name": "associatedTokenProgram",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "sweepInbox",
+      "discriminator": [
+        33,
+        193,
+        180,
+        97,
+        49,
+        195,
+        17,
+        146
+      ],
+      "accounts": [
+        {
+          "name": "state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "inbox",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  98,
+                  111,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "arg",
+                "path": "id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "id",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "sweepInboxToken",
+      "discriminator": [
+        168,
+        37,
+        3,
+        30,
+        57,
+        56,
+        200,
+        63
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "inbox",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  98,
+                  111,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "arg",
+                "path": "id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "inboxAta",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "inbox"
+              },
+              {
+                "kind": "account",
+                "path": "tokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "vaultAta",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "account",
+                "path": "tokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "tokenProgram"
+        },
+        {
+          "name": "associatedTokenProgram",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "id",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "testamentSol",
+      "docs": [
+        "Splits all SOL among the heirs; heirs are the remaining accounts, in config order."
+      ],
+      "discriminator": [
+        216,
+        86,
+        26,
+        133,
+        139,
+        61,
+        67,
+        215
+      ],
+      "accounts": [
+        {
+          "name": "state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "testamentStake",
+      "discriminator": [
+        97,
+        232,
+        34,
+        252,
+        226,
+        6,
+        173,
+        30
+      ],
+      "accounts": [
+        {
+          "name": "state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "stake",
+          "writable": true
+        },
+        {
+          "name": "clock",
+          "address": "SysvarC1ock11111111111111111111111111111111"
+        },
+        {
+          "name": "stakeHistory",
+          "address": "SysvarStakeHistory1111111111111111111111111"
+        },
+        {
+          "name": "stakeProgram",
+          "address": "Stake11111111111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "seed",
+          "type": "u8"
+        },
+        {
+          "name": "collect",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "testamentToken",
+      "docs": [
+        "Splits all of one token among the heirs; remaining accounts are the heirs' token",
+        "accounts for this mint, in config order (create them first)."
+      ],
+      "discriminator": [
+        114,
+        173,
+        52,
+        139,
+        84,
+        113,
+        244,
+        102
+      ],
+      "accounts": [
+        {
+          "name": "state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vaultAta",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "account",
+                "path": "tokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "tokenProgram"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "tripCanary",
+      "docs": [
+        "Trips the canary if its bounty moved: only possible if ed25519 is broken."
+      ],
+      "discriminator": [
+        194,
+        111,
+        209,
+        10,
+        16,
+        19,
+        164,
+        249
+      ],
+      "accounts": [
+        {
+          "name": "canary",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  110,
+                  97,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "watched",
+          "address": "6S396A19NFHWdABtBP17tjfFCZA9LJuuvuPK7hWzj7w9"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "verify",
       "docs": [
         "Walks chains `from..to` to their ends. Freezes the buffer on first use. Permissionless."
@@ -1096,7 +3230,7 @@ export type Noxvault = {
         {
           "name": "vault",
           "docs": [
-            "signature bytes shows up in the vault's history (docs/SPEC.md §8)."
+            "signature bytes shows up in the vault's history (docs/SPEC.md §9)."
           ],
           "relations": [
             "unlock"
@@ -1127,6 +3261,71 @@ export type Noxvault = {
     }
   ],
   "accounts": [
+    {
+      "name": "approval",
+      "discriminator": [
+        233,
+        9,
+        153,
+        49,
+        11,
+        222,
+        59,
+        130
+      ]
+    },
+    {
+      "name": "budget",
+      "discriminator": [
+        35,
+        151,
+        58,
+        65,
+        187,
+        148,
+        119,
+        218
+      ]
+    },
+    {
+      "name": "canary",
+      "discriminator": [
+        192,
+        209,
+        214,
+        197,
+        87,
+        28,
+        82,
+        115
+      ]
+    },
+    {
+      "name": "link",
+      "discriminator": [
+        90,
+        57,
+        179,
+        207,
+        13,
+        91,
+        161,
+        190
+      ]
+    },
+    {
+      "name": "schedule",
+      "discriminator": [
+        217,
+        243,
+        116,
+        56,
+        73,
+        82,
+        207,
+        51
+      ]
+    },
     {
       "name": "unlock",
       "discriminator": [
@@ -1188,7 +3387,7 @@ export type Noxvault = {
     {
       "code": 6006,
       "name": "badAction",
-      "msg": "Action too large"
+      "msg": "Invalid action"
     },
     {
       "code": 6007,
@@ -1223,12 +3422,12 @@ export type Noxvault = {
     {
       "code": 6013,
       "name": "wrongAction",
-      "msg": "This instruction cannot execute the signed action"
+      "msg": "This instruction cannot execute this action"
     },
     {
       "code": 6014,
       "name": "wrongDest",
-      "msg": "Destination does not match the signed action"
+      "msg": "Destination does not match"
     },
     {
       "code": 6015,
@@ -1238,7 +3437,7 @@ export type Noxvault = {
     {
       "code": 6016,
       "name": "wrongStake",
-      "msg": "Stake account does not match the signed action"
+      "msg": "Stake account does not match"
     },
     {
       "code": 6017,
@@ -1252,148 +3451,214 @@ export type Noxvault = {
     },
     {
       "code": 6019,
+      "name": "notApproved",
+      "msg": "Not enough approvals"
+    },
+    {
+      "code": 6020,
       "name": "recoveryLocked",
       "msg": "The recovery key may only cancel until the owner has been inactive long enough"
     },
     {
-      "code": 6020,
-      "name": "notWhitelisted",
-      "msg": "This destination is not on the vault's whitelist"
-    },
-    {
       "code": 6021,
-      "name": "pendingExists",
-      "msg": "A withdrawal is already pending"
+      "name": "notWhitelisted",
+      "msg": "This destination is not allowed by the vault's rules"
     },
     {
       "code": 6022,
-      "name": "noPending",
-      "msg": "No withdrawal is pending"
+      "name": "pendingExists",
+      "msg": "Something is already pending"
     },
     {
       "code": 6023,
+      "name": "noPending",
+      "msg": "Nothing is pending"
+    },
+    {
+      "code": 6024,
       "name": "notYet",
-      "msg": "The pending withdrawal's delay has not passed yet"
+      "msg": "Not yet"
+    },
+    {
+      "code": 6025,
+      "name": "missingAccount",
+      "msg": "A required account is missing"
+    },
+    {
+      "code": 6026,
+      "name": "budgetExpired",
+      "msg": "This budget has expired"
+    },
+    {
+      "code": 6027,
+      "name": "overBudget",
+      "msg": "This would exceed the budget for this period"
+    },
+    {
+      "code": 6028,
+      "name": "noTestament",
+      "msg": "This vault has no testament"
+    },
+    {
+      "code": 6029,
+      "name": "canaryTripped",
+      "msg": "The quantum canary has tripped"
+    },
+    {
+      "code": 6030,
+      "name": "notTriggered",
+      "msg": "The Escape Hatch has not been triggered"
+    },
+    {
+      "code": 6031,
+      "name": "notDelegated",
+      "msg": "This token account has not delegated to the Escape Hatch"
     }
   ],
   "types": [
     {
       "name": "action",
       "docs": [
-        "What one one-time key authorizes. Signed as borsh bytes (docs/SPEC.md §5)."
+        "What one approval authorizes. Signed as borsh bytes (docs/SPEC.md §4)."
       ],
       "type": {
-        "kind": "enum",
-        "variants": [
+        "kind": "struct",
+        "fields": [
           {
-            "name": "withdraw",
-            "fields": [
-              {
-                "name": "mint",
-                "type": "pubkey"
-              },
-              {
-                "name": "dest",
-                "type": "pubkey"
-              },
-              {
-                "name": "amount",
-                "type": "u64"
-              },
-              {
-                "name": "fee",
-                "type": "u64"
-              },
-              {
-                "name": "feePayee",
-                "type": "pubkey"
+            "name": "kind",
+            "type": {
+              "defined": {
+                "name": "kind"
               }
-            ]
+            }
           },
           {
-            "name": "stake",
-            "fields": [
-              {
-                "name": "seed",
-                "type": "u8"
-              },
-              {
-                "name": "vote",
-                "type": "pubkey"
-              },
-              {
-                "name": "amount",
-                "type": "u64"
-              },
-              {
-                "name": "fee",
-                "type": "u64"
-              },
-              {
-                "name": "feePayee",
-                "type": "pubkey"
-              }
-            ]
+            "name": "fee",
+            "type": "u64"
           },
           {
-            "name": "unstake",
-            "fields": [
-              {
-                "name": "seed",
-                "type": "u8"
-              },
-              {
-                "name": "fee",
-                "type": "u64"
-              },
-              {
-                "name": "feePayee",
-                "type": "pubkey"
-              }
-            ]
+            "name": "feePayee",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "approval",
+      "docs": [
+        "Approvals collected for one action (docs/SPEC.md §4)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault",
+            "type": "pubkey"
           },
           {
-            "name": "collectStake",
-            "fields": [
-              {
-                "name": "seed",
-                "type": "u8"
-              },
-              {
-                "name": "fee",
-                "type": "u64"
-              },
-              {
-                "name": "feePayee",
-                "type": "pubkey"
-              }
-            ]
+            "name": "actionHash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           },
           {
-            "name": "cancel",
-            "fields": [
-              {
-                "name": "fee",
-                "type": "u64"
-              },
-              {
-                "name": "feePayee",
-                "type": "pubkey"
-              }
-            ]
+            "name": "action",
+            "type": {
+              "array": [
+                "u8",
+                160
+              ]
+            }
           },
           {
-            "name": "ping",
-            "fields": [
-              {
-                "name": "fee",
-                "type": "u64"
-              },
-              {
-                "name": "feePayee",
-                "type": "pubkey"
-              }
-            ]
+            "name": "actionLen",
+            "type": "u16"
+          },
+          {
+            "name": "trees",
+            "docs": [
+              "Bit t set once tree t approved."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "creator",
+            "type": "pubkey"
+          },
+          {
+            "name": "createdAt",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "budget",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "id",
+            "type": "u8"
+          },
+          {
+            "name": "session",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "limit",
+            "type": "u64"
+          },
+          {
+            "name": "period",
+            "type": "i64"
+          },
+          {
+            "name": "expires",
+            "type": "i64"
+          },
+          {
+            "name": "windowStart",
+            "type": "i64"
+          },
+          {
+            "name": "spent",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "canary",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "watched",
+            "type": "pubkey"
+          },
+          {
+            "name": "baseline",
+            "type": "u64"
+          },
+          {
+            "name": "tripped",
+            "type": "bool"
+          },
+          {
+            "name": "trippedAt",
+            "type": "i64"
           }
         ]
       }
@@ -1407,29 +3672,20 @@ export type Noxvault = {
         "kind": "struct",
         "fields": [
           {
-            "name": "primaryRoot",
+            "name": "trees",
             "type": {
               "array": [
-                "u8",
-                32
+                {
+                  "defined": {
+                    "name": "tree"
+                  }
+                },
+                4
               ]
             }
           },
           {
-            "name": "primaryHeight",
-            "type": "u8"
-          },
-          {
-            "name": "recoveryRoot",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "recoveryHeight",
+            "name": "threshold",
             "type": "u8"
           },
           {
@@ -1448,6 +3704,255 @@ export type Noxvault = {
           {
             "name": "slowDelay",
             "type": "i64"
+          },
+          {
+            "name": "instantLimit",
+            "type": "u64"
+          },
+          {
+            "name": "heirs",
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "heir"
+                  }
+                },
+                4
+              ]
+            }
+          },
+          {
+            "name": "testamentDelay",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "heir",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "addr",
+            "type": "pubkey"
+          },
+          {
+            "name": "bps",
+            "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "kind",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "withdraw",
+            "fields": [
+              {
+                "name": "mint",
+                "type": "pubkey"
+              },
+              {
+                "name": "dest",
+                "type": "pubkey"
+              },
+              {
+                "name": "amount",
+                "type": "u64"
+              }
+            ]
+          },
+          {
+            "name": "stake",
+            "fields": [
+              {
+                "name": "seed",
+                "type": "u8"
+              },
+              {
+                "name": "vote",
+                "type": "pubkey"
+              },
+              {
+                "name": "amount",
+                "type": "u64"
+              }
+            ]
+          },
+          {
+            "name": "unstake",
+            "fields": [
+              {
+                "name": "seed",
+                "type": "u8"
+              }
+            ]
+          },
+          {
+            "name": "collectStake",
+            "fields": [
+              {
+                "name": "seed",
+                "type": "u8"
+              }
+            ]
+          },
+          {
+            "name": "cancel"
+          },
+          {
+            "name": "ping"
+          },
+          {
+            "name": "schedule",
+            "fields": [
+              {
+                "name": "id",
+                "type": "u8"
+              },
+              {
+                "name": "mint",
+                "type": "pubkey"
+              },
+              {
+                "name": "dest",
+                "type": "pubkey"
+              },
+              {
+                "name": "amount",
+                "type": "u64"
+              },
+              {
+                "name": "interval",
+                "type": "i64"
+              },
+              {
+                "name": "count",
+                "type": "u16"
+              },
+              {
+                "name": "start",
+                "type": "i64"
+              }
+            ]
+          },
+          {
+            "name": "cancelSchedule",
+            "fields": [
+              {
+                "name": "id",
+                "type": "u8"
+              }
+            ]
+          },
+          {
+            "name": "budget",
+            "fields": [
+              {
+                "name": "id",
+                "type": "u8"
+              },
+              {
+                "name": "session",
+                "type": "pubkey"
+              },
+              {
+                "name": "mint",
+                "type": "pubkey"
+              },
+              {
+                "name": "limit",
+                "type": "u64"
+              },
+              {
+                "name": "period",
+                "type": "i64"
+              },
+              {
+                "name": "expires",
+                "type": "i64"
+              }
+            ]
+          },
+          {
+            "name": "cancelBudget",
+            "fields": [
+              {
+                "name": "id",
+                "type": "u8"
+              }
+            ]
+          },
+          {
+            "name": "migrate",
+            "fields": [
+              {
+                "name": "newVault",
+                "type": "pubkey"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "link",
+      "docs": [
+        "An ordinary wallet's link to its vault: registry entry and Escape Hatch (docs/SPEC.md §7)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "wallet",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "createdAt",
+            "type": "i64"
+          },
+          {
+            "name": "panic",
+            "type": "bool"
+          },
+          {
+            "name": "change",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "linkChange"
+                }
+              }
+            }
+          },
+          {
+            "name": "escapeTx",
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "linkChange",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "at",
+            "type": "i64"
           }
         ]
       }
@@ -1457,6 +3962,10 @@ export type Noxvault = {
       "type": {
         "kind": "struct",
         "fields": [
+          {
+            "name": "kind",
+            "type": "u8"
+          },
           {
             "name": "mint",
             "type": "pubkey"
@@ -1472,10 +3981,67 @@ export type Noxvault = {
           {
             "name": "executableAt",
             "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "schedule",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault",
+            "type": "pubkey"
           },
           {
-            "name": "leaf",
+            "name": "id",
+            "type": "u8"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "dest",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "interval",
+            "type": "i64"
+          },
+          {
+            "name": "remaining",
             "type": "u16"
+          },
+          {
+            "name": "nextAt",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "tree",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "height",
+            "type": "u8"
           }
         ]
       }
@@ -1495,16 +4061,10 @@ export type Noxvault = {
         "fields": [
           {
             "name": "written",
-            "docs": [
-              "Bit j set once chain j's signature value is written."
-            ],
             "type": "u64"
           },
           {
             "name": "verified",
-            "docs": [
-              "Bit j set once chain j has been walked to its end."
-            ],
             "type": "u64"
           },
           {
@@ -1565,9 +4125,6 @@ export type Noxvault = {
           },
           {
             "name": "frozen",
-            "docs": [
-              "1 once verification started: the message and signature can no longer change."
-            ],
             "type": "u8"
           },
           {
@@ -1576,9 +4133,6 @@ export type Noxvault = {
           },
           {
             "name": "digits",
-            "docs": [
-              "Digits of the message digest, fixed when the buffer freezes."
-            ],
             "type": {
               "array": [
                 "u8",
@@ -1657,23 +4211,19 @@ export type Noxvault = {
             }
           },
           {
-            "name": "usedPrimary",
+            "name": "used",
             "docs": [
-              "Bit l set once leaf l of the tree has been used."
+              "Bit l of used[t] set once leaf l of tree t has been used."
             ],
             "type": {
               "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "usedRecovery",
-            "type": {
-              "array": [
-                "u8",
-                32
+                {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                },
+                4
               ]
             }
           },
@@ -1697,6 +4247,23 @@ export type Noxvault = {
                   "name": "pending"
                 }
               }
+            }
+          },
+          {
+            "name": "windowStart",
+            "docs": [
+              "24 h window for the instant limit."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "windowSpent",
+            "type": "u64"
+          },
+          {
+            "name": "migrateTo",
+            "type": {
+              "option": "pubkey"
             }
           }
         ]

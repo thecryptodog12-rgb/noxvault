@@ -7,8 +7,8 @@ import type { Noxvault } from "./idl/noxvault";
 import {
   SignedAction,
   SOL_MINT,
-  TREE_PRIMARY,
   actionDigest,
+  completesApproval,
   buildSteps,
   fetchState,
   leafUsed,
@@ -16,7 +16,7 @@ import {
   packSteps,
   remainingSteps,
 } from "./client";
-import { Action, LEN, N, equal, recoverRoot } from "./wots";
+import { Action, KIND_TAGS, LEN, N, encodeAction, equal, recoverRoot } from "./wots";
 
 /** JSON shape of a relay request: bytes as hex, keys as base58, amounts as decimal strings. */
 export interface RelayRequest {
@@ -41,6 +41,10 @@ const fromHex = (h: string, len?: number) => {
   return Uint8Array.from(Buffer.from(h, "hex"));
 };
 
+const KEY_FIELDS = new Set(["mint", "dest", "vote", "session", "newVault", "feePayee"]);
+const BIG_FIELDS = new Set(["amount", "interval", "start", "limit", "period", "expires", "fee"]);
+const NUM_FIELDS = new Set(["seed", "id", "count"]);
+
 export function encodeRelayRequest(s: SignedAction): RelayRequest {
   const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
   const a: Record<string, string | number> = { kind: s.action.kind };
@@ -60,39 +64,22 @@ export function encodeRelayRequest(s: SignedAction): RelayRequest {
 }
 
 export function decodeRelayRequest(r: RelayRequest): SignedAction {
-  const key = (v: unknown) => new PublicKey(String(v)).toBytes();
-  const big = (v: unknown) => {
-    if (!/^\d+$/.test(String(v))) throw new Error("bad amount");
-    return BigInt(String(v));
-  };
-  const seed = (v: unknown) => {
-    const n = Number(v);
-    if (!Number.isInteger(n) || n < 0 || n > 255) throw new Error("bad seed");
-    return n;
-  };
-  const a = r.action;
-  const fee = big(a.fee);
-  const feePayee = key(a.feePayee);
-  let action: Action;
-  switch (a.kind) {
-    case "withdraw":
-      action = { kind: "withdraw", mint: key(a.mint), dest: key(a.dest), amount: big(a.amount), fee, feePayee };
-      break;
-    case "stake":
-      action = { kind: "stake", seed: seed(a.seed), vote: key(a.vote), amount: big(a.amount), fee, feePayee };
-      break;
-    case "unstake":
-    case "collectStake":
-      action = { kind: a.kind, seed: seed(a.seed), fee, feePayee };
-      break;
-    case "cancel":
-    case "ping":
-      action = { kind: a.kind, fee, feePayee };
-      break;
-    default:
-      throw new Error("unknown action");
+  if (!r.action || !KIND_TAGS.includes(r.action.kind)) throw new Error("unknown action");
+  const action: Record<string, unknown> = { kind: r.action.kind };
+  for (const [k, v] of Object.entries(r.action)) {
+    if (k === "kind") continue;
+    if (KEY_FIELDS.has(k)) action[k] = new PublicKey(String(v)).toBytes();
+    else if (BIG_FIELDS.has(k)) {
+      if (!/^-?\d+$/.test(String(v))) throw new Error(`bad ${k}`);
+      action[k] = BigInt(String(v));
+    } else if (NUM_FIELDS.has(k)) {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 0 || n > 65535) throw new Error(`bad ${k}`);
+      action[k] = n;
+    } else throw new Error(`unexpected field ${k}`);
   }
-  if (r.tree !== 0 && r.tree !== 1) throw new Error("bad tree");
+  encodeAction(action as Action); // throws if a field is missing
+  if (!Number.isInteger(r.tree) || r.tree < 0 || r.tree > 3) throw new Error("bad tree");
   if (!Number.isInteger(r.leaf) || r.leaf < 0 || r.leaf > 255) throw new Error("bad leaf");
   if (!Array.isArray(r.signature) || r.signature.length !== LEN) throw new Error("bad signature");
   if (!Array.isArray(r.authPath) || r.authPath.length > 8) throw new Error("bad auth path");
@@ -103,7 +90,7 @@ export function decodeRelayRequest(r: RelayRequest): SignedAction {
     pkSeed: fromHex(r.pkSeed, N),
     authPath: r.authPath.map((h) => fromHex(h, N)),
     signature: r.signature.map((h) => fromHex(h, N)),
-    action,
+    action: action as Action,
   };
 }
 
@@ -115,8 +102,7 @@ export async function checkRelay(program: Program<Noxvault>, relayer: PublicKey,
   const conn = program.provider.connection;
   const state = await fetchState(program, s.vault);
   if (!state) return "vault not initialized";
-  const root = s.tree === TREE_PRIMARY ? state.config.primaryRoot : state.config.recoveryRoot;
-  const height = s.tree === TREE_PRIMARY ? state.config.primaryHeight : state.config.recoveryHeight;
+  const { root, height } = state.config.trees[s.tree];
   if (!height || s.authPath.length !== height) return "wrong tree";
   if (leafUsed(state, s.tree, s.leaf)) return "one-time key already used";
   const digest = actionDigest(program.programId, s.vault, s.tree, s.leaf, s.action);
@@ -134,7 +120,7 @@ export async function checkRelay(program: Program<Noxvault>, relayer: PublicKey,
 }
 
 async function discounted(conn: Connection, a: Action, policy: RelayPolicy): Promise<boolean> {
-  if (!policy.discount || a.kind !== "withdraw") return false;
+  if (!policy.discount || a.kind !== "withdraw") return false; // the discount follows the withdrawal's destination
   const dest = new PublicKey(a.dest);
   for (const program of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
     try {
@@ -156,7 +142,9 @@ export async function relay(program: Program<Noxvault>, relayer: Keypair, s: Sig
     s.action.kind === "withdraw" && !new PublicKey(s.action.mint).equals(SOL_MINT)
       ? await mintTokenProgram(conn, new PublicKey(s.action.mint))
       : undefined;
-  const steps = await buildSteps(program, relayer.publicKey, s, { tokenProgram });
+  const tokenProgramFor = tokenProgram;
+  const status = await completesApproval(program, s.vault, s.tree, s.action);
+  const steps = await buildSteps(program, relayer.publicKey, s, { tokenProgram: tokenProgramFor, execute: status.willExecute, creator: status.creator ?? relayer.publicKey });
   const todo = await remainingSteps(program, relayer.publicKey, s, steps);
   const sigs: string[] = [];
   for (const t of packSteps(relayer.publicKey, todo)) {

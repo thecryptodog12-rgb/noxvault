@@ -1,153 +1,163 @@
-# Noxvault — protocol spec v2
+# Noxvault — protocol spec v3
 
 A vault on Solana whose funds move only with **hash-based one-time signatures** (WOTS+), arranged
-in a **Merkle tree** so one fixed vault address serves many withdrawals (the XMSS idea). No
-ed25519 key can move what is inside. A second, optional **recovery tree** can cancel suspicious
-withdrawals at any time and take over after a long period of inactivity.
+in Merkle trees so one fixed vault address serves many actions. On top of that: multi-signer
+vaults, a recovery key, an on-chain testament, spending rules, schedules and session budgets,
+migration, invoice addresses, and an **Escape Hatch** that also protects a user's ordinary
+ed25519 wallet, triggered by an on-chain **quantum canary**. Everything works for SOL and for
+SPL / Token-2022 tokens.
 
-This file is the single source of truth for the program (`programs/noxvault`), the TypeScript
-SDK (`sdk/`), the web app (`web/`) and the relayer. Change it first, then the code.
-
-v1 (one key per vault address, rest moved to a new vault) is replaced; see git history.
+This file is the single source of truth for the program, the SDK, the web app and the keeper.
+v2 and v1 are in git history; v3 is not compatible with them (new domains, new accounts).
 
 ## 1. Parameters
 
-| name | value | note |
-|---|---|---|
-| `N` | 32 | bytes per hash (SHA-256) |
-| `W` | 256 | Winternitz parameter, one digit = one byte |
-| `LEN` | 34 | 32 message digits + 2 checksum digits |
-| primary tree height | 8 | 256 one-time keys = 256 actions per vault |
-| recovery tree height | 4 | 16 one-time keys |
-| signature | 34 × 32 B + `pk_seed` 32 B + auth path height × 32 B | 1,376 B for the primary tree |
+| name | value |
+|---|---|
+| `N` | 32 bytes (SHA-256) |
+| `W` | 256 (one digit = one byte), `LEN` = 34 chains (32 + 2 checksum) |
+| tree height | 8 for signer trees (256 keys), 4 for the recovery tree (16 keys) |
+| signer slots | 3 (`trees[0..3]`), recovery slot `trees[3]` |
 
-All hashes are SHA-256; `||` concatenates; integers are little-endian (`u8`, `u16le`, `u32le`,
-`u64le`, `i64le`); domain strings are ASCII.
+Little-endian integers, ASCII domain strings, `||` concatenation, borsh for structs.
 
-## 2. Keys (client side only)
-
-A **phrase** is 24 BIP39 words = a 32-byte master secret `S`. A user has a primary phrase and,
-optionally, a separate recovery phrase (ideally held by someone else or stored elsewhere).
-Vault number `v` = 0, 1, 2… lets one phrase run several vaults. The primary tree of vault `v`
-uses `v`; a recovery tree uses `v + 2^31`, so one phrase never yields the same keys in both roles.
+## 2. Keys, chains, trees (unchanged from v2)
 
 ```
-sk_seed(S, v) = SHA256("nox2/sk"    || S || u32le(v))
-pk_seed(S, v) = SHA256("nox2/pk"    || S || u32le(v))
-x(l, j)       = SHA256("nox2/chain" || sk_seed || u16le(l) || u8(j))      leaf l, chain j = 0..33
-```
-
-## 3. Chains, leaves, tree
-
-```
-F(l, j, k, v)    = SHA256(pk_seed || u16le(l) || u8(j) || u8(k) || v)     step k → k+1, k = 0..254
-end(l, j)        = F applied 255 times to x(l, j)
-leaf(l)          = SHA256("nox2/leaf" || pk_seed || u16le(l) || end(l,0) || … || end(l,33))
+sk_seed = SHA256("nox2/sk" || S || u32le(i))       pk_seed = SHA256("nox2/pk" || S || u32le(i))
+i = vault number v for a signer tree, v + 2^31 for a recovery tree
+x(l, j)          = SHA256("nox2/chain" || sk_seed || u16le(l) || u8(j))
+F(l, j, k, v)    = SHA256(pk_seed || u16le(l) || u8(j) || u8(k) || v)
+leaf(l)          = SHA256("nox2/leaf" || pk_seed || u16le(l) || end(l,0..33))
 node(h, i, a, b) = SHA256("nox2/node" || pk_seed || u8(h) || u16le(i) || a || b)
 ```
 
-Level 0 holds the leaves. Node `i` on level `h ≥ 1` is `node(h, i, left, right)` of children
-`2i` and `2i+1` on level `h−1`. The tree root is node 0 on the top level. Every hash call is
-keyed by `pk_seed` plus its exact position, so attacks on many keys at once gain nothing.
-
-The **auth path** of leaf `l` is its sibling on each level, bottom to top.
-
-## 4. Vault config and address
+## 3. Config and address
 
 ```
+Tree    { root: [u8; 32], height: u8 }                 // root all-zero = slot unused
+Heir    { addr: Pubkey, bps: u16 }                     // addr default = unused
 Config {
-  primary_root:    [u8; 32],
-  primary_height:  u8,             // 8
-  recovery_root:   [u8; 32],       // all zero = no recovery tree
-  recovery_height: u8,             // 4, or 0 when there is none
-  recovery_delay:  i64,            // seconds of primary inactivity before recovery may act fully
-  whitelist:       [Pubkey; 4],    // default key = empty slot
-  slow_delay:      i64,            // seconds a withdrawal outside the whitelist waits; 0 = forbidden
+  trees:           [Tree; 4],     // 0..2 signers, 3 recovery
+  threshold:       u8,            // signer approvals needed, 1..=number of signer trees
+  recovery_delay:  i64,           // owner inactivity before recovery may act fully
+  whitelist:       [Pubkey; 4],
+  slow_delay:      i64,           // wait for restricted withdrawals; 0 = refuse them
+  instant_limit:   u64,           // lamports per 24 h a restricted SOL withdrawal may skip the wait
+  heirs:           [Heir; 4],     // bps sum to 10000 when any heir is set
+  testament_delay: i64,           // owner inactivity before the testament may run; 0 = off
 }
-config_hash = SHA256("nox2/config" || borsh(Config))
-vault       = PDA(["vault", config_hash])       // system-owned: holds SOL, owns token & stake accounts
-state       = PDA(["state", vault])             // program account created by `init_vault`
+config_hash = SHA256("nox3/config" || borsh(Config))
+vault       = PDA(["vault", config_hash])     // system-owned: holds SOL, owns token & stake accounts
+state       = PDA(["state", vault])           // created by `init_vault(config)`, permissionless
 ```
 
-The deposit address commits to the full config, so nobody can change the rules of a vault
-after the fact. `init_vault(config)` is permissionless and must run before the first action.
-The whitelist only matters if at least one slot is set.
+A destination is **restricted** if the whitelist is set and it is not on it, or if the whitelist
+is empty but `instant_limit > 0`. Restricted SOL withdrawals within the 24 h `instant_limit`
+execute at once; anything else restricted becomes the **pending** withdrawal after `slow_delay`
+(refused when `slow_delay = 0`). Tokens to restricted destinations always wait (or are refused).
 
-## 5. Actions and messages
-
-Every one-time key signs exactly one message:
-
-```
-d = SHA256("nox2/msg" || program_id || vault || u8(tree) || u16le(leaf) || borsh(Action))
-tree: 0 = primary, 1 = recovery
-```
+## 4. Actions
 
 ```
-enum Action {                                         // borsh: u8 tag, then fields
-  0 Withdraw     { mint, dest, amount: u64, fee: u64, fee_payee }
-  1 Stake        { seed: u8, vote: Pubkey, amount: u64, fee: u64, fee_payee }
-  2 Unstake      { seed: u8, fee: u64, fee_payee }
-  3 CollectStake { seed: u8, fee: u64, fee_payee }
-  4 Cancel       { fee: u64, fee_payee }               // drop the pending withdrawal
-  5 Ping         { fee: u64, fee_payee }               // prove the owner is alive
+Action { kind: Kind, fee: u64, fee_payee: Pubkey }        // fee: lamports from the vault on execution
+
+enum Kind {
+  0  Withdraw       { mint, dest, amount }
+  1  Stake          { seed: u8, vote, amount }
+  2  Unstake        { seed: u8 }
+  3  CollectStake   { seed: u8 }
+  4  Cancel                                     // drop the pending withdrawal / migration
+  5  Ping                                       // owner is alive
+  6  Schedule       { id: u8, mint, dest, amount, interval: i64, count: u16, start: i64 }
+  7  CancelSchedule { id: u8 }
+  8  Budget         { id: u8, session: Pubkey, mint, limit, period: i64, expires: i64 }
+  9  CancelBudget   { id: u8 }
+  10 Migrate        { new_vault }
 }
+mint = all-zero key for SOL
+d = SHA256("nox3/msg" || program_id || vault || u8(tree) || u16le(leaf) || borsh(Action))
 ```
 
-- `mint` = all-zero key for SOL. `dest` is a wallet; tokens go to its associated token account.
-- `fee` lamports go from the vault to `fee_payee` when the action executes. This is how a
-  relayer is paid, so a user never needs a wallet of their own. 0 when the user pays fees.
-- Stake accounts are PDAs `["stake", vault, seed]` with the vault as staker and withdrawer.
+Signing, digits and verification are as in v2 (WOTS+ over `d`, then leaf, then auth path).
 
-Digits: `a[0..32] = d`, `csum = Σ(255 − a[t])`, `a[32] = csum >> 8`, `a[33] = csum & 0xff`.
-Sign: `sig[j] = F applied a[j] times to x(l, j)`. Verify walks each chain the remaining
-`255 − a[j]` steps, rebuilds `leaf(l)`, then the root via the auth path.
+### Approvals
 
-### Rules enforced on chain
+Every verified signature becomes an **approval** of `action_hash = SHA256("nox3/action" ||
+borsh(Action))` in `PDA(["approval", vault, action_hash])`, recording which tree approved.
+An action executes (permissionless, `execute_*`) when:
 
-- Each leaf of each tree can be used once (bitmaps in `state`).
-- **Primary tree:** may do every action; each use sets `last_active = now`.
-- **Recovery tree:** may always `Cancel`. Everything else only if
-  `now ≥ last_active + recovery_delay`.
-- **Withdraw** to a `dest` outside a non-empty whitelist, signed by the primary tree:
-  `slow_delay = 0` → refused; otherwise it becomes the vault's single **pending withdrawal**,
-  executable by anyone after `slow_delay` seconds (`execute_pending`), cancellable before that
-  by either tree. Recovery withdrawals after inactivity are immediate (they are the heir).
-- A vault's SOL balance after any payout must be 0 or at least the rent-exempt minimum.
+- signer approvals ≥ `threshold`, or
+- the recovery tree approved it and it is `Cancel`, `CancelSchedule` or `CancelBudget`, or
+- the recovery tree approved it and `now ≥ last_active + recovery_delay`.
 
-## 6. On-chain flow
+Signer approvals set `last_active = now`. Executing closes the approval. Each leaf of each tree is
+used once (bitmaps in `state`). An unexecuted approval can be discarded after 7 days.
 
-A signature does not fit one transaction, so an action is assembled in a buffer
-`["unlock", vault, payer]`:
+### Rules per action
 
-1. `open_unlock(tree, leaf, pk_seed, auth_path, action)` — payer creates the buffer.
-2. `write_sigs(start, sigs[])` — payer fills chains; the vault is passed as an account so every
-   transaction carrying signature bytes appears in the vault's history.
-3. `verify(from, to)` — permissionless; freezes the buffer on first call (no more writes) and
-   walks chains `from..to` to their ends.
-4. `finish_*` — permissionless once all chains are walked: rebuilds leaf and root, checks the
-   root against `state.config`, marks the leaf used, applies the permission rules and executes
-   the action. Buffer rent returns to the payer.
-   `finish_withdraw` (SOL), `finish_withdraw_token`, `finish_stake`, `finish_unstake`,
-   `finish_collect_stake`, `finish_admin` (Cancel, Ping).
-5. `execute_pending` / `execute_pending_token` — permissionless after the delay.
-6. `cancel_unlock` — the payer closes its buffer.
+- **Withdraw**: restriction rules of §3; recovery withdrawals after inactivity are unrestricted.
+- **Schedule**: pays `amount` every `interval`, `count` times from `start`; anyone runs due
+  payments. A restricted destination's first payment is at least `slow_delay` away (refused if
+  `slow_delay = 0`). `PDA(["schedule", vault, id])`.
+- **Budget**: an ordinary (ed25519) **session key** may spend up to `limit` per `period` until
+  `expires`, only to non-restricted destinations. Losing the session key loses at most the budget.
+  `PDA(["budget", vault, id])`.
+- **Migrate**: sets `migrate_to` (a Noxvault vault). Restricted unless `new_vault` is whitelisted.
+  Then anyone moves all SOL and any token to it.
+- **Testament**: when `testament_delay > 0` and `now ≥ last_active + testament_delay`, anyone
+  can distribute all SOL / any token to the heirs by `bps`, and deactivate / collect stakes first.
+- After any payout the vault holds 0 or ≥ rent-minimum lamports.
 
-## 7. Relayer
+## 5. Flow
 
-A relayer is any service that sends these transactions as fee payer. The user signs an action
-with `fee > 0` and `fee_payee = relayer`; the relayer pays network fees and buffer rent (which
-it gets back) and is repaid by the vault at execution. The relayer cannot change anything: the
-action is in the signed message. A relayer must verify the signature and Merkle path off-chain,
-check the leaf is unused and the vault can pay the fee, before spending anything.
+1. `open_unlock(tree, leaf, pk_seed, auth_path, action)` → buffer `["unlock", vault, payer]`
+2. `write_sigs(start, sigs)` — names the vault so every signature byte is in the vault's history
+3. `verify(from, to)` — permissionless, freezes on first call
+4. `approve` — rebuilds leaf and root, burns the leaf, records the approval, closes the buffer
+5. `execute_withdraw` · `execute_withdraw_token` · `execute_stake` · `execute_stake_authority`
+   · `execute_admin` (Cancel, Ping, CancelSchedule, CancelBudget, Migrate) · `execute_create`
+   (Schedule, Budget) — permissionless once approved
+6. Permissionless after that: `execute_pending(_token)`, `run_schedule(_token)`,
+   `migrate_sol`, `migrate_token`, `testament_sol`, `testament_token`, `testament_unstake`,
+   `testament_collect`, `sweep_inbox`, `sweep_inbox_token`
+7. Session key: `spend_budget(_token)`
 
-## 8. Client rules
+## 6. Invoice addresses
 
-A one-time key signs exactly one message, ever. Clients therefore:
+`inbox(vault, id) = PDA(["inbox", vault, u32le(id)])`, system-owned. Anyone may send SOL or
+tokens to it; anyone may sweep it into the vault. One per payer gives per-payer accounting
+without sharing the vault address.
 
-- pick the lowest leaf that is unused in `state` **and** has no published signature values in
-  the vault's history (`findSignedMessages`): if a leaf ever published part of a signature — in
-  any buffer, from any payer, in a failed or cancelled attempt — only that message may be
-  completed with it. If the history cannot be read, do not sign;
-- run `preflightAction` before signing and refuse actions that could never execute;
-- remember a signed action and, after a failure, resend the **same** message;
-- use `confirmed` commitment and retry steps on an expired blockhash; every step is retry-safe.
+## 7. Escape Hatch, registry and canary
+
+For a user's ordinary wallet `w` (ed25519):
+
+- `register_link(vault)`, signed by `w` → `PDA(["link", w])` {vault, created_at, panic, change,
+  escape_tx}. It is also a **timestamped registry entry**: proof, signed while ed25519 is still
+  safe, that `w` belongs to that vault. Changing the vault takes 30 days (`request_link_change`,
+  `apply_link_change`) and is impossible after the canary trips.
+- **Tokens**: `w` approves `PDA(["escape", w])` as delegate of its token accounts.
+  `escape_token` (permissionless) moves a delegated token account's whole balance to the linked
+  vault — only when the canary has tripped or `w` signed `panic`.
+- **SOL**: `w` pre-signs a durable-nonce transaction calling `escape_sol` (moves all of `w`'s SOL
+  to the linked vault) and stores it in its link (`set_escape_tx`). Anyone may broadcast it; it
+  can only ever move `w`'s SOL into `w`'s own vault.
+- **Canary**: `PDA(["canary"])` watches a fixed ed25519 address derived by hashing to the curve
+  (nobody knows its private key) and funded with a bounty. `trip_canary` (permissionless) sets
+  `tripped` once its balance falls below the recorded baseline — which can only happen if
+  ed25519 is broken. Keepers then evacuate every linked wallet.
+
+This is a race against an attacker who breaks a wallet's key; it gives honest users the first move.
+
+## 8. Relayer and keeper
+
+A relayer sends signed actions as fee payer and is repaid through `fee` (v2 §7 unchanged).
+A keeper runs the permissionless instructions: due schedules, pending withdrawals, testaments,
+inbox sweeps, canary checks and escape broadcasts. Neither can change anything that was signed.
+
+## 9. Client rules
+
+As v2: pick a leaf unused on chain and without published signature values in the vault's history
+(`findSignedMessages`); refuse to sign when history cannot be read; preflight before signing;
+resend the same message after a failure; `confirmed` commitment; every step is retry-safe.

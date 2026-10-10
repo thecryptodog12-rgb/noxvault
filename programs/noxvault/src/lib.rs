@@ -1,13 +1,14 @@
-//! Noxvault v2: vaults whose funds move only with hash-based one-time signatures, arranged in
-//! a Merkle tree so one vault address serves many actions. See docs/SPEC.md.
-#![allow(deprecated)] // solana_program::stake re-exports; the replacement crate is not on Rust 1.79
+//! Noxvault v3: vaults whose funds move only with hash-based one-time signatures, with
+//! multi-signer approvals, recovery, testament, spending rules, schedules, session budgets,
+//! migration, invoice addresses and an Escape Hatch for ordinary wallets. See docs/SPEC.md.
+#![allow(deprecated)] // solana_program::stake re-exports; the replacement crate needs a newer Rust
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::invoke_signed;
 use anchor_lang::solana_program::stake;
 use anchor_lang::solana_program::sysvar;
 use anchor_lang::system_program;
 use anchor_spl::associated_token::AssociatedToken;
-use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked};
+use anchor_spl::token_interface::{self, CloseAccount, Mint, TokenAccount, TokenInterface, TransferChecked};
 
 pub mod state;
 pub mod wots;
@@ -17,29 +18,31 @@ use wots::{ALL_CHAINS, LEN, N};
 
 declare_id!("8iDqwPFRxr2rHiuieVhGL4jdTT7XPE5qPAReS6VzTPw4");
 
-/// Size of a stake account (StakeStateV2).
 const STAKE_SPACE: u64 = 200;
 
 #[program]
 pub mod noxvault {
     use super::*;
 
-    /// Creates the state of a vault from its config. Permissionless: the vault address is the
-    /// hash of the config, so nobody can register different rules for it.
+    // ---------- vaults ----------
+
     pub fn init_vault(ctx: Context<InitVault>, config: Config) -> Result<()> {
-        require!((1..=wots::MAX_HEIGHT as u8).contains(&config.primary_height), NoxError::BadConfig);
-        if config.has_recovery() {
-            require!((1..=wots::MAX_HEIGHT as u8).contains(&config.recovery_height), NoxError::BadConfig);
-            require!(config.recovery_delay > 0, NoxError::BadConfig);
-        } else {
-            require!(config.recovery_height == 0, NoxError::BadConfig);
+        let signers = config.signer_trees();
+        require!(signers >= 1 && config.threshold >= 1 && config.threshold <= signers, NoxError::BadConfig);
+        for (i, t) in config.trees.iter().enumerate() {
+            let max = if i as u8 == RECOVERY_TREE { 8 } else { wots::MAX_HEIGHT as u8 };
+            require!(if t.used() { (1..=max).contains(&t.height) } else { t.height == 0 }, NoxError::BadConfig);
         }
-        require!(config.slow_delay >= 0, NoxError::BadConfig);
+        require!(!config.has_recovery() || config.recovery_delay > 0, NoxError::BadConfig);
+        require!(config.slow_delay >= 0 && config.testament_delay >= 0, NoxError::BadConfig);
+        let bps: u32 = config.heirs.iter().filter(|h| h.addr != Pubkey::default()).map(|h| h.bps as u32).sum();
+        let any_heir = config.heirs.iter().any(|h| h.addr != Pubkey::default());
+        require!(!any_heir || bps == 10_000, NoxError::BadConfig);
+        require!(config.testament_delay == 0 || any_heir, NoxError::BadConfig);
 
         let hash = wots::config_hash(&config.try_to_vec()?);
         let (vault, bump) = Pubkey::find_program_address(&[VAULT_SEED, &hash], &crate::ID);
         require_keys_eq!(vault, ctx.accounts.vault.key(), NoxError::WrongVault);
-
         let now = Clock::get()?.unix_timestamp;
         let s = &mut ctx.accounts.state;
         s.vault = vault;
@@ -48,8 +51,11 @@ pub mod noxvault {
         s.config = config;
         s.last_active = now;
         s.created_at = now;
+        s.window_start = now;
         Ok(())
     }
+
+    // ---------- one-time signatures ----------
 
     pub fn open_unlock(
         ctx: Context<OpenUnlock>,
@@ -60,18 +66,19 @@ pub mod noxvault {
         action: Action,
     ) -> Result<()> {
         let st = &ctx.accounts.state;
-        require!(tree == TREE_PRIMARY || tree == TREE_RECOVERY, NoxError::BadTree);
-        let (_, height) = st.tree(tree);
-        require!(height > 0 && auth_path.len() == height as usize, NoxError::BadTree);
-        require!((leaf as u32) < (1u32 << height), NoxError::BadTree);
+        require!(tree <= RECOVERY_TREE, NoxError::BadTree);
+        let t = st.config.trees[tree as usize];
+        require!(t.used() && auth_path.len() == t.height as usize, NoxError::BadTree);
+        require!((leaf as u32) < (1u32 << t.height), NoxError::BadTree);
         require!(!st.used(tree, leaf), NoxError::KeyUsed);
         let vault = ctx.accounts.vault.key();
-        match &action {
-            Action::Withdraw { dest, amount, .. } => {
+        match &action.kind {
+            Kind::Withdraw { dest, amount, .. } => {
                 require_keys_neq!(*dest, vault, NoxError::DestIsVault);
                 require!(*amount > 0, NoxError::ZeroAmount);
             }
-            Action::Stake { amount, .. } => require!(*amount > 0, NoxError::ZeroAmount),
+            Kind::Stake { amount, .. } => require!(*amount > 0, NoxError::ZeroAmount),
+            Kind::Migrate { new_vault } => require_keys_neq!(*new_vault, vault, NoxError::DestIsVault),
             _ => {}
         }
         let bytes = action.try_to_vec()?;
@@ -88,7 +95,7 @@ pub mod noxvault {
         u.action_len = bytes.len() as u16;
         u.leaf = leaf;
         u.tree = tree;
-        u.height = height;
+        u.height = t.height;
         u.bump = ctx.bumps.unlock;
         Ok(())
     }
@@ -129,83 +136,104 @@ pub mod noxvault {
         Ok(())
     }
 
-    /// Withdraws SOL (or queues it as the pending withdrawal). Permissionless once verified.
-    pub fn finish_withdraw(ctx: Context<FinishWithdraw>) -> Result<()> {
+    /// Turns a verified signature into an approval of its action and burns the key.
+    pub fn approve(ctx: Context<Approve>, action_hash: [u8; N]) -> Result<()> {
         let a = &mut *ctx.accounts;
-        let (action, tree, leaf) = consume(&a.unlock, &a.rent_receiver, &mut a.state)?;
-        let Action::Withdraw { mint, dest, amount, .. } = action.clone() else {
+        let u = a.unlock.load()?;
+        require_keys_eq!(u.payer, a.rent_receiver.key(), NoxError::WrongPayer);
+        require_keys_eq!(u.vault, a.state.vault, NoxError::WrongVault);
+        require!(u.verified == ALL_CHAINS, NoxError::NotVerified);
+        let t = a.state.config.trees[u.tree as usize];
+        require!(t.used() && t.height == u.height, NoxError::BadTree);
+        let leaf = wots::leaf_hash(&u.pk_seed, u.leaf, &u.ends);
+        let root = wots::root_from_path(&u.pk_seed, u.leaf, leaf, &u.auth_path[..t.height as usize]);
+        require!(root == t.root, NoxError::BadSignature);
+        require!(!a.state.used(u.tree, u.leaf), NoxError::KeyUsed);
+        let bytes = &u.action[..u.action_len as usize];
+        require!(wots::action_hash(bytes) == action_hash, NoxError::WrongAction);
+
+        let now = Clock::get()?.unix_timestamp;
+        let ap = &mut a.approval;
+        if ap.vault == Pubkey::default() {
+            ap.vault = a.state.vault;
+            ap.action_hash = action_hash;
+            ap.action[..bytes.len()].copy_from_slice(bytes);
+            ap.action_len = bytes.len() as u16;
+            ap.creator = a.payer.key();
+            ap.created_at = now;
+        }
+        ap.trees |= 1 << u.tree;
+        let (tree, leaf_index) = (u.tree, u.leaf);
+        drop(u);
+        a.state.mark_used(tree, leaf_index);
+        if tree != RECOVERY_TREE {
+            a.state.last_active = now;
+        }
+        Ok(())
+    }
+
+    /// Closes an approval that never reached its threshold, after 7 days.
+    pub fn discard_approval(ctx: Context<DiscardApproval>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        require!(now >= ctx.accounts.approval.created_at + APPROVAL_TTL, NoxError::NotYet);
+        Ok(())
+    }
+
+    pub fn cancel_unlock(_ctx: Context<CancelUnlock>) -> Result<()> {
+        Ok(())
+    }
+
+    // ---------- executing approved actions ----------
+
+    pub fn execute_withdraw(ctx: Context<ExecuteWithdraw>) -> Result<()> {
+        let a = &mut *ctx.accounts;
+        let (action, unrestricted) = authorize(&a.approval, &a.state)?;
+        let Kind::Withdraw { mint, dest, amount } = action.kind.clone() else {
             return err!(NoxError::WrongAction);
         };
         require_keys_eq!(mint, Pubkey::default(), NoxError::WrongAction);
         require_keys_eq!(dest, a.dest.key(), NoxError::WrongDest);
-
         let seeds_owned = vault_seeds(&a.state);
         let seeds = seeds_owned.as_slices();
-        if !queue_if_slow(&mut a.state, tree, leaf, mint, dest, amount)? {
+        if gate(&mut a.state, PENDING_WITHDRAW, mint, dest, amount, unrestricted)? {
             require!(amount <= a.vault.lamports(), NoxError::InsufficientFunds);
             sol_out(&a.system_program, &a.vault, &a.dest, &seeds, amount)?;
         }
         pay_fee(&a.system_program, &a.vault, &a.fee_payee, &seeds, &action)?;
+        a.state.actions += 1;
         check_rent(&a.vault)
     }
 
-    /// Withdraws an SPL / Token-2022 token (or queues it). Permissionless once verified.
-    pub fn finish_withdraw_token(ctx: Context<FinishWithdrawToken>) -> Result<()> {
+    pub fn execute_withdraw_token(ctx: Context<ExecuteWithdrawToken>) -> Result<()> {
         let a = &mut *ctx.accounts;
-        let (action, tree, leaf) = consume(&a.unlock, &a.rent_receiver, &mut a.state)?;
-        let Action::Withdraw { mint, dest, amount, .. } = action.clone() else {
+        let (action, unrestricted) = authorize(&a.approval, &a.state)?;
+        let Kind::Withdraw { mint, dest, amount } = action.kind.clone() else {
             return err!(NoxError::WrongAction);
         };
         require_keys_eq!(mint, a.mint.key(), NoxError::WrongAction);
         require_keys_eq!(dest, a.dest.key(), NoxError::WrongDest);
-
         let seeds_owned = vault_seeds(&a.state);
         let seeds = seeds_owned.as_slices();
-        if !queue_if_slow(&mut a.state, tree, leaf, mint, dest, amount)? {
+        if gate(&mut a.state, PENDING_WITHDRAW, mint, dest, amount, unrestricted)? {
             require!(amount <= a.vault_ata.amount, NoxError::InsufficientFunds);
             token_out(&a.token_program, &a.vault_ata, &a.dest_ata, &a.vault, &a.mint, &seeds, amount)?;
         }
         pay_fee(&a.system_program, &a.vault, &a.fee_payee, &seeds, &action)?;
+        a.state.actions += 1;
         check_rent(&a.vault)
     }
 
-    /// Pays out the pending SOL withdrawal once its delay has passed. Permissionless.
-    pub fn execute_pending(ctx: Context<ExecutePending>) -> Result<()> {
+    pub fn execute_stake(ctx: Context<ExecuteStake>) -> Result<()> {
         let a = &mut *ctx.accounts;
-        let p = take_due_pending(&mut a.state)?;
-        require_keys_eq!(p.mint, Pubkey::default(), NoxError::WrongAction);
-        require_keys_eq!(p.dest, a.dest.key(), NoxError::WrongDest);
-        require!(p.amount <= a.vault.lamports(), NoxError::InsufficientFunds);
-        let seeds_owned = vault_seeds(&a.state);
-        sol_out(&a.system_program, &a.vault, &a.dest, &seeds_owned.as_slices(), p.amount)?;
-        check_rent(&a.vault)
-    }
-
-    /// Pays out the pending token withdrawal once its delay has passed. Permissionless.
-    pub fn execute_pending_token(ctx: Context<ExecutePendingToken>) -> Result<()> {
-        let a = &mut *ctx.accounts;
-        let p = take_due_pending(&mut a.state)?;
-        require_keys_eq!(p.mint, a.mint.key(), NoxError::WrongAction);
-        require_keys_eq!(p.dest, a.dest.key(), NoxError::WrongDest);
-        require!(p.amount <= a.vault_ata.amount, NoxError::InsufficientFunds);
-        let seeds_owned = vault_seeds(&a.state);
-        token_out(&a.token_program, &a.vault_ata, &a.dest_ata, &a.vault, &a.mint, &seeds_owned.as_slices(), p.amount)
-    }
-
-    /// Opens a stake account owned by the vault and delegates it. Permissionless once verified.
-    pub fn finish_stake(ctx: Context<FinishStake>) -> Result<()> {
-        let a = &mut *ctx.accounts;
-        let (action, _, _) = consume(&a.unlock, &a.rent_receiver, &mut a.state)?;
-        let Action::Stake { seed, vote, amount, .. } = action.clone() else {
+        let (action, _) = authorize(&a.approval, &a.state)?;
+        let Kind::Stake { seed, vote, amount } = action.kind.clone() else {
             return err!(NoxError::WrongAction);
         };
         require_keys_eq!(vote, a.vote.key(), NoxError::WrongAction);
         let vault = a.vault.key();
-        let (stake_key, stake_bump) =
-            Pubkey::find_program_address(&[STAKE_SEED, vault.as_ref(), &[seed]], &crate::ID);
+        let (stake_key, stake_bump) = Pubkey::find_program_address(&[STAKE_SEED, vault.as_ref(), &[seed]], &crate::ID);
         require_keys_eq!(stake_key, a.stake.key(), NoxError::WrongStake);
         require!(amount <= a.vault.lamports(), NoxError::InsufficientFunds);
-
         let seeds_owned = vault_seeds(&a.state);
         let seeds = seeds_owned.as_slices();
         let stake_seeds: &[&[u8]] = &[STAKE_SEED, vault.as_ref(), &[seed], &[stake_bump]];
@@ -239,123 +267,449 @@ pub mod noxvault {
             &[&seeds],
         )?;
         pay_fee(&a.system_program, &a.vault, &a.fee_payee, &seeds, &action)?;
+        a.state.actions += 1;
         check_rent(&a.vault)
     }
 
-    /// Deactivates one of the vault's stake accounts. Permissionless once verified.
-    pub fn finish_unstake(ctx: Context<FinishStakeAuthority>) -> Result<()> {
+    /// Unstake and CollectStake.
+    pub fn execute_stake_authority(ctx: Context<ExecuteStakeAuthority>) -> Result<()> {
         let a = &mut *ctx.accounts;
-        let (action, _, _) = consume(&a.unlock, &a.rent_receiver, &mut a.state)?;
-        let Action::Unstake { seed, .. } = action.clone() else {
-            return err!(NoxError::WrongAction);
+        let (action, _) = authorize(&a.approval, &a.state)?;
+        let seed = match action.kind {
+            Kind::Unstake { seed } | Kind::CollectStake { seed } => seed,
+            _ => return err!(NoxError::WrongAction),
         };
-        check_stake_address(&a.vault.key(), seed, &a.stake.key())?;
+        let collect = matches!(action.kind, Kind::CollectStake { .. });
         let seeds_owned = vault_seeds(&a.state);
         let seeds = seeds_owned.as_slices();
-        invoke_signed(
-            &stake::instruction::deactivate_stake(&a.stake.key(), &a.vault.key()),
-            &[
-                a.stake.to_account_info(),
-                a.clock.to_account_info(),
-                a.vault.to_account_info(),
-                a.stake_program.to_account_info(),
-            ],
-            &[&seeds],
-        )?;
+        stake_authority(&a.vault, &a.stake, &a.clock.to_account_info(), &a.stake_history, &a.stake_program, &seeds, seed, collect)?;
         pay_fee(&a.system_program, &a.vault, &a.fee_payee, &seeds, &action)?;
+        a.state.actions += 1;
         check_rent(&a.vault)
     }
 
-    /// Moves everything in a deactivated stake account back into the vault.
-    pub fn finish_collect_stake(ctx: Context<FinishStakeAuthority>) -> Result<()> {
+    /// Cancel, Ping, CancelSchedule, CancelBudget and Migrate.
+    pub fn execute_admin(ctx: Context<ExecuteAdmin>) -> Result<()> {
         let a = &mut *ctx.accounts;
-        let (action, _, _) = consume(&a.unlock, &a.rent_receiver, &mut a.state)?;
-        let Action::CollectStake { seed, .. } = action.clone() else {
-            return err!(NoxError::WrongAction);
-        };
-        let vault = a.vault.key();
-        check_stake_address(&vault, seed, &a.stake.key())?;
-        let seeds_owned = vault_seeds(&a.state);
-        let seeds = seeds_owned.as_slices();
-        invoke_signed(
-            &stake::instruction::withdraw(&a.stake.key(), &vault, &vault, a.stake.lamports(), None),
-            &[
-                a.stake.to_account_info(),
-                a.vault.to_account_info(),
-                a.clock.to_account_info(),
-                a.stake_history.to_account_info(),
-                a.vault.to_account_info(),
-                a.stake_program.to_account_info(),
-            ],
-            &[&seeds],
-        )?;
-        pay_fee(&a.system_program, &a.vault, &a.fee_payee, &seeds, &action)?;
-        check_rent(&a.vault)
-    }
-
-    /// Cancel (drops the pending withdrawal) and Ping (proves the owner is alive).
-    pub fn finish_admin(ctx: Context<FinishAdmin>) -> Result<()> {
-        let a = &mut *ctx.accounts;
-        let (action, _, _) = consume(&a.unlock, &a.rent_receiver, &mut a.state)?;
-        match action {
-            Action::Cancel { .. } => a.state.pending = None,
-            Action::Ping { .. } => {}
+        let (action, unrestricted) = authorize(&a.approval, &a.state)?;
+        let vault = a.vault.to_account_info();
+        match action.kind.clone() {
+            Kind::Cancel => a.state.pending = None,
+            Kind::Ping => {}
+            Kind::CancelSchedule { id } => {
+                let s = a.schedule.as_ref().ok_or(NoxError::MissingAccount)?;
+                require!(s.id == id && s.vault == a.vault.key(), NoxError::WrongAction);
+                s.close(vault.clone())?;
+            }
+            Kind::CancelBudget { id } => {
+                let b = a.budget.as_ref().ok_or(NoxError::MissingAccount)?;
+                require!(b.id == id && b.vault == a.vault.key(), NoxError::WrongAction);
+                b.close(vault.clone())?;
+            }
+            Kind::Migrate { new_vault } => {
+                let ns = a.new_state.as_ref().ok_or(NoxError::MissingAccount)?;
+                require_keys_eq!(ns.vault, new_vault, NoxError::WrongDest);
+                let restricted = !unrestricted && a.state.config.whitelist_active() && !a.state.config.whitelisted(&new_vault);
+                if restricted {
+                    let c = &a.state.config;
+                    require!(c.slow_delay > 0, NoxError::NotWhitelisted);
+                    require!(a.state.pending.is_none(), NoxError::PendingExists);
+                    let executable_at = Clock::get()?.unix_timestamp + c.slow_delay;
+                    a.state.pending =
+                        Some(Pending { kind: PENDING_MIGRATE, mint: Pubkey::default(), dest: new_vault, amount: 0, executable_at });
+                } else {
+                    a.state.migrate_to = Some(new_vault);
+                }
+            }
             _ => return err!(NoxError::WrongAction),
         }
         let seeds_owned = vault_seeds(&a.state);
         pay_fee(&a.system_program, &a.vault, &a.fee_payee, &seeds_owned.as_slices(), &action)?;
+        a.state.actions += 1;
         check_rent(&a.vault)
     }
 
-    /// Closes an unlock buffer and returns its rent. Only the payer who opened it.
-    pub fn cancel_unlock(_ctx: Context<CancelUnlock>) -> Result<()> {
+    pub fn execute_create_schedule(ctx: Context<ExecuteCreateSchedule>, id: u8) -> Result<()> {
+        let a = &mut *ctx.accounts;
+        let (action, unrestricted) = authorize(&a.approval, &a.state)?;
+        let Kind::Schedule { id: sid, mint, dest, amount, interval, count, start } = action.kind.clone() else {
+            return err!(NoxError::WrongAction);
+        };
+        require!(sid == id, NoxError::WrongAction);
+        require!(amount > 0 && interval > 0 && count > 0, NoxError::BadAction);
+        require_keys_neq!(dest, a.vault.key(), NoxError::DestIsVault);
+        let now = Clock::get()?.unix_timestamp;
+        let mut first = start.max(now);
+        if !unrestricted && a.state.config.restricted(&dest) {
+            require!(a.state.config.slow_delay > 0, NoxError::NotWhitelisted);
+            first = first.max(now + a.state.config.slow_delay);
+        }
+        let s = &mut a.schedule;
+        s.vault = a.vault.key();
+        s.id = id;
+        s.mint = mint;
+        s.dest = dest;
+        s.amount = amount;
+        s.interval = interval;
+        s.remaining = count;
+        s.next_at = first;
+        let seeds_owned = vault_seeds(&a.state);
+        pay_fee(&a.system_program, &a.vault, &a.fee_payee, &seeds_owned.as_slices(), &action)?;
+        a.state.actions += 1;
+        check_rent(&a.vault)
+    }
+
+    pub fn execute_create_budget(ctx: Context<ExecuteCreateBudget>, id: u8) -> Result<()> {
+        let a = &mut *ctx.accounts;
+        let (action, _) = authorize(&a.approval, &a.state)?;
+        let Kind::Budget { id: bid, session, mint, limit, period, expires } = action.kind.clone() else {
+            return err!(NoxError::WrongAction);
+        };
+        require!(bid == id, NoxError::WrongAction);
+        let now = Clock::get()?.unix_timestamp;
+        require!(session != Pubkey::default() && limit > 0 && period > 0 && expires > now, NoxError::BadAction);
+        let b = &mut a.budget;
+        b.vault = a.vault.key();
+        b.id = id;
+        b.session = session;
+        b.mint = mint;
+        b.limit = limit;
+        b.period = period;
+        b.expires = expires;
+        b.window_start = now;
+        b.spent = 0;
+        let seeds_owned = vault_seeds(&a.state);
+        pay_fee(&a.system_program, &a.vault, &a.fee_payee, &seeds_owned.as_slices(), &action)?;
+        a.state.actions += 1;
+        check_rent(&a.vault)
+    }
+
+    // ---------- permissionless follow-ups ----------
+
+    /// Pays the pending SOL withdrawal, or starts the pending migration, once due.
+    pub fn execute_pending(ctx: Context<ExecutePending>) -> Result<()> {
+        let a = &mut *ctx.accounts;
+        let p = take_due_pending(&mut a.state)?;
+        if p.kind == PENDING_MIGRATE {
+            a.state.migrate_to = Some(p.dest);
+            return Ok(());
+        }
+        require_keys_eq!(p.mint, Pubkey::default(), NoxError::WrongAction);
+        require_keys_eq!(p.dest, a.dest.key(), NoxError::WrongDest);
+        require!(p.amount <= a.vault.lamports(), NoxError::InsufficientFunds);
+        let seeds_owned = vault_seeds(&a.state);
+        sol_out(&a.system_program, &a.vault, &a.dest, &seeds_owned.as_slices(), p.amount)?;
+        check_rent(&a.vault)
+    }
+
+    pub fn execute_pending_token(ctx: Context<ExecutePendingToken>) -> Result<()> {
+        let a = &mut *ctx.accounts;
+        let p = take_due_pending(&mut a.state)?;
+        require!(p.kind == PENDING_WITHDRAW, NoxError::WrongAction);
+        require_keys_eq!(p.mint, a.mint.key(), NoxError::WrongAction);
+        require_keys_eq!(p.dest, a.dest.key(), NoxError::WrongDest);
+        require!(p.amount <= a.vault_ata.amount, NoxError::InsufficientFunds);
+        let seeds_owned = vault_seeds(&a.state);
+        token_out(&a.token_program, &a.vault_ata, &a.dest_ata, &a.vault, &a.mint, &seeds_owned.as_slices(), p.amount)
+    }
+
+    pub fn run_schedule(ctx: Context<RunSchedule>) -> Result<()> {
+        let a = &mut *ctx.accounts;
+        let amount = schedule_due(&mut a.schedule)?;
+        require_keys_eq!(a.schedule.mint, Pubkey::default(), NoxError::WrongAction);
+        require_keys_eq!(a.schedule.dest, a.dest.key(), NoxError::WrongDest);
+        require!(amount <= a.vault.lamports(), NoxError::InsufficientFunds);
+        let seeds_owned = vault_seeds(&a.state);
+        sol_out(&a.system_program, &a.vault, &a.dest, &seeds_owned.as_slices(), amount)?;
+        if a.schedule.remaining == 0 {
+            a.schedule.close(a.vault.to_account_info())?;
+        }
+        check_rent(&a.vault)
+    }
+
+    pub fn run_schedule_token(ctx: Context<RunScheduleToken>) -> Result<()> {
+        let a = &mut *ctx.accounts;
+        let amount = schedule_due(&mut a.schedule)?;
+        require_keys_eq!(a.schedule.mint, a.mint.key(), NoxError::WrongAction);
+        require_keys_eq!(a.schedule.dest, a.dest.key(), NoxError::WrongDest);
+        require!(amount <= a.vault_ata.amount, NoxError::InsufficientFunds);
+        let seeds_owned = vault_seeds(&a.state);
+        token_out(&a.token_program, &a.vault_ata, &a.dest_ata, &a.vault, &a.mint, &seeds_owned.as_slices(), amount)?;
+        if a.schedule.remaining == 0 {
+            a.schedule.close(a.vault.to_account_info())?;
+        }
+        Ok(())
+    }
+
+    /// An ordinary session key spends from its budget (docs/SPEC.md §4).
+    pub fn spend_budget(ctx: Context<SpendBudget>, amount: u64) -> Result<()> {
+        let a = &mut *ctx.accounts;
+        budget_spend(&mut a.budget, &a.state, &a.dest.key(), Pubkey::default(), amount)?;
+        require!(amount <= a.vault.lamports(), NoxError::InsufficientFunds);
+        let seeds_owned = vault_seeds(&a.state);
+        sol_out(&a.system_program, &a.vault, &a.dest, &seeds_owned.as_slices(), amount)?;
+        check_rent(&a.vault)
+    }
+
+    pub fn spend_budget_token(ctx: Context<SpendBudgetToken>, amount: u64) -> Result<()> {
+        let a = &mut *ctx.accounts;
+        budget_spend(&mut a.budget, &a.state, &a.dest.key(), a.mint.key(), amount)?;
+        require!(amount <= a.vault_ata.amount, NoxError::InsufficientFunds);
+        let seeds_owned = vault_seeds(&a.state);
+        token_out(&a.token_program, &a.vault_ata, &a.dest_ata, &a.vault, &a.mint, &seeds_owned.as_slices(), amount)
+    }
+
+    pub fn migrate_sol(ctx: Context<MigrateSol>) -> Result<()> {
+        let a = &mut *ctx.accounts;
+        require!(a.state.migrate_to == Some(a.new_vault.key()), NoxError::WrongDest);
+        let all = a.vault.lamports();
+        let seeds_owned = vault_seeds(&a.state);
+        sol_out(&a.system_program, &a.vault, &a.new_vault, &seeds_owned.as_slices(), all)
+    }
+
+    pub fn migrate_token(ctx: Context<MigrateToken>) -> Result<()> {
+        let a = &mut *ctx.accounts;
+        require!(a.state.migrate_to == Some(a.new_vault.key()), NoxError::WrongDest);
+        let seeds_owned = vault_seeds(&a.state);
+        let seeds = seeds_owned.as_slices();
+        let all = a.vault_ata.amount;
+        token_out(&a.token_program, &a.vault_ata, &a.new_ata, &a.vault, &a.mint, &seeds, all)?;
+        token_interface::close_account(CpiContext::new_with_signer(
+            a.token_program.to_account_info(),
+            CloseAccount {
+                account: a.vault_ata.to_account_info(),
+                destination: a.new_vault.to_account_info(),
+                authority: a.vault.to_account_info(),
+            },
+            &[&seeds],
+        ))
+    }
+
+    /// Splits all SOL among the heirs; heirs are the remaining accounts, in config order.
+    pub fn testament_sol<'info>(ctx: Context<'_, '_, 'info, 'info, TestamentSol<'info>>) -> Result<()> {
+        let a = &ctx.accounts;
+        testament_open(&a.state)?;
+        let heirs = used_heirs(&a.state.config);
+        require!(ctx.remaining_accounts.len() == heirs.len(), NoxError::MissingAccount);
+        let total = a.vault.lamports();
+        let shares = split(total, &heirs);
+        let seeds_owned = vault_seeds(&a.state);
+        let seeds = seeds_owned.as_slices();
+        for ((heir, share), acct) in heirs.iter().zip(shares).zip(ctx.remaining_accounts.iter()) {
+            require_keys_eq!(heir.addr, acct.key(), NoxError::WrongDest);
+            sol_out(&a.system_program, &a.vault, acct, &seeds, share)?;
+        }
+        Ok(())
+    }
+
+    /// Splits all of one token among the heirs; remaining accounts are the heirs' token
+    /// accounts for this mint, in config order (create them first).
+    pub fn testament_token<'info>(ctx: Context<'_, '_, 'info, 'info, TestamentToken<'info>>) -> Result<()> {
+        let a = &ctx.accounts;
+        testament_open(&a.state)?;
+        let heirs = used_heirs(&a.state.config);
+        require!(ctx.remaining_accounts.len() == heirs.len(), NoxError::MissingAccount);
+        let shares = split(a.vault_ata.amount, &heirs);
+        let seeds_owned = vault_seeds(&a.state);
+        let seeds = seeds_owned.as_slices();
+        for ((heir, share), acct) in heirs.iter().zip(shares).zip(ctx.remaining_accounts.iter()) {
+            let ta = InterfaceAccount::<TokenAccount>::try_from(acct)?;
+            require_keys_eq!(ta.owner, heir.addr, NoxError::WrongDest);
+            require_keys_eq!(ta.mint, a.mint.key(), NoxError::WrongDest);
+            token_out(&a.token_program, &a.vault_ata, &ta, &a.vault, &a.mint, &seeds, share)?;
+        }
+        Ok(())
+    }
+
+    pub fn testament_stake(ctx: Context<TestamentStake>, seed: u8, collect: bool) -> Result<()> {
+        let a = &ctx.accounts;
+        testament_open(&a.state)?;
+        let seeds_owned = vault_seeds(&a.state);
+        stake_authority(&a.vault, &a.stake, &a.clock.to_account_info(), &a.stake_history, &a.stake_program, &seeds_owned.as_slices(), seed, collect)
+    }
+
+    // ---------- invoice addresses ----------
+
+    pub fn sweep_inbox(ctx: Context<SweepInbox>, id: u32) -> Result<()> {
+        let a = &ctx.accounts;
+        let vault = a.vault.key();
+        let all = a.inbox.lamports();
+        let idb = id.to_le_bytes();
+        let seeds: &[&[u8]] = &[INBOX_SEED, vault.as_ref(), &idb, &[ctx.bumps.inbox]];
+        sol_out(&a.system_program, &a.inbox, &a.vault, seeds, all)
+    }
+
+    pub fn sweep_inbox_token(ctx: Context<SweepInboxToken>, id: u32) -> Result<()> {
+        let a = &ctx.accounts;
+        let vault = a.vault.key();
+        let idb = id.to_le_bytes();
+        let seeds: &[&[u8]] = &[INBOX_SEED, vault.as_ref(), &idb, &[ctx.bumps.inbox]];
+        token_out(&a.token_program, &a.inbox_ata, &a.vault_ata, &a.inbox, &a.mint, seeds, a.inbox_ata.amount)?;
+        token_interface::close_account(CpiContext::new_with_signer(
+            a.token_program.to_account_info(),
+            CloseAccount {
+                account: a.inbox_ata.to_account_info(),
+                destination: a.vault.to_account_info(),
+                authority: a.inbox.to_account_info(),
+            },
+            &[seeds],
+        ))
+    }
+
+    // ---------- Escape Hatch, registry and canary ----------
+
+    pub fn register_link(ctx: Context<RegisterLink>) -> Result<()> {
+        let l = &mut ctx.accounts.link;
+        l.wallet = ctx.accounts.wallet.key();
+        l.vault = ctx.accounts.vault.key();
+        l.created_at = Clock::get()?.unix_timestamp;
+        Ok(())
+    }
+
+    pub fn request_link_change(ctx: Context<RequestLinkChange>) -> Result<()> {
+        require!(!ctx.accounts.canary.tripped, NoxError::CanaryTripped);
+        let at = Clock::get()?.unix_timestamp + LINK_CHANGE_DELAY;
+        ctx.accounts.link.change = Some(LinkChange { vault: ctx.accounts.new_vault.key(), at });
+        Ok(())
+    }
+
+    pub fn apply_link_change(ctx: Context<ApplyLinkChange>) -> Result<()> {
+        require!(!ctx.accounts.canary.tripped, NoxError::CanaryTripped);
+        let l = &mut ctx.accounts.link;
+        let c = l.change.clone().ok_or(NoxError::NoPending)?;
+        require!(Clock::get()?.unix_timestamp >= c.at, NoxError::NotYet);
+        l.vault = c.vault;
+        l.change = None;
+        Ok(())
+    }
+
+    pub fn set_escape_tx(ctx: Context<WalletLink>, tx: Vec<u8>) -> Result<()> {
+        require!(tx.len() <= MAX_ESCAPE_TX, NoxError::BadAction);
+        ctx.accounts.link.escape_tx = tx;
+        Ok(())
+    }
+
+    pub fn set_panic(ctx: Context<WalletLink>, on: bool) -> Result<()> {
+        ctx.accounts.link.panic = on;
+        Ok(())
+    }
+
+    /// Moves a delegated token account of a linked wallet into its vault. Permissionless once
+    /// the canary has tripped or the wallet pressed panic.
+    pub fn escape_token(ctx: Context<EscapeToken>) -> Result<()> {
+        let a = &ctx.accounts;
+        require!(a.canary.tripped || a.link.panic, NoxError::NotTriggered);
+        require_keys_eq!(a.source.owner, a.link.wallet, NoxError::WrongDest);
+        let escape = a.escape.key();
+        require!(a.source.delegate == Some(escape).into(), NoxError::NotDelegated);
+        let amount = a.source.amount.min(a.source.delegated_amount);
+        let wallet = a.link.wallet;
+        let seeds: &[&[u8]] = &[ESCAPE_SEED, wallet.as_ref(), &[ctx.bumps.escape]];
+        token_interface::transfer_checked(
+            CpiContext::new_with_signer(
+                a.token_program.to_account_info(),
+                TransferChecked {
+                    from: a.source.to_account_info(),
+                    mint: a.mint.to_account_info(),
+                    to: a.vault_ata.to_account_info(),
+                    authority: a.escape.to_account_info(),
+                },
+                &[seeds],
+            ),
+            amount,
+            a.mint.decimals,
+        )
+    }
+
+    /// Moves all of a wallet's SOL into its linked vault. Signed by the wallet, usually in a
+    /// pre-signed durable-nonce transaction stored in the link (docs/SPEC.md §7).
+    pub fn escape_sol(ctx: Context<EscapeSol>) -> Result<()> {
+        let a = &ctx.accounts;
+        let all = a.wallet.lamports();
+        if all == 0 {
+            return Ok(());
+        }
+        system_program::transfer(
+            CpiContext::new(a.system_program.to_account_info(), system_program::Transfer {
+                from: a.wallet.to_account_info(),
+                to: a.vault.to_account_info(),
+            }),
+            all,
+        )
+    }
+
+    pub fn init_canary(ctx: Context<InitCanary>) -> Result<()> {
+        let c = &mut ctx.accounts.canary;
+        c.watched = CANARY_ADDRESS;
+        c.baseline = ctx.accounts.watched.lamports();
+        Ok(())
+    }
+
+    /// Records a higher bounty as the new baseline (anyone may top the canary up).
+    pub fn raise_baseline(ctx: Context<CanaryWatch>) -> Result<()> {
+        let c = &mut ctx.accounts.canary;
+        let now = ctx.accounts.watched.lamports();
+        if !c.tripped && now > c.baseline {
+            c.baseline = now;
+        }
+        Ok(())
+    }
+
+    /// Trips the canary if its bounty moved: only possible if ed25519 is broken.
+    pub fn trip_canary(ctx: Context<CanaryWatch>) -> Result<()> {
+        let c = &mut ctx.accounts.canary;
+        require!(!c.tripped, NoxError::CanaryTripped);
+        require!(ctx.accounts.watched.lamports() < c.baseline, NoxError::NotTriggered);
+        c.tripped = true;
+        c.tripped_at = Clock::get()?.unix_timestamp;
+        msg!("quantum canary tripped");
         Ok(())
     }
 }
 
-// ---------- shared checks ----------
+// ---------- rules ----------
 
-/// Verifies a finished buffer against the vault's trees, burns the leaf and applies the
-/// permission rules (docs/SPEC.md §5). Returns the signed action.
-fn consume(unlock: &AccountLoader<Unlock>, rent_receiver: &UncheckedAccount, st: &mut VaultState) -> Result<(Action, u8, u16)> {
-    let u = unlock.load()?;
-    require_keys_eq!(u.payer, rent_receiver.key(), NoxError::WrongPayer);
-    require_keys_eq!(u.vault, st.vault, NoxError::WrongVault);
-    require!(u.verified == ALL_CHAINS, NoxError::NotVerified);
-
-    let (want, height) = st.tree(u.tree);
-    require!(height > 0 && height == u.height, NoxError::BadTree);
-    let leaf = wots::leaf_hash(&u.pk_seed, u.leaf, &u.ends);
-    let root = wots::root_from_path(&u.pk_seed, u.leaf, leaf, &u.auth_path[..height as usize]);
-    require!(root == want, NoxError::BadSignature);
-    require!(!st.used(u.tree, u.leaf), NoxError::KeyUsed);
-    st.mark_used(u.tree, u.leaf);
-
-    let action = Action::try_from_slice(&u.action[..u.action_len as usize])?;
-    let now = Clock::get()?.unix_timestamp;
-    if u.tree == TREE_RECOVERY {
-        let unlocked = now >= st.last_active.saturating_add(st.config.recovery_delay);
-        require!(matches!(action, Action::Cancel { .. }) || unlocked, NoxError::RecoveryLocked);
-    } else {
-        st.last_active = now;
+/// Checks an approval against the vault's rules. Returns the action and whether it was
+/// authorized by the recovery tree after inactivity (then destinations are unrestricted).
+fn authorize(ap: &Approval, st: &VaultState) -> Result<(Action, bool)> {
+    let action = ap.action()?;
+    let signers = (ap.trees & 0b0111).count_ones() as u8;
+    if signers >= st.config.threshold {
+        return Ok((action, false));
     }
-    st.actions += 1;
-    Ok((action, u.tree, u.leaf))
+    if ap.trees & (1 << RECOVERY_TREE) != 0 {
+        if action.is_cancel() {
+            return Ok((action, false));
+        }
+        let now = Clock::get()?.unix_timestamp;
+        require!(st.inactive_for(st.config.recovery_delay, now), NoxError::RecoveryLocked);
+        return Ok((action, true));
+    }
+    err!(NoxError::NotApproved)
 }
 
-/// Queues a primary-tree withdrawal outside the whitelist as the pending withdrawal.
-/// Returns true if it was queued instead of paid now.
-fn queue_if_slow(st: &mut VaultState, tree: u8, leaf: u16, mint: Pubkey, dest: Pubkey, amount: u64) -> Result<bool> {
-    let c = &st.config;
-    if tree != TREE_PRIMARY || !c.whitelist_active() || c.whitelisted(&dest) {
-        return Ok(false);
+/// Applies the restriction rules of docs/SPEC.md §3. Returns true to pay now, false if queued.
+fn gate(st: &mut VaultState, kind: u8, mint: Pubkey, dest: Pubkey, amount: u64, unrestricted: bool) -> Result<bool> {
+    if unrestricted || !st.config.restricted(&dest) {
+        return Ok(true);
     }
-    require!(c.slow_delay > 0, NoxError::NotWhitelisted);
+    let now = Clock::get()?.unix_timestamp;
+    if mint == Pubkey::default() && st.config.instant_limit > 0 {
+        if now >= st.window_start + DAY {
+            st.window_start = now;
+            st.window_spent = 0;
+        }
+        if st.window_spent.saturating_add(amount) <= st.config.instant_limit {
+            st.window_spent += amount;
+            return Ok(true);
+        }
+    }
+    require!(st.config.slow_delay > 0, NoxError::NotWhitelisted);
     require!(st.pending.is_none(), NoxError::PendingExists);
-    let executable_at = Clock::get()?.unix_timestamp + c.slow_delay;
-    st.pending = Some(Pending { mint, dest, amount, executable_at, leaf });
-    msg!("withdrawal queued until {}", executable_at);
-    Ok(true)
+    let executable_at = now + st.config.slow_delay;
+    st.pending = Some(Pending { kind, mint, dest, amount, executable_at });
+    msg!("queued until {}", executable_at);
+    Ok(false)
 }
 
 fn take_due_pending(st: &mut VaultState) -> Result<Pending> {
@@ -365,10 +719,49 @@ fn take_due_pending(st: &mut VaultState) -> Result<Pending> {
     Ok(p)
 }
 
-fn check_stake_address(vault: &Pubkey, seed: u8, stake: &Pubkey) -> Result<()> {
-    let (want, _) = Pubkey::find_program_address(&[STAKE_SEED, vault.as_ref(), &[seed]], &crate::ID);
-    require_keys_eq!(want, *stake, NoxError::WrongStake);
+fn schedule_due(s: &mut Schedule) -> Result<u64> {
+    require!(s.remaining > 0, NoxError::NoPending);
+    require!(Clock::get()?.unix_timestamp >= s.next_at, NoxError::NotYet);
+    s.remaining -= 1;
+    s.next_at += s.interval;
+    Ok(s.amount)
+}
+
+fn budget_spend(b: &mut Budget, st: &VaultState, dest: &Pubkey, mint: Pubkey, amount: u64) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+    require!(now < b.expires, NoxError::BudgetExpired);
+    require_keys_eq!(b.mint, mint, NoxError::WrongAction);
+    let c = &st.config;
+    require!(c.whitelisted(dest) || !c.whitelist_active(), NoxError::NotWhitelisted);
+    require_keys_neq!(*dest, st.vault, NoxError::DestIsVault);
+    if now >= b.window_start + b.period {
+        b.window_start = now;
+        b.spent = 0;
+    }
+    require!(b.spent.saturating_add(amount) <= b.limit, NoxError::OverBudget);
+    b.spent += amount;
     Ok(())
+}
+
+fn testament_open(st: &VaultState) -> Result<()> {
+    require!(st.config.testament_active(), NoxError::NoTestament);
+    let now = Clock::get()?.unix_timestamp;
+    require!(st.inactive_for(st.config.testament_delay, now), NoxError::NotYet);
+    Ok(())
+}
+
+fn used_heirs(c: &Config) -> Vec<Heir> {
+    c.heirs.iter().filter(|h| h.addr != Pubkey::default()).copied().collect()
+}
+
+/// Shares by basis points; the last heir also gets the rounding remainder.
+fn split(total: u64, heirs: &[Heir]) -> Vec<u64> {
+    let mut out: Vec<u64> = heirs.iter().map(|h| ((total as u128 * h.bps as u128) / 10_000) as u64).collect();
+    let given: u64 = out.iter().sum();
+    if let Some(last) = out.last_mut() {
+        *last += total - given;
+    }
+    out
 }
 
 fn check_rent(vault: &AccountInfo) -> Result<()> {
@@ -377,7 +770,6 @@ fn check_rent(vault: &AccountInfo) -> Result<()> {
     Ok(())
 }
 
-/// Signer seeds of a vault, owned so they can outlive the state borrow.
 struct VaultSeeds {
     hash: [u8; N],
     bump: [u8; 1],
@@ -393,6 +785,8 @@ fn vault_seeds(st: &VaultState) -> VaultSeeds {
     VaultSeeds { hash: st.config_hash, bump: [st.vault_bump] }
 }
 
+// ---------- transfers ----------
+
 fn pay_fee<'info>(
     system_program: &Program<'info, System>,
     vault: &AccountInfo<'info>,
@@ -400,13 +794,12 @@ fn pay_fee<'info>(
     seeds: &[&[u8]],
     action: &Action,
 ) -> Result<()> {
-    let (fee, payee) = action.fee();
-    if fee == 0 {
+    if action.fee == 0 {
         return Ok(());
     }
-    require_keys_eq!(payee, fee_payee.key(), NoxError::WrongFeePayee);
-    require!(fee <= vault.lamports(), NoxError::InsufficientFunds);
-    sol_out(system_program, vault, fee_payee, seeds, fee)
+    require_keys_eq!(action.fee_payee, fee_payee.key(), NoxError::WrongFeePayee);
+    require!(action.fee <= vault.lamports(), NoxError::InsufficientFunds);
+    sol_out(system_program, vault, fee_payee, seeds, action.fee)
 }
 
 fn sol_out<'info>(
@@ -433,7 +826,7 @@ fn token_out<'info>(
     token_program: &Interface<'info, TokenInterface>,
     from: &InterfaceAccount<'info, TokenAccount>,
     to: &InterfaceAccount<'info, TokenAccount>,
-    vault: &AccountInfo<'info>,
+    authority: &AccountInfo<'info>,
     mint: &InterfaceAccount<'info, Mint>,
     seeds: &[&[u8]],
     amount: u64,
@@ -448,7 +841,7 @@ fn token_out<'info>(
                 from: from.to_account_info(),
                 mint: mint.to_account_info(),
                 to: to.to_account_info(),
-                authority: vault.clone(),
+                authority: authority.clone(),
             },
             &[seeds],
         ),
@@ -457,7 +850,37 @@ fn token_out<'info>(
     )
 }
 
-// ---------- accounts ----------
+#[allow(clippy::too_many_arguments)]
+fn stake_authority<'info>(
+    vault: &AccountInfo<'info>,
+    stake_acct: &AccountInfo<'info>,
+    clock: &AccountInfo<'info>,
+    stake_history: &AccountInfo<'info>,
+    stake_program: &AccountInfo<'info>,
+    seeds: &[&[u8]],
+    seed: u8,
+    collect: bool,
+) -> Result<()> {
+    let vkey = vault.key();
+    let (want, _) = Pubkey::find_program_address(&[STAKE_SEED, vkey.as_ref(), &[seed]], &crate::ID);
+    require_keys_eq!(want, stake_acct.key(), NoxError::WrongStake);
+    if collect {
+        invoke_signed(
+            &stake::instruction::withdraw(&want, &vkey, &vkey, stake_acct.lamports(), None),
+            &[stake_acct.clone(), vault.clone(), clock.clone(), stake_history.clone(), vault.clone(), stake_program.clone()],
+            &[seeds],
+        )?;
+    } else {
+        invoke_signed(
+            &stake::instruction::deactivate_stake(&want, &vkey),
+            &[stake_acct.clone(), clock.clone(), vault.clone(), stake_program.clone()],
+            &[seeds],
+        )?;
+    }
+    Ok(())
+}
+
+// ---------- accounts: vaults and signatures ----------
 
 #[derive(Accounts)]
 pub struct InitVault<'info> {
@@ -465,13 +888,7 @@ pub struct InitVault<'info> {
     pub payer: Signer<'info>,
     /// CHECK: checked against the config hash in the handler.
     pub vault: UncheckedAccount<'info>,
-    #[account(
-        init,
-        payer = payer,
-        space = 8 + VaultState::INIT_SPACE,
-        seeds = [STATE_SEED, vault.key().as_ref()],
-        bump
-    )]
+    #[account(init, payer = payer, space = 8 + VaultState::INIT_SPACE, seeds = [STATE_SEED, vault.key().as_ref()], bump)]
     pub state: Box<Account<'info, VaultState>>,
     pub system_program: Program<'info, System>,
 }
@@ -484,13 +901,7 @@ pub struct OpenUnlock<'info> {
     pub vault: UncheckedAccount<'info>,
     #[account(seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
     pub state: Box<Account<'info, VaultState>>,
-    #[account(
-        init,
-        payer = payer,
-        space = Unlock::SPACE,
-        seeds = [UNLOCK_SEED, vault.key().as_ref(), payer.key().as_ref()],
-        bump
-    )]
+    #[account(init, payer = payer, space = Unlock::SPACE, seeds = [UNLOCK_SEED, vault.key().as_ref(), payer.key().as_ref()], bump)]
     pub unlock: AccountLoader<'info, Unlock>,
     pub system_program: Program<'info, System>,
 }
@@ -499,7 +910,7 @@ pub struct OpenUnlock<'info> {
 pub struct WriteSigs<'info> {
     pub payer: Signer<'info>,
     /// CHECK: equals unlock.vault (has_one). Listed so every transaction that publishes
-    /// signature bytes shows up in the vault's history (docs/SPEC.md §8).
+    /// signature bytes shows up in the vault's history (docs/SPEC.md §9).
     pub vault: UncheckedAccount<'info>,
     #[account(mut, has_one = payer, has_one = vault)]
     pub unlock: AccountLoader<'info, Unlock>,
@@ -512,12 +923,56 @@ pub struct Verify<'info> {
 }
 
 #[derive(Accounts)]
-pub struct FinishWithdraw<'info> {
+#[instruction(action_hash: [u8; 32])]
+pub struct Approve<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
     #[account(mut, close = rent_receiver)]
     pub unlock: AccountLoader<'info, Unlock>,
     /// CHECK: must equal the buffer's payer; gets the buffer rent back.
     #[account(mut)]
     pub rent_receiver: UncheckedAccount<'info>,
+    #[account(mut, seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
+    pub state: Box<Account<'info, VaultState>>,
+    /// CHECK: equals state.vault (has_one).
+    pub vault: UncheckedAccount<'info>,
+    #[account(
+        init_if_needed,
+        payer = payer,
+        space = 8 + Approval::INIT_SPACE,
+        seeds = [APPROVAL_SEED, vault.key().as_ref(), &action_hash],
+        bump
+    )]
+    pub approval: Box<Account<'info, Approval>>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct DiscardApproval<'info> {
+    #[account(mut, close = creator, has_one = creator)]
+    pub approval: Box<Account<'info, Approval>>,
+    /// CHECK: equals approval.creator; gets the rent back.
+    #[account(mut)]
+    pub creator: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct CancelUnlock<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(mut, has_one = payer, close = payer)]
+    pub unlock: AccountLoader<'info, Unlock>,
+}
+
+// ---------- accounts: execution ----------
+
+#[derive(Accounts)]
+pub struct ExecuteWithdraw<'info> {
+    #[account(mut, close = creator, has_one = vault, has_one = creator)]
+    pub approval: Box<Account<'info, Approval>>,
+    /// CHECK: equals approval.creator; gets the approval rent back.
+    #[account(mut)]
+    pub creator: UncheckedAccount<'info>,
     #[account(mut, seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
     pub state: Box<Account<'info, VaultState>>,
     #[account(mut)]
@@ -532,36 +987,25 @@ pub struct FinishWithdraw<'info> {
 }
 
 #[derive(Accounts)]
-pub struct FinishWithdrawToken<'info> {
+pub struct ExecuteWithdrawToken<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
-    #[account(mut, close = rent_receiver)]
-    pub unlock: AccountLoader<'info, Unlock>,
-    /// CHECK: must equal the buffer's payer; gets the buffer rent back.
+    #[account(mut, close = creator, has_one = vault, has_one = creator)]
+    pub approval: Box<Account<'info, Approval>>,
+    /// CHECK: equals approval.creator.
     #[account(mut)]
-    pub rent_receiver: UncheckedAccount<'info>,
+    pub creator: UncheckedAccount<'info>,
     #[account(mut, seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
     pub state: Box<Account<'info, VaultState>>,
     #[account(mut)]
     pub vault: SystemAccount<'info>,
     #[account(mint::token_program = token_program)]
     pub mint: Box<InterfaceAccount<'info, Mint>>,
-    #[account(
-        mut,
-        associated_token::mint = mint,
-        associated_token::authority = vault,
-        associated_token::token_program = token_program
-    )]
+    #[account(mut, associated_token::mint = mint, associated_token::authority = vault, associated_token::token_program = token_program)]
     pub vault_ata: Box<InterfaceAccount<'info, TokenAccount>>,
     /// CHECK: must equal the signed destination owner.
     pub dest: UncheckedAccount<'info>,
-    #[account(
-        init_if_needed,
-        payer = payer,
-        associated_token::mint = mint,
-        associated_token::authority = dest,
-        associated_token::token_program = token_program
-    )]
+    #[account(init_if_needed, payer = payer, associated_token::mint = mint, associated_token::authority = dest, associated_token::token_program = token_program)]
     pub dest_ata: Box<InterfaceAccount<'info, TokenAccount>>,
     /// CHECK: must equal the signed fee payee when there is a fee.
     #[account(mut)]
@@ -572,55 +1016,12 @@ pub struct FinishWithdrawToken<'info> {
 }
 
 #[derive(Accounts)]
-pub struct ExecutePending<'info> {
-    #[account(mut, seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
-    pub state: Box<Account<'info, VaultState>>,
+pub struct ExecuteStake<'info> {
+    #[account(mut, close = creator, has_one = vault, has_one = creator)]
+    pub approval: Box<Account<'info, Approval>>,
+    /// CHECK: equals approval.creator.
     #[account(mut)]
-    pub vault: SystemAccount<'info>,
-    /// CHECK: must equal the pending destination.
-    #[account(mut)]
-    pub dest: UncheckedAccount<'info>,
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct ExecutePendingToken<'info> {
-    #[account(mut)]
-    pub payer: Signer<'info>,
-    #[account(mut, seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
-    pub state: Box<Account<'info, VaultState>>,
-    pub vault: SystemAccount<'info>,
-    #[account(mint::token_program = token_program)]
-    pub mint: Box<InterfaceAccount<'info, Mint>>,
-    #[account(
-        mut,
-        associated_token::mint = mint,
-        associated_token::authority = vault,
-        associated_token::token_program = token_program
-    )]
-    pub vault_ata: Box<InterfaceAccount<'info, TokenAccount>>,
-    /// CHECK: must equal the pending destination owner.
-    pub dest: UncheckedAccount<'info>,
-    #[account(
-        init_if_needed,
-        payer = payer,
-        associated_token::mint = mint,
-        associated_token::authority = dest,
-        associated_token::token_program = token_program
-    )]
-    pub dest_ata: Box<InterfaceAccount<'info, TokenAccount>>,
-    pub token_program: Interface<'info, TokenInterface>,
-    pub associated_token_program: Program<'info, AssociatedToken>,
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct FinishStake<'info> {
-    #[account(mut, close = rent_receiver)]
-    pub unlock: AccountLoader<'info, Unlock>,
-    /// CHECK: must equal the buffer's payer; gets the buffer rent back.
-    #[account(mut)]
-    pub rent_receiver: UncheckedAccount<'info>,
+    pub creator: UncheckedAccount<'info>,
     #[account(mut, seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
     pub state: Box<Account<'info, VaultState>>,
     #[account(mut)]
@@ -648,12 +1049,12 @@ pub struct FinishStake<'info> {
 }
 
 #[derive(Accounts)]
-pub struct FinishStakeAuthority<'info> {
-    #[account(mut, close = rent_receiver)]
-    pub unlock: AccountLoader<'info, Unlock>,
-    /// CHECK: must equal the buffer's payer; gets the buffer rent back.
+pub struct ExecuteStakeAuthority<'info> {
+    #[account(mut, close = creator, has_one = vault, has_one = creator)]
+    pub approval: Box<Account<'info, Approval>>,
+    /// CHECK: equals approval.creator.
     #[account(mut)]
-    pub rent_receiver: UncheckedAccount<'info>,
+    pub creator: UncheckedAccount<'info>,
     #[account(mut, seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
     pub state: Box<Account<'info, VaultState>>,
     #[account(mut)]
@@ -675,12 +1076,12 @@ pub struct FinishStakeAuthority<'info> {
 }
 
 #[derive(Accounts)]
-pub struct FinishAdmin<'info> {
-    #[account(mut, close = rent_receiver)]
-    pub unlock: AccountLoader<'info, Unlock>,
-    /// CHECK: must equal the buffer's payer; gets the buffer rent back.
+pub struct ExecuteAdmin<'info> {
+    #[account(mut, close = creator, has_one = vault, has_one = creator)]
+    pub approval: Box<Account<'info, Approval>>,
+    /// CHECK: equals approval.creator.
     #[account(mut)]
-    pub rent_receiver: UncheckedAccount<'info>,
+    pub creator: UncheckedAccount<'info>,
     #[account(mut, seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
     pub state: Box<Account<'info, VaultState>>,
     #[account(mut)]
@@ -688,15 +1089,371 @@ pub struct FinishAdmin<'info> {
     /// CHECK: must equal the signed fee payee when there is a fee.
     #[account(mut)]
     pub fee_payee: UncheckedAccount<'info>,
+    #[account(mut)]
+    pub schedule: Option<Box<Account<'info, Schedule>>>,
+    #[account(mut)]
+    pub budget: Option<Box<Account<'info, Budget>>>,
+    pub new_state: Option<Box<Account<'info, VaultState>>>,
     pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
-pub struct CancelUnlock<'info> {
+#[instruction(id: u8)]
+pub struct ExecuteCreateSchedule<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
-    #[account(mut, has_one = payer, close = payer)]
-    pub unlock: AccountLoader<'info, Unlock>,
+    #[account(mut, close = creator, has_one = vault, has_one = creator)]
+    pub approval: Box<Account<'info, Approval>>,
+    /// CHECK: equals approval.creator.
+    #[account(mut)]
+    pub creator: UncheckedAccount<'info>,
+    #[account(mut, seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
+    pub state: Box<Account<'info, VaultState>>,
+    #[account(mut)]
+    pub vault: SystemAccount<'info>,
+    #[account(init, payer = payer, space = 8 + Schedule::INIT_SPACE, seeds = [SCHEDULE_SEED, vault.key().as_ref(), &[id]], bump)]
+    pub schedule: Box<Account<'info, Schedule>>,
+    /// CHECK: must equal the signed fee payee when there is a fee.
+    #[account(mut)]
+    pub fee_payee: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(id: u8)]
+pub struct ExecuteCreateBudget<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(mut, close = creator, has_one = vault, has_one = creator)]
+    pub approval: Box<Account<'info, Approval>>,
+    /// CHECK: equals approval.creator.
+    #[account(mut)]
+    pub creator: UncheckedAccount<'info>,
+    #[account(mut, seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
+    pub state: Box<Account<'info, VaultState>>,
+    #[account(mut)]
+    pub vault: SystemAccount<'info>,
+    #[account(init, payer = payer, space = 8 + Budget::INIT_SPACE, seeds = [BUDGET_SEED, vault.key().as_ref(), &[id]], bump)]
+    pub budget: Box<Account<'info, Budget>>,
+    /// CHECK: must equal the signed fee payee when there is a fee.
+    #[account(mut)]
+    pub fee_payee: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+// ---------- accounts: permissionless follow-ups ----------
+
+#[derive(Accounts)]
+pub struct ExecutePending<'info> {
+    #[account(mut, seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
+    pub state: Box<Account<'info, VaultState>>,
+    #[account(mut)]
+    pub vault: SystemAccount<'info>,
+    /// CHECK: must equal the pending destination (any account for a pending migration).
+    #[account(mut)]
+    pub dest: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ExecutePendingToken<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(mut, seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
+    pub state: Box<Account<'info, VaultState>>,
+    pub vault: SystemAccount<'info>,
+    #[account(mint::token_program = token_program)]
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
+    #[account(mut, associated_token::mint = mint, associated_token::authority = vault, associated_token::token_program = token_program)]
+    pub vault_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+    /// CHECK: must equal the pending destination owner.
+    pub dest: UncheckedAccount<'info>,
+    #[account(init_if_needed, payer = payer, associated_token::mint = mint, associated_token::authority = dest, associated_token::token_program = token_program)]
+    pub dest_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct RunSchedule<'info> {
+    #[account(mut, has_one = vault)]
+    pub schedule: Box<Account<'info, Schedule>>,
+    #[account(seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
+    pub state: Box<Account<'info, VaultState>>,
+    #[account(mut)]
+    pub vault: SystemAccount<'info>,
+    /// CHECK: equals schedule.dest.
+    #[account(mut)]
+    pub dest: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct RunScheduleToken<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(mut, has_one = vault)]
+    pub schedule: Box<Account<'info, Schedule>>,
+    #[account(seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
+    pub state: Box<Account<'info, VaultState>>,
+    #[account(mut)]
+    pub vault: SystemAccount<'info>,
+    #[account(mint::token_program = token_program)]
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
+    #[account(mut, associated_token::mint = mint, associated_token::authority = vault, associated_token::token_program = token_program)]
+    pub vault_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+    /// CHECK: equals schedule.dest.
+    pub dest: UncheckedAccount<'info>,
+    #[account(init_if_needed, payer = payer, associated_token::mint = mint, associated_token::authority = dest, associated_token::token_program = token_program)]
+    pub dest_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SpendBudget<'info> {
+    pub session: Signer<'info>,
+    #[account(mut, has_one = vault, has_one = session)]
+    pub budget: Box<Account<'info, Budget>>,
+    #[account(seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
+    pub state: Box<Account<'info, VaultState>>,
+    #[account(mut)]
+    pub vault: SystemAccount<'info>,
+    /// CHECK: checked against the whitelist in the handler.
+    #[account(mut)]
+    pub dest: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SpendBudgetToken<'info> {
+    #[account(mut)]
+    pub session: Signer<'info>,
+    #[account(mut, has_one = vault, has_one = session)]
+    pub budget: Box<Account<'info, Budget>>,
+    #[account(seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
+    pub state: Box<Account<'info, VaultState>>,
+    pub vault: SystemAccount<'info>,
+    #[account(mint::token_program = token_program)]
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
+    #[account(mut, associated_token::mint = mint, associated_token::authority = vault, associated_token::token_program = token_program)]
+    pub vault_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+    /// CHECK: checked against the whitelist in the handler.
+    pub dest: UncheckedAccount<'info>,
+    #[account(init_if_needed, payer = session, associated_token::mint = mint, associated_token::authority = dest, associated_token::token_program = token_program)]
+    pub dest_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct MigrateSol<'info> {
+    #[account(seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
+    pub state: Box<Account<'info, VaultState>>,
+    #[account(mut)]
+    pub vault: SystemAccount<'info>,
+    /// CHECK: equals state.migrate_to.
+    #[account(mut)]
+    pub new_vault: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct MigrateToken<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
+    pub state: Box<Account<'info, VaultState>>,
+    pub vault: SystemAccount<'info>,
+    #[account(mint::token_program = token_program)]
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
+    #[account(mut, associated_token::mint = mint, associated_token::authority = vault, associated_token::token_program = token_program)]
+    pub vault_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+    /// CHECK: equals state.migrate_to; receives the closed ATA's rent.
+    #[account(mut)]
+    pub new_vault: UncheckedAccount<'info>,
+    #[account(init_if_needed, payer = payer, associated_token::mint = mint, associated_token::authority = new_vault, associated_token::token_program = token_program)]
+    pub new_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct TestamentSol<'info> {
+    #[account(seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
+    pub state: Box<Account<'info, VaultState>>,
+    #[account(mut)]
+    pub vault: SystemAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct TestamentToken<'info> {
+    #[account(seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
+    pub state: Box<Account<'info, VaultState>>,
+    pub vault: SystemAccount<'info>,
+    #[account(mint::token_program = token_program)]
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
+    #[account(mut, associated_token::mint = mint, associated_token::authority = vault, associated_token::token_program = token_program)]
+    pub vault_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+    pub token_program: Interface<'info, TokenInterface>,
+}
+
+#[derive(Accounts)]
+pub struct TestamentStake<'info> {
+    #[account(seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
+    pub state: Box<Account<'info, VaultState>>,
+    #[account(mut)]
+    pub vault: SystemAccount<'info>,
+    /// CHECK: PDA ["stake", vault, seed], checked in the handler.
+    #[account(mut)]
+    pub stake: UncheckedAccount<'info>,
+    pub clock: Sysvar<'info, Clock>,
+    /// CHECK: the stake history sysvar.
+    #[account(address = sysvar::stake_history::ID)]
+    pub stake_history: UncheckedAccount<'info>,
+    /// CHECK: the stake program.
+    #[account(address = stake::program::ID)]
+    pub stake_program: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(id: u32)]
+pub struct SweepInbox<'info> {
+    #[account(seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
+    pub state: Box<Account<'info, VaultState>>,
+    #[account(mut)]
+    pub vault: SystemAccount<'info>,
+    #[account(mut, seeds = [INBOX_SEED, vault.key().as_ref(), &id.to_le_bytes()], bump)]
+    pub inbox: SystemAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(id: u32)]
+pub struct SweepInboxToken<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
+    pub state: Box<Account<'info, VaultState>>,
+    #[account(mut)]
+    pub vault: SystemAccount<'info>,
+    /// CHECK: PDA ["inbox", vault, id]; signs for its token accounts.
+    #[account(seeds = [INBOX_SEED, vault.key().as_ref(), &id.to_le_bytes()], bump)]
+    pub inbox: UncheckedAccount<'info>,
+    #[account(mint::token_program = token_program)]
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
+    #[account(mut, associated_token::mint = mint, associated_token::authority = inbox, associated_token::token_program = token_program)]
+    pub inbox_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+    #[account(init_if_needed, payer = payer, associated_token::mint = mint, associated_token::authority = vault, associated_token::token_program = token_program)]
+    pub vault_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
+// ---------- accounts: Escape Hatch ----------
+
+#[derive(Accounts)]
+pub struct RegisterLink<'info> {
+    #[account(mut)]
+    pub wallet: Signer<'info>,
+    #[account(seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
+    pub state: Box<Account<'info, VaultState>>,
+    /// CHECK: equals state.vault: links only point at real vaults.
+    pub vault: UncheckedAccount<'info>,
+    #[account(init, payer = wallet, space = 8 + Link::INIT_SPACE, seeds = [LINK_SEED, wallet.key().as_ref()], bump)]
+    pub link: Box<Account<'info, Link>>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct RequestLinkChange<'info> {
+    pub wallet: Signer<'info>,
+    #[account(mut, seeds = [LINK_SEED, wallet.key().as_ref()], bump, has_one = wallet)]
+    pub link: Box<Account<'info, Link>>,
+    #[account(seeds = [STATE_SEED, new_vault.key().as_ref()], bump, constraint = new_state.vault == new_vault.key())]
+    pub new_state: Box<Account<'info, VaultState>>,
+    /// CHECK: equals new_state.vault.
+    pub new_vault: UncheckedAccount<'info>,
+    #[account(seeds = [CANARY_SEED], bump)]
+    pub canary: Box<Account<'info, Canary>>,
+}
+
+#[derive(Accounts)]
+pub struct ApplyLinkChange<'info> {
+    #[account(mut)]
+    pub link: Box<Account<'info, Link>>,
+    #[account(seeds = [CANARY_SEED], bump)]
+    pub canary: Box<Account<'info, Canary>>,
+}
+
+#[derive(Accounts)]
+pub struct WalletLink<'info> {
+    pub wallet: Signer<'info>,
+    #[account(mut, seeds = [LINK_SEED, wallet.key().as_ref()], bump, has_one = wallet)]
+    pub link: Box<Account<'info, Link>>,
+}
+
+#[derive(Accounts)]
+pub struct EscapeToken<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(seeds = [LINK_SEED, link.wallet.as_ref()], bump, has_one = vault)]
+    pub link: Box<Account<'info, Link>>,
+    #[account(seeds = [CANARY_SEED], bump)]
+    pub canary: Box<Account<'info, Canary>>,
+    /// CHECK: PDA ["escape", wallet]: the delegate the wallet approved.
+    #[account(seeds = [ESCAPE_SEED, link.wallet.as_ref()], bump)]
+    pub escape: UncheckedAccount<'info>,
+    #[account(mut, token::mint = mint, token::token_program = token_program)]
+    pub source: Box<InterfaceAccount<'info, TokenAccount>>,
+    #[account(mint::token_program = token_program)]
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
+    /// CHECK: equals link.vault (has_one).
+    pub vault: UncheckedAccount<'info>,
+    #[account(init_if_needed, payer = payer, associated_token::mint = mint, associated_token::authority = vault, associated_token::token_program = token_program)]
+    pub vault_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct EscapeSol<'info> {
+    #[account(mut)]
+    pub wallet: Signer<'info>,
+    #[account(seeds = [LINK_SEED, wallet.key().as_ref()], bump, has_one = wallet, has_one = vault)]
+    pub link: Box<Account<'info, Link>>,
+    /// CHECK: equals link.vault (has_one).
+    #[account(mut)]
+    pub vault: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct InitCanary<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(init, payer = payer, space = 8 + Canary::INIT_SPACE, seeds = [CANARY_SEED], bump)]
+    pub canary: Box<Account<'info, Canary>>,
+    /// CHECK: the fixed canary address.
+    #[account(address = CANARY_ADDRESS)]
+    pub watched: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct CanaryWatch<'info> {
+    #[account(mut, seeds = [CANARY_SEED], bump)]
+    pub canary: Box<Account<'info, Canary>>,
+    /// CHECK: the fixed canary address.
+    #[account(address = CANARY_ADDRESS)]
+    pub watched: UncheckedAccount<'info>,
 }
 
 #[error_code]
@@ -713,7 +1470,7 @@ pub enum NoxError {
     DestIsVault,
     #[msg("Amount must be greater than zero")]
     ZeroAmount,
-    #[msg("Action too large")]
+    #[msg("Invalid action")]
     BadAction,
     #[msg("The signature can no longer change: verification has started")]
     Frozen,
@@ -727,26 +1484,42 @@ pub enum NoxError {
     BadSignature,
     #[msg("Rent receiver must be the account that opened the unlock")]
     WrongPayer,
-    #[msg("This instruction cannot execute the signed action")]
+    #[msg("This instruction cannot execute this action")]
     WrongAction,
-    #[msg("Destination does not match the signed action")]
+    #[msg("Destination does not match")]
     WrongDest,
     #[msg("Fee payee does not match the signed action")]
     WrongFeePayee,
-    #[msg("Stake account does not match the signed action")]
+    #[msg("Stake account does not match")]
     WrongStake,
     #[msg("The vault holds less than this needs")]
     InsufficientFunds,
     #[msg("The vault would be left with less SOL than the rent minimum")]
     RentDust,
+    #[msg("Not enough approvals")]
+    NotApproved,
     #[msg("The recovery key may only cancel until the owner has been inactive long enough")]
     RecoveryLocked,
-    #[msg("This destination is not on the vault's whitelist")]
+    #[msg("This destination is not allowed by the vault's rules")]
     NotWhitelisted,
-    #[msg("A withdrawal is already pending")]
+    #[msg("Something is already pending")]
     PendingExists,
-    #[msg("No withdrawal is pending")]
+    #[msg("Nothing is pending")]
     NoPending,
-    #[msg("The pending withdrawal's delay has not passed yet")]
+    #[msg("Not yet")]
     NotYet,
+    #[msg("A required account is missing")]
+    MissingAccount,
+    #[msg("This budget has expired")]
+    BudgetExpired,
+    #[msg("This would exceed the budget for this period")]
+    OverBudget,
+    #[msg("This vault has no testament")]
+    NoTestament,
+    #[msg("The quantum canary has tripped")]
+    CanaryTripped,
+    #[msg("The Escape Hatch has not been triggered")]
+    NotTriggered,
+    #[msg("This token account has not delegated to the Escape Hatch")]
+    NotDelegated,
 }
