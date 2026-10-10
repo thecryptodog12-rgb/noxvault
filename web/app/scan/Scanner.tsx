@@ -7,6 +7,7 @@ import { ArrowRight, ScanSearch, ShieldCheck, ShieldAlert } from "lucide-react";
 import { escapePda, fetchCanary, fetchLink, fetchState, type CanaryView, type LinkView, type VaultStateView } from "@nox/sdk/client";
 import { Copy, Note, PageHead, Panel } from "@/components/ui";
 import { useNox } from "@/lib/hooks";
+import { NETWORK } from "@/lib/config";
 import { tokenInfo, type TokenInfo } from "@/lib/tokens";
 import { dateTime } from "@/lib/time";
 import { errMsg, fromBaseUnits, sol } from "@/lib/format";
@@ -32,9 +33,11 @@ interface Scan {
 
 /**
  * USD prices from Jupiter's price API (v3; the v2 the brief named now answers 404, kept as a
- * fallback). Returns null when it fails: devnet mints simply have no price.
+ * fallback). Returns null when it fails. Off mainnet there are no prices: test SOL is worth
+ * nothing, and mainnet prices for devnet balances would mislead.
  */
 async function jupPrices(mints: string[]): Promise<Record<string, number> | null> {
+  if (NETWORK !== "mainnet-beta") return null;
   const get = async (url: string) => {
     const ctl = new AbortController();
     const t = setTimeout(() => ctl.abort(), 5000);
