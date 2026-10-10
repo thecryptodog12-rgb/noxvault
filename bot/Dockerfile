@@ -5,7 +5,8 @@ COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY tsconfig.json ./
 COPY src ./src
-RUN pnpm build && pnpm prune --prod
+# The notification bot only; the keeper has its own Dockerfile.keeper (it needs ../sdk and ../web/lib).
+RUN pnpm exec tsc -p tsconfig.json && pnpm prune --prod
 
 FROM node:20-slim
 WORKDIR /app

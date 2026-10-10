@@ -6,18 +6,24 @@ export const metadata: Metadata = { title: "How it works — Noxvault" };
 
 const TOC = [
   ["why", "Why hashes"],
-  ["vault", "One address, 256 keys"],
+  ["vault", "One address, many keys"],
   ["keys", "Your words"],
   ["actions", "What gets signed"],
+  ["approvals", "Approvals & multisig"],
+  ["rules", "Rules: whitelist, limit, delay"],
   ["recovery", "Recovery key"],
-  ["whitelist", "Whitelist & delay"],
-  ["staking", "Staking"],
+  ["testament", "Testament"],
+  ["schedules", "Schedules"],
+  ["budgets", "Session budgets"],
+  ["migration", "Migration"],
+  ["invoices", "Invoice addresses"],
+  ["tokens", "Tokens"],
+  ["escape", "Escape Hatch & registry"],
+  ["canary", "Quantum canary"],
+  ["keeper", "Relayer & keeper"],
   ["flow", "On-chain flow"],
-  ["relayer", "Gasless relayer"],
-  ["offline", "Offline signing"],
-  ["backups", "Backups"],
   ["once", "One key, one message"],
-  ["nox", "$NOX"],
+  ["offline", "Offline & backups"],
   ["params", "Parameters"],
 ];
 
@@ -31,7 +37,7 @@ export default function Docs() {
             How it <span className="inv">works</span>
           </>
         }
-        sub="A walk through the Noxvault v2 spec. The program, the SDK, the relayer and this site all follow the same document."
+        sub="A walk through the Noxvault v3 spec. The program, the SDK, the relayer, the keeper and this site all follow the same document."
       />
       <div className="grid [&>*]:min-w-0 gap-10 lg:grid-cols-[200px_1fr]">
         <nav className="hidden lg:block">
@@ -53,24 +59,22 @@ export default function Docs() {
           </p>
           <p>
             Noxvault guards funds with <strong>WOTS+ one-time signatures</strong> built only from SHA-256. No ed25519 key, not even
-            yours, can move what is inside a vault.
+            yours, can move what is inside a vault. Your ordinary wallet can still be protected around the edges: see the{" "}
+            <a href="#escape">Escape Hatch</a>.
           </p>
 
-          <h2 id="vault">One address, 256 keys</h2>
+          <h2 id="vault">One address, many keys</h2>
           <p>
-            A one-time signature key may sign only one message. Instead of moving your funds to a new address after every
-            withdrawal, v2 puts <strong>256 one-time keys</strong> (&quot;leaves&quot;) under a Merkle tree, the idea behind XMSS.
-            The vault commits to the tree&apos;s <strong>root</strong>, so one fixed deposit address serves 256 actions.
+            A one-time key may sign only one message. A vault therefore holds <strong>trees</strong> of them: each signer tree has
+            256 one-time keys (&quot;leaves&quot;) under a Merkle root, the idea behind XMSS. A vault has up to{" "}
+            <strong>3 signer trees</strong> and an optional <strong>recovery tree</strong> of 16 keys. One fixed vault address
+            serves every action; the vault keeps a bitmap of used leaves, so each one works exactly once.
           </p>
           <p>
-            A signature carries the leaf number, the 34 chain values and the leaf&apos;s <em>auth path</em>: its sibling on each
-            of the 8 levels of the tree. The program rebuilds the leaf from the signature, hashes up the path, and checks that it
-            lands on the root. The vault keeps a bitmap of used leaves, so each one works exactly once.
-          </p>
-          <p>
-            The vault address is a program address derived from a hash of the <strong>full config</strong>: the primary root,
-            the optional recovery root and delay, the whitelist and its delay. Nobody, you included, can change a vault&apos;s
-            rules after the fact. Want different rules? Make a new vault and move the funds.
+            The vault address is a program address derived from a hash of the <strong>full config</strong>: the tree roots, the
+            approval threshold, the recovery delay, the whitelist, the delay and instant limit, the heirs and the testament delay.
+            Nobody, you included, can change a vault&apos;s rules after the fact. Want different rules? Make a new vault and{" "}
+            <a href="#migration">migrate</a>.
           </p>
 
           <h2 id="keys">Your words</h2>
@@ -78,11 +82,8 @@ export default function Docs() {
             Everything starts from 24 BIP39 words, a 32-byte secret <code>S</code>. Vault number <code>v</code> = 0, 1, 2… lets one
             phrase run several vaults. Each tree gets its own <code>sk_seed</code> and <code>pk_seed</code>, hashed from{" "}
             <code>S</code> and <code>v</code>; a recovery tree uses <code>v + 2³¹</code>, so one phrase never produces the same keys
-            in both roles.
-          </p>
-          <p>
-            Building the primary tree means computing all 256 leaves: 256 × 34 chains × 255 hashes, about 2.2 million SHA-256
-            calls. That takes a few seconds in your browser, in a background worker. The words never leave the tab.
+            in two roles. Building a signer tree is about 2.2 million SHA-256 calls: a few seconds in a background worker of your
+            browser. The words never leave the tab.
           </p>
 
           <h2 id="actions">What gets signed</h2>
@@ -91,13 +92,17 @@ export default function Docs() {
           </p>
           <ul>
             <li>
-              <strong>Withdraw</strong> SOL or an SPL / Token-2022 token to a destination wallet.
+              <strong>Withdraw</strong> SOL or a token to a destination.
             </li>
             <li>
               <strong>Stake</strong>, <strong>Unstake</strong>, <strong>Collect stake</strong>: native staking from inside the vault.
             </li>
             <li>
-              <strong>Cancel</strong> the pending withdrawal, or <strong>Ping</strong> to prove the owner is alive.
+              <strong>Cancel</strong> the pending withdrawal or migration; <strong>Ping</strong> to prove the owner is alive.
+            </li>
+            <li>
+              <strong>Schedule</strong> / <strong>Cancel schedule</strong>, <strong>Budget</strong> / <strong>Cancel budget</strong>,{" "}
+              <strong>Migrate</strong>.
             </li>
           </ul>
           <p>
@@ -105,108 +110,190 @@ export default function Docs() {
             executes. That is how a relayer gets paid, so you never need a wallet. With fee 0 you send it yourself.
           </p>
 
-          <h2 id="recovery">Recovery key</h2>
+          <h2 id="approvals">Approvals &amp; multisig</h2>
           <p>
-            Optionally a vault has a second, smaller tree of 16 keys from a <strong>separate recovery phrase</strong>, ideally
-            held by someone else or stored in a different place. It has two powers:
+            A verified signature does not move funds by itself. It becomes an <strong>approval</strong> of the action&apos;s hash,
+            recording which tree approved. An action executes (anyone may trigger it) once:
           </p>
           <ul>
             <li>
-              <strong>Cancel, any time.</strong> If someone stole your primary words and starts a delayed withdrawal, the recovery
-              key stops it.
+              signer approvals reach the vault&apos;s <strong>threshold</strong> (1, 2 or 3 of up to 3 signer trees), or
             </li>
-            <li>
-              <strong>Full control after inactivity.</strong> Every primary action resets <code>last_active</code>. Once the primary
-              has been silent for the recovery delay (180 days by default), the recovery key may do everything, immediately. This
-              is inheritance and lost-words insurance. A <strong>Ping</strong> keeps the timer from running out.
-            </li>
+            <li>the recovery tree approved a Cancel, Cancel schedule or Cancel budget, or</li>
+            <li>the recovery tree approved anything and the owner has been inactive for the recovery delay.</li>
           </ul>
-
-          <h2 id="whitelist">Whitelist &amp; delay</h2>
           <p>
-            Up to 4 addresses can be whitelisted. Primary withdrawals to them are immediate. A primary withdrawal anywhere else
-            is either refused (delay 0) or becomes the vault&apos;s single <strong>pending withdrawal</strong>: anyone can execute
-            it after the delay, and either tree can cancel it before then. A thief with your words can then only start a
-            withdrawal you can see and stop.
+            For a 2-of-3 vault, each co-signer keeps their own 24 words; the vault commits to all three roots. The first signer&apos;s
+            approval waits on chain; the second signer approves <em>exactly the same action</em> and it executes. An approval that
+            never completes can be discarded after 7 days. Signer approvals reset the vault&apos;s <code>last_active</code> clock.
           </p>
 
-          <h2 id="staking">Staking</h2>
+          <h2 id="rules">Rules: whitelist, instant limit, delay</h2>
           <p>
-            The vault can delegate SOL to a validator. Stake accounts are program addresses <code>[&quot;stake&quot;, vault,
-            seed]</code> with the vault itself as staker and withdrawer, so staked SOL is guarded by the same hash signatures.
-            Unstake deactivates; the epoch after, Collect stake brings the SOL back into the vault.
+            Up to 4 addresses can be <strong>whitelisted</strong>. A destination is <strong>restricted</strong> when a whitelist
+            exists and it is not on it, or when there is no whitelist but an instant limit is set.
+          </p>
+          <ul>
+            <li>
+              <strong>Instant limit</strong>: restricted SOL withdrawals execute at once while they stay within this many lamports per
+              24 h.
+            </li>
+            <li>
+              <strong>Delay</strong>: anything else restricted becomes the vault&apos;s single <strong>pending</strong> withdrawal,
+              executable by anyone after the delay and cancellable by a signer or the recovery key before then. With delay 0,
+              restricted withdrawals are refused outright.
+            </li>
+            <li>Tokens to a restricted destination always wait (or are refused).</li>
+          </ul>
+          <p>
+            A thief with your words then cannot drain the vault quietly: they can take at most the instant limit, and everything else
+            shows up as a pending withdrawal you can see and stop.
+          </p>
+
+          <h2 id="recovery">Recovery key</h2>
+          <p>
+            Optionally a vault has a recovery tree of 16 keys from a <strong>separate phrase</strong>, ideally held by someone else.
+            It can <strong>cancel</strong> pending withdrawals, schedules and budgets at any time, and once the signers have been
+            silent for the recovery delay (180 days by default) it can do <strong>everything</strong>, unrestricted. A{" "}
+            <strong>Ping</strong> resets the clock. Manage it on <Link href="/recovery">/recovery</Link>.
+          </p>
+
+          <h2 id="testament">Testament</h2>
+          <p>
+            Name up to 4 <strong>heirs</strong> with shares in basis points (summing to 100%) and a testament delay (365 days by
+            default). When the owner has been inactive that long, anyone may distribute all SOL and every token to the heirs by
+            share, and deactivate and collect stakes first. Keepers do this automatically. Any signer action, including a Ping,
+            postpones it.
+          </p>
+
+          <h2 id="schedules">Schedules</h2>
+          <p>
+            One signature sets up recurring payments: <code>amount</code> every <code>interval</code>, <code>count</code> times, from{" "}
+            <code>start</code>. Anyone can run a payment once it is due; the keeper does. A schedule to a restricted destination
+            starts no earlier than the delay (refused with delay 0). Cancel it with a signer or the recovery key.
+          </p>
+
+          <h2 id="budgets">Session budgets: the daily-use path</h2>
+          <p>
+            Hash signatures are heavy for buying a coffee. A <strong>budget</strong> lets an ordinary ed25519{" "}
+            <strong>session key</strong> (for example your Phantom wallet) spend up to a <code>limit</code> per <code>period</code>{" "}
+            from the vault until <code>expires</code>, and only to non-restricted destinations. That is the daily path: Phantom
+            signs normal transactions, the vault caps what it can ever lose. Lose the session key and you lose at most what is left of
+            the budget; cancel it with one hash signature.
+          </p>
+
+          <h2 id="migration">Migration</h2>
+          <p>
+            Keys running out, or rules to change? Sign <strong>Migrate</strong> to a new Noxvault vault. It is restricted unless the
+            new vault is whitelisted (then it waits out the delay and can be cancelled). Once it executes, anyone moves all SOL and
+            every token to the new vault; the keeper finishes it.
+          </p>
+
+          <h2 id="invoices">Invoice addresses</h2>
+          <p>
+            <code>inbox(vault, id)</code> is a separate address per id (<code>PDA[&quot;inbox&quot;, vault, id]</code>). Anyone can
+            pay SOL or tokens into it and anyone can sweep it into the vault. Give one per customer or payer: per-payer accounting,
+            without publishing the vault address.
+          </p>
+
+          <h2 id="tokens">Tokens</h2>
+          <p>
+            Everything above works for <strong>SOL, SPL tokens and Token-2022 tokens</strong>: withdrawals, rules, schedules,
+            budgets, testament, migration, invoices and the Escape Hatch. Token-2022 mints with transfer fees, transfer hooks,
+            permanent delegates, confidential transfers or non-transferable tokens are refused before signing. A token whose issuer
+            holds a freeze authority can still be frozen by that issuer.
+          </p>
+
+          <h2 id="escape">Escape Hatch &amp; registry</h2>
+          <p>
+            The vault is safe, but your ordinary wallet is still one ed25519 key. The <Link href="/escape">Escape Hatch</Link>{" "}
+            gives it a fire exit into your vault:
+          </p>
+          <ul>
+            <li>
+              <strong>Link</strong>: the wallet signs <code>register_link(vault)</code>. This is also a{" "}
+              <strong>timestamped registry entry</strong>: proof, signed while ed25519 is still safe, that this wallet belongs to
+              that vault. Changing the vault takes 30 days and is impossible after the canary trips.
+            </li>
+            <li>
+              <strong>Tokens</strong>: the wallet approves <code>PDA[&quot;escape&quot;, wallet]</code> as delegate of its token
+              accounts. <code>escape_token</code> moves a delegated balance into the linked vault, and only after panic or a tripped
+              canary.
+            </li>
+            <li>
+              <strong>SOL</strong>: the wallet pre-signs a durable-nonce transaction calling <code>escape_sol</code> and stores it in
+              its link. Anyone may broadcast it, at any time; it can only move this wallet&apos;s SOL into this wallet&apos;s own
+              vault. Using the nonce for anything else voids it; re-arm then.
+            </li>
+            <li>
+              <strong>Panic</strong>: the wallet itself can trigger the hatch at any time if it thinks its key is compromised.
+            </li>
+          </ul>
+          <p>
+            <strong>Honest limits.</strong> It protects the moment it is triggered. It is a race: if an attacker breaks your key
+            and moves first, the hatch is too late. Tokens received after approving need approving again. Keep most funds in the
+            vault; the hatch is for what stays outside. Check any address with the <Link href="/scan">scanner</Link>.
+          </p>
+
+          <h2 id="canary">Quantum canary</h2>
+          <p>
+            <code>PDA[&quot;canary&quot;]</code> watches a fixed ed25519 address found by hashing to the curve:{" "}
+            <code>SHA256(&quot;noxvault/canary/v1&quot; || u32le(i))</code> for the first <code>i</code> that is a valid point
+            (i = 0). Nobody knows its private key. It holds a bounty; <code>trip_canary</code> (anyone) succeeds only once the
+            balance falls below the recorded baseline, which needs ed25519 to be broken. Then keepers evacuate every linked wallet.
+            It is a public alarm, not a guarantee: an attacker may break your key without touching the bounty. See{" "}
+            <Link href="/canary">/canary</Link>.
+          </p>
+
+          <h2 id="keeper">Relayer &amp; keeper</h2>
+          <p>
+            A <strong>relayer</strong> sends your signed action as fee payer and is repaid through its <code>fee</code>. A{" "}
+            <strong>keeper</strong> runs the permissionless instructions: due schedules, pending withdrawals after their delay,
+            testaments, migrations, the canary check and Escape Hatch evacuations. This site runs one as a daily cron; a
+            long-running keeper can pass every minute (see <code>bot/README.md</code>).
+          </p>
+          <p>
+            Both are <strong>conveniences, not trust assumptions</strong>. Neither can change anything that was signed: one changed
+            byte and the signature no longer verifies, and permissionless instructions only do what the rules already allow. The
+            worst they can do is refuse or be slow; then anyone, you included, can send the same transactions.
           </p>
 
           <h2 id="flow">On-chain flow</h2>
           <p>A signature (1,376 bytes) does not fit one transaction, so it is assembled in a buffer:</p>
           <ul>
             <li>
-              <strong>open_unlock</strong>: creates the buffer with the leaf, <code>pk_seed</code>, auth path and action.
+              <strong>open_unlock</strong>: creates the buffer with the tree, leaf, <code>pk_seed</code>, auth path and action.
             </li>
             <li>
-              <strong>write_sigs</strong>: fills in the 34 chain values. The vault is passed along, so every byte of a signature
-              shows up in the vault&apos;s public history.
+              <strong>write_sigs</strong>: fills in the 34 chain values. The vault is named, so every signature byte is in the
+              vault&apos;s public history.
             </li>
             <li>
-              <strong>verify</strong>: walks the chains to their ends, split over transactions to fit the compute limit. Anyone
-              may call it.
+              <strong>verify</strong>: walks the chains to their ends, split over transactions to fit the compute limit.
             </li>
             <li>
-              <strong>finish</strong>: rebuilds leaf and root, checks the root, marks the leaf used, applies the recovery and
-              whitelist rules and executes. The buffer rent goes back to whoever paid it.
+              <strong>approve</strong>: rebuilds leaf and root, burns the leaf, records the approval.
+            </li>
+            <li>
+              <strong>execute</strong>: runs the action once the approval rules are met. Anyone may call it.
             </li>
           </ul>
           <p>Every step can be retried, and none can redirect funds: the action is inside the signed message.</p>
 
-          <h2 id="relayer">Gasless relayer</h2>
-          <p>
-            You do not need a wallet or SOL outside the vault. Sign the action with <code>fee &gt; 0</code> and{" "}
-            <code>fee_payee</code> = the relayer. The relayer sends the transactions, pays network fees and buffer rent (it gets
-            the rent back), and is repaid by the vault from that fee when the action executes. The fee is shown before you sign.
-          </p>
-          <p>
-            The relayer is a <strong>convenience, not a trust assumption</strong>. It cannot change the destination, amount or
-            anything else: one changed byte and the signature no longer verifies. The worst it can do is refuse or delay; then
-            send the same signed action yourself, from <Link href="/submit">/submit</Link> with any wallet, or through another
-            relayer.
-          </p>
-
-          <h2 id="offline">Offline signing</h2>
-          <p>
-            Your words never need to touch an online device. On an online device, <Link href="/submit">/submit</Link> looks up
-            the next unused leaf of your vault. On an offline device, <Link href="/offline">/offline</Link> builds your keys, signs
-            the action and shows the result as text and QR codes; it makes no network requests. Back online, scan or paste it
-            into <Link href="/submit">/submit</Link>, which checks it against the chain and sends it through the relayer or your
-            wallet. Installed as an app, the site keeps <code>/offline</code> cached so it loads without a network.
-          </p>
-
-          <h2 id="backups">Backups</h2>
-          <p>
-            <Link href="/backup">/backup</Link> offers two local tools: split a phrase into Shamir shares (any K of N restore it,
-            fewer reveal nothing), or encrypt it into a file with a password (scrypt + AES-256-GCM). Both run in the tab and send
-            nothing anywhere. Back up the primary and recovery phrases separately.
-          </p>
-
           <h2 id="once">One key, one message</h2>
           <p>
             If one leaf ever signs two different messages, an attacker can combine them to forge a third. The program refuses a
-            used leaf, but a signature that was only <em>partly</em> published (a failed or abandoned attempt) is still out
-            there. So before signing, this app reads the vault&apos;s <strong>entire history</strong>, failed and cancelled
-            transactions included, and recognises every signature value your keys ever published. A leaf with an unfinished
-            message can only complete that same message; otherwise the lowest leaf that is unused and never published is picked.
-            If the history cannot be read, the app refuses to sign.
-          </p>
-          <p>
-            Offline signing cannot read the chain, which is why the prepare step and the checks on <code>/submit</code> exist:
-            /submit derives the key&apos;s chain ends from the request itself and warns if the same leaf ever published values for
-            a different message.
+            used leaf, but a signature that was only <em>partly</em> published is still out there. So before signing, this app reads
+            the vault&apos;s <strong>entire history</strong>, failed transactions included, and recognises every value your keys
+            ever published. A leaf with an unfinished message can only complete that same message. If the history cannot be read,
+            the app refuses to sign.
           </p>
 
-          <h2 id="nox">$NOX</h2>
+          <h2 id="offline">Offline &amp; backups</h2>
           <p>
-            Planned: holders of at least a threshold amount of $NOX will relay for free (the relayer waives its fee when the
-            withdrawal&apos;s destination holds enough). The contract address is not known yet; it will appear in the sidebar once
-            it exists. Ignore anyone offering it before that.
+            Your words never need to touch an online device: sign on <Link href="/offline">/offline</Link> and carry the result to{" "}
+            <Link href="/submit">/submit</Link>. <Link href="/backup">/backup</Link> splits a phrase into Shamir shares or encrypts
+            it into a file, locally. Back up every phrase (signers, recovery) separately.
           </p>
 
           <h2 id="params">Parameters</h2>
@@ -217,11 +304,14 @@ export default function Docs() {
                   ["hash", "SHA-256, n = 32 bytes"],
                   ["Winternitz w", "256 (one digit = one byte)"],
                   ["chains", "32 message + 2 checksum = 34"],
-                  ["primary tree", "height 8 = 256 one-time keys"],
+                  ["signer trees", "up to 3, height 8 = 256 one-time keys each"],
+                  ["threshold", "1 to the number of signer trees"],
                   ["recovery tree", "height 4 = 16 one-time keys (optional)"],
                   ["signature", "34 × 32 + 32 pk_seed + 8 × 32 path = 1,376 bytes"],
-                  ["whitelist", "up to 4 addresses, optional delay for others"],
-                  ["key use", "exactly once, bitmap in the vault state"],
+                  ["whitelist", "up to 4 addresses"],
+                  ["heirs", "up to 4, shares in basis points"],
+                  ["link change", "30 days"],
+                  ["stale approval", "discardable after 7 days"],
                 ].map(([k, v]) => (
                   <tr key={k}>
                     <td className="text-dim">{k}</td>
@@ -232,7 +322,7 @@ export default function Docs() {
             </table>
           </Panel>
           <p>
-            Upgrade authority: the program stays upgradeable during testing. See <Link href="/risks">risks</Link>.
+            The program stays upgradeable during testing. See <Link href="/risks">risks</Link>.
           </p>
         </article>
       </div>

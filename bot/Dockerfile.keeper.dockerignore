@@ -1,0 +1,9 @@
+# BuildKit picks this up for bot/Dockerfile.keeper (context: repository root).
+**/node_modules
+**/.next
+target
+.anchor
+test-ledger
+bot/dist
+bot/data
+**/.env

@@ -3,21 +3,30 @@
   "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@10.34.4",
-  "description": "Read-only Telegram notification bot for Noxvault vaults",
+  "description": "Telegram notification bot and keeper for Noxvault vaults",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.keeper.json && node scripts/build-keeper.mjs",
     "start": "node dist/index.js",
     "dry-run": "tsc -p tsconfig.json && node dist/dry-run.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "keeper": "node dist/keeper.cjs",
+    "keeper:once": "node dist/keeper.cjs --once"
   },
   "dependencies": {
+    "@coral-xyz/anchor": "^0.31.1",
+    "@noble/hashes": "^1.8.0",
+    "@scure/bip39": "^1.6.0",
+    "@solana/spl-token": "~0.4.15",
     "@solana/web3.js": "^1.98.0",
     "grammy": "^1.30.0"
   },
   "devDependencies": {
     "@types/node": "^20.17.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.7.3",
     "vitest": "^3.2.0"
   }

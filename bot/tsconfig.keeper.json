@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "types": ["node"],
+    "typeRoots": ["./node_modules/@types"],
+    "paths": {
+      "@nox/sdk/*": ["../sdk/*"],
+      "@solana/web3.js": ["./node_modules/@solana/web3.js"],
+      "@coral-xyz/anchor": ["./node_modules/@coral-xyz/anchor"],
+      "@solana/spl-token": ["./node_modules/@solana/spl-token"],
+      "@noble/hashes/*": ["./node_modules/@noble/hashes/*"],
+      "@scure/bip39": ["./node_modules/@scure/bip39"],
+      "@scure/bip39/*": ["./node_modules/@scure/bip39/*"]
+    }
+  },
+  "files": ["src/keeper.ts"]
+}

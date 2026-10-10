@@ -1,0 +1,22 @@
+# Noxvault keeper (long-running). Build context: the REPOSITORY ROOT, because the keeper shares
+# its logic with the web app (web/lib/keeper.ts, web/lib/escape.ts) and the SDK (sdk/).
+#   docker build -f bot/Dockerfile.keeper -t noxvault-keeper .
+FROM node:20-slim AS build
+WORKDIR /app
+RUN corepack enable
+COPY bot/package.json bot/pnpm-lock.yaml bot/
+RUN cd bot && pnpm install --frozen-lockfile
+COPY sdk sdk
+COPY web/lib/keeper.ts web/lib/escape.ts web/lib/
+COPY bot/tsconfig.json bot/tsconfig.keeper.json bot/
+COPY bot/scripts bot/scripts
+COPY bot/src bot/src
+RUN cd bot && node scripts/build-keeper.mjs && pnpm prune --prod
+
+FROM node:20-slim
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=build /app/bot/node_modules ./node_modules
+COPY --from=build /app/bot/dist/keeper.cjs /app/bot/dist/keeper.cjs.map ./dist/
+COPY bot/package.json ./
+CMD ["node", "dist/keeper.cjs"]

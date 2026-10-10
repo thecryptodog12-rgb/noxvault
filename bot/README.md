@@ -79,3 +79,61 @@ Tests: `pnpm test` (summarizer on a recorded devnet tx + fakes, state store, pol
 4. Keep replicas at 1 (set in `railway.json`). No port / domain is needed.
 
 Without the volume, watches are lost on every redeploy.
+
+---
+
+# Keeper
+
+`src/keeper.ts` is a long-running **keeper** (docs/SPEC.md §8). Every `KEEPER_INTERVAL_SECONDS`
+(default 60) it runs one pass of `runKeeper` from `web/lib/keeper.ts`, the same code the web
+app's `GET /api/keeper` cron runs:
+
+1. **Canary**: trips it if the bounty is below its baseline.
+2. **Escape Hatch**: for every linked wallet with panic on (or every linked wallet once the canary
+   has tripped): broadcasts the stored, pre-signed SOL escape (if its nonce is still current) and
+   runs `escape_token` for each token account that delegated to `PDA["escape", wallet]`.
+3. **Vaults**: executes pending withdrawals / migrations whose delay is over, runs due schedules,
+   pays out open testaments (SOL and every held token) and finishes approved migrations.
+
+It holds nobody's secret and cannot change anything that was signed: it only pays network fees
+(and the rent of a vault token account it sometimes has to create, ~0.002 SOL) to run what the
+on-chain rules already allow. Failures (already done, not due) are reported and skipped. Each pass
+sends at most `KEEPER_MAX_TX` transactions, sequentially, with 429 backoff.
+
+The keeper is bundled with esbuild (`scripts/build-keeper.mjs` → `dist/keeper.cjs`), because it
+imports `../web/lib/keeper.ts` and `../sdk`; npm packages load from `bot/node_modules`.
+
+```bash
+cd bot
+pnpm install
+pnpm build                         # bot + keeper typecheck + dist/keeper.cjs
+KEEPER_SECRET_KEY='[12,34,…]' RPC_URL=https://api.devnet.solana.com pnpm keeper
+pnpm keeper -- --once              # a single pass, then exit
+```
+
+| var | default | |
+|---|---|---|
+| `KEEPER_SECRET_KEY` | — (required) | fee payer: JSON array of 64 numbers (`solana-keygen` file) or base58. Use a dedicated key with a little SOL. |
+| `RPC_URL` | devnet (mainnet on `NETWORK=mainnet-beta`) | needs `getProgramAccounts` (most private RPCs; the public one is rate-limited) |
+| `KEEPER_INTERVAL_SECONDS` | `60` | seconds between passes (min 5) |
+| `KEEPER_MAX_TX` | `40` | transactions per pass at most |
+| `NOXVAULT_PROGRAM_ID` | from the IDL | only for a different deployment |
+
+## Keeper on Railway
+
+The keeper needs the whole repository (it builds from `sdk/` and `web/lib/`), so it is a
+separate service from the notification bot:
+
+1. New service → deploy from this repo, **Root Directory empty** (repository root).
+2. Settings → Config-as-code file: `bot/railway.keeper.json` (builds `bot/Dockerfile.keeper`).
+3. Variables: `KEEPER_SECRET_KEY`, `RPC_URL` (a private RPC), optionally
+   `KEEPER_INTERVAL_SECONDS`. No volume, port or domain is needed.
+4. Keep 1 replica. Watch the logs for `low balance` and top the key up.
+
+## The Vercel cron instead
+
+`web/vercel.json` calls `GET /api/keeper` once a day (Vercel Hobby only allows daily crons; on
+Pro the schedule can be `* * * * *`, every minute). Set `CRON_SECRET` in the Vercel project:
+Vercel sends it as `Authorization: Bearer …` and the route refuses anything else. It pays with
+the site's relayer key (`RELAYER_SECRET_KEY`). Run the long-running keeper above when escapes,
+schedules or testaments must not wait up to a day.
