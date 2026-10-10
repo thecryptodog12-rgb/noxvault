@@ -82,7 +82,7 @@ const ZERO32 = new Uint8Array(32);
 // ---------- rate limits ----------
 
 /** Retries an RPC call on rate limits (429) with exponential backoff; other errors pass through. */
-export async function withRetry<T>(fn: () => Promise<T>, attempts = 6): Promise<T> {
+export async function withRetry<T>(fn: () => Promise<T>, attempts = 8): Promise<T> {
   for (let i = 0; ; i++) {
     try {
       return await fn();
@@ -444,6 +444,7 @@ export interface SignedMessage {
 
 /** Transactions fetched per request; public RPCs reject large batches with 429. */
 const HISTORY_BATCH = 5;
+const HISTORY_PAUSE_MS = 400;
 
 /**
  * Every message this signer's tree has ever signed for this vault, read from the vault's full
@@ -472,6 +473,7 @@ export async function findSignedMessages(program: Program<Noxvault>, vault: Publ
 
   for (let i = 0; i < sigs.length; i += HISTORY_BATCH) {
     const batch = sigs.slice(i, i + HISTORY_BATCH);
+    if (i) await new Promise((r) => setTimeout(r, HISTORY_PAUSE_MS)); // stay under public-RPC per-method limits
     const txs = await withRetry(() => conn.getTransactions(batch, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }));
     txs.forEach((tx, t) => {
       if (!tx) throw new Error(`Could not load transaction ${batch[t]}`);
