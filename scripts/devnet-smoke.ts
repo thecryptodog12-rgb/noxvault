@@ -2,10 +2,12 @@
 // fund it, withdraw (paying fees ourselves), withdraw again through the relayer module, run a
 // schedule, and check the signature history. Usage: pnpm exec tsx scripts/devnet-smoke.ts
 import * as anchor from "@coral-xyz/anchor";
-import { Keypair, LAMPORTS_PER_SOL, SystemProgram, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { createAssociatedTokenAccountIdempotentInstruction, createTransferCheckedInstruction, getAssociatedTokenAddressSync, getMint } from "@solana/spl-token";
 import {
   Noxvault,
   fetchCanary,
+  fetchProtocol,
   fetchState,
   findSignedMessages,
   idl,
@@ -20,6 +22,7 @@ import {
   runScheduleIx,
   vaultOf,
   vaultSchedules,
+  vaultTier,
 } from "../sdk/client";
 import { relay } from "../sdk/relayer";
 import { Action, authPath, encodeAction, messageDigest, sign } from "../sdk/wots";
@@ -85,7 +88,20 @@ async function main() {
   const relayed = await relay(rp, relayer, { vault, tree: 0, leaf, pkSeed: signer.seeds.pkSeed, authPath: authPath(signer.pub, leaf), signature: sign(signer.seeds, leaf, digest), action }, { minFee: 500_000n });
   console.log("relayed", relayed.length, "transactions");
 
-  // 3. A schedule of two payments, run by anyone.
+  // 3. Schedules need the Guardian tier: put enough $NOX in the vault itself.
+  const protocol = (await fetchProtocol(program))!;
+  if (!protocol.noxMint.equals(PublicKey.default)) {
+    const tp = (await conn.getAccountInfo(protocol.noxMint))!.owner;
+    const decimals = (await getMint(conn, protocol.noxMint, "confirmed", tp)).decimals;
+    const from = getAssociatedTokenAddressSync(protocol.noxMint, payer, false, tp);
+    const to = getAssociatedTokenAddressSync(protocol.noxMint, vault, true, tp);
+    await send([
+      createAssociatedTokenAccountIdempotentInstruction(payer, to, vault, protocol.noxMint, tp),
+      createTransferCheckedInstruction(from, protocol.noxMint, to, payer, protocol.guardian, decimals, [], tp),
+    ]);
+    console.log("tier:", (await vaultTier(program, vault)).name);
+  }
+  // A schedule of two payments, run by anyone.
   const sched: Action = { kind: "schedule", id: 0, mint: ZERO, dest: payer.toBytes(), amount: 5_000_000n, interval: 2n, count: 2, start: 0n, fee: 0n, feePayee: ZERO };
   for (const t of (await planAction({ program, payer, vault, signer, leaf: await next(), action: sched })).transactions) await send(t.instructions);
   // getProgramAccounts on a public RPC can lag a few seconds behind a confirmed transaction.
