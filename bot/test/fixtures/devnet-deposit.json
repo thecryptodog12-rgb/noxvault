@@ -1,0 +1,43 @@
+{
+  "signature": "3JE3aLZhyLUftgbaHVWAPJ3Dx5U8D3RqXCcuqHtdrdtoKXkx8RW2Q8dJ2Seazm7Uz2ux3L2vji5Lts6pV73L9CnT",
+  "slot": 509185600,
+  "blockTime": 1791550560,
+  "err": null,
+  "accountKeys": [
+    "BFwro7RnsG9GR2jV3yGXGwtGkRq8MDxH9LSoTAjMQf2x",
+    "4VmyMBXEB9pXwVTssUEjJgy8EqfaooNurAEVybWtwkSV",
+    "6EfJoazmPWpGLLXGgzgKWMMUNam35LDP6gNjchXRCjLs",
+    "77dB3agQrEdARxj6sR9Kay9gmBxMwmxepNaE2GM8Vk5T",
+    "zKyfFxPQNyMVLjN68TtNvY3p8q8y3J4hwimfMVXSQoD",
+    "11111111111111111111111111111111",
+    "8iDqwPFRxr2rHiuieVhGL4jdTT7XPE5qPAReS6VzTPw4",
+    "ComputeBudget111111111111111111111111111111"
+  ],
+  "preBalances": [
+    2962263402,
+    0,
+    50000000,
+    13045440,
+    0,
+    1,
+    833120,
+    1
+  ],
+  "postBalances": [
+    2983713802,
+    40000000,
+    0,
+    0,
+    1590040,
+    1,
+    833120,
+    1
+  ],
+  "preTokenBalances": [],
+  "postTokenBalances": [],
+  "invokedPrograms": [
+    "ComputeBudget111111111111111111111111111111",
+    "8iDqwPFRxr2rHiuieVhGL4jdTT7XPE5qPAReS6VzTPw4",
+    "11111111111111111111111111111111"
+  ]
+}
