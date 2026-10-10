@@ -54,4 +54,4 @@ deploy and burn the upgrade authority (`solana program set-upgrade-authority --f
 - one on-chain hash ≈ 180 compute units; a signature check is 4–5k hashes on average
 - a normal action is 2 transactions; worst case splits verification over more
 - building the 256-key tree takes ~3 s in Node, longer in a browser (done once, public part cached)
-- the action buffer's rent is returned; vault state (~0.004 SOL) is paid once at creation
+- the action buffer's rent is returned; vault state (~0.003 SOL) is paid once at creation
