@@ -286,11 +286,116 @@ export function canaryPda(programId = PROGRAM_ID): PublicKey {
 
 const ata = (mint: PublicKey, owner: PublicKey, tokenProgram = TOKEN_PROGRAM_ID) => getAssociatedTokenAddressSync(mint, owner, true, tokenProgram);
 
+// ---------- protocol and $NOX tiers (docs/SPEC.md §10) ----------
+
+export const TIER_FREE = 0;
+export const TIER_GUARDIAN = 1;
+export const TIER_SENTINEL = 2;
+export const TIER_NAMES = ["Free", "Guardian", "Sentinel"] as const;
+
+export interface ProtocolView {
+  admin: PublicKey;
+  noxMint: PublicKey; // default = tiers off
+  guardian: bigint;
+  sentinel: bigint;
+  createFee: bigint; // lamports
+  treasury: PublicKey;
+  frozen: boolean;
+}
+
+export function protocolPda(programId = PROGRAM_ID): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("protocol")], programId)[0];
+}
+
+export async function fetchProtocol(program: Program<Noxvault>): Promise<ProtocolView | null> {
+  const p = await withRetry(() => program.account.protocol.fetchNullable(protocolPda(program.programId), "confirmed"));
+  if (!p) return null;
+  return {
+    admin: p.admin,
+    noxMint: p.params.noxMint,
+    guardian: BigInt(p.params.guardian.toString()),
+    sentinel: BigInt(p.params.sentinel.toString()),
+    createFee: BigInt(p.params.createFee.toString()),
+    treasury: p.params.treasury,
+    frozen: p.frozen,
+  };
+}
+
+export interface ProtocolParamsInput {
+  noxMint: PublicKey;
+  guardian: bigint;
+  sentinel: bigint;
+  createFee: bigint;
+  treasury: PublicKey;
+}
+
+const toAnchorParams = (p: ProtocolParamsInput) => ({ noxMint: p.noxMint, guardian: bn(p.guardian), sentinel: bn(p.sentinel), createFee: bn(p.createFee), treasury: p.treasury });
+
+export async function initProtocolIx(program: Program<Noxvault>, admin: PublicKey, params: ProtocolParamsInput) {
+  return program.methods.initProtocol(toAnchorParams(params)).accountsPartial({ admin, protocol: protocolPda(program.programId), systemProgram: SystemProgram.programId }).instruction();
+}
+
+export async function updateProtocolIx(program: Program<Noxvault>, admin: PublicKey, params: ProtocolParamsInput) {
+  return program.methods.updateProtocol(toAnchorParams(params)).accountsPartial({ admin, protocol: protocolPda(program.programId) }).instruction();
+}
+
+/** The vault's $NOX account (its ATA under the mint's token program), if it exists. */
+export async function noxAccountOf(program: Program<Noxvault>, vault: PublicKey, protocol: ProtocolView | null): Promise<PublicKey | null> {
+  if (!protocol || protocol.noxMint.equals(PublicKey.default)) return null;
+  const conn = program.provider.connection;
+  const mintInfo = await withRetry(() => conn.getAccountInfo(protocol.noxMint, "confirmed"));
+  if (!mintInfo) return null;
+  const address = ata(protocol.noxMint, vault, mintInfo.owner);
+  return (await withRetry(() => conn.getAccountInfo(address, "confirmed"))) ? address : null;
+}
+
+export interface TierView {
+  tier: number;
+  name: (typeof TIER_NAMES)[number];
+  held: bigint; // $NOX base units in the vault
+  next: bigint | null; // base units still needed for the next tier
+  tiersOn: boolean;
+}
+
+/** A vault's $NOX tier, exactly as the program computes it. */
+export async function vaultTier(program: Program<Noxvault>, vault: PublicKey, protocol?: ProtocolView | null): Promise<TierView> {
+  const p = protocol === undefined ? await fetchProtocol(program) : protocol;
+  if (!p || p.noxMint.equals(PublicKey.default)) return { tier: TIER_SENTINEL, name: "Sentinel", held: 0n, next: null, tiersOn: false };
+  const acct = await noxAccountOf(program, vault, p);
+  let held = 0n;
+  if (acct) {
+    const info = await withRetry(() => program.provider.connection.getTokenAccountBalance(acct, "confirmed"));
+    held = BigInt(info.value.amount);
+  }
+  const tier = held >= p.sentinel ? TIER_SENTINEL : held >= p.guardian ? TIER_GUARDIAN : TIER_FREE;
+  const next = tier === TIER_FREE ? p.guardian - held : tier === TIER_GUARDIAN ? p.sentinel - held : null;
+  return { tier, name: TIER_NAMES[tier], held, next, tiersOn: true };
+}
+
+/** The tier a config needs (multi-signer → Sentinel, testament → Guardian). */
+export function tierNeeded(c: Config): number {
+  const signers = c.trees.slice(0, SIGNER_SLOTS).filter((t) => !equal(t.root, ZERO32)).length;
+  if (signers > 1) return TIER_SENTINEL;
+  if (c.testamentDelay > 0n && c.heirs.length) return TIER_GUARDIAN;
+  return TIER_FREE;
+}
+
 export async function initVaultIx(program: Program<Noxvault>, payer: PublicKey, config: Config) {
   const vault = vaultOf(config, program.programId);
+  const protocol = await fetchProtocol(program);
+  if (!protocol) throw new Error("The Noxvault protocol account is not initialized on this cluster.");
+  const noxAccount = await noxAccountOf(program, vault, protocol);
   return program.methods
     .initVault(toAnchorConfig(config) as never)
-    .accountsPartial({ payer, vault, state: statePda(vault, program.programId), systemProgram: SystemProgram.programId })
+    .accountsPartial({
+      payer,
+      vault,
+      state: statePda(vault, program.programId),
+      protocol: protocolPda(program.programId),
+      noxAccount,
+      treasury: protocol.treasury,
+      systemProgram: SystemProgram.programId,
+    })
     .instruction();
 }
 
@@ -626,9 +731,13 @@ export async function executeIx(
         .accountsPartial({ ...base, stake: stakePda(vault, action.seed, programId), clock: SYSVAR_CLOCK_PUBKEY, stakeHistory: SYSVAR_STAKE_HISTORY_PUBKEY, stakeProgram: StakeProgram.programId })
         .instruction();
     case "schedule":
-      return m.executeCreateSchedule(action.id).accountsPartial({ ...base, payer, schedule: schedulePda(vault, action.id, programId) }).instruction();
-    case "budget":
-      return m.executeCreateBudget(action.id).accountsPartial({ ...base, payer, budget: budgetPda(vault, action.id, programId) }).instruction();
+    case "budget": {
+      const protocol = await fetchProtocol(program);
+      const tierAccts = { protocol: protocolPda(programId), noxAccount: await noxAccountOf(program, vault, protocol) };
+      return action.kind === "schedule"
+        ? m.executeCreateSchedule(action.id).accountsPartial({ ...base, ...tierAccts, payer, schedule: schedulePda(vault, action.id, programId) }).instruction()
+        : m.executeCreateBudget(action.id).accountsPartial({ ...base, ...tierAccts, payer, budget: budgetPda(vault, action.id, programId) }).instruction();
+    }
     case "cancel":
     case "ping":
     case "cancelSchedule":
@@ -1218,6 +1327,8 @@ export async function preflightAction(p: Omit<ActionParams, "hashesPerTx" | "exe
       break;
     }
     case "schedule": {
+      const t = await vaultTier(program, vault);
+      if (t.tier < TIER_GUARDIAN) errors.push(`Schedules need the Guardian tier: hold ${t.next} more $NOX base units in the vault.`);
       const exists = await withRetry(() => conn.getAccountInfo(schedulePda(vault, action.id, programId), "confirmed"));
       if (exists) errors.push(`Schedule slot #${action.id} is in use.`);
       if (action.amount <= 0n || action.interval <= 0n || action.count <= 0) errors.push("Amount, interval and count must be positive.");
@@ -1228,6 +1339,8 @@ export async function preflightAction(p: Omit<ActionParams, "hashesPerTx" | "exe
       break;
     }
     case "budget": {
+      const t = await vaultTier(program, vault);
+      if (t.tier < TIER_GUARDIAN) errors.push(`Budgets need the Guardian tier: hold ${t.next} more $NOX base units in the vault.`);
       const exists = await withRetry(() => conn.getAccountInfo(budgetPda(vault, action.id, programId), "confirmed"));
       if (exists) errors.push(`Budget slot #${action.id} is in use.`);
       if (action.expires <= BigInt(now)) errors.push("The budget must expire in the future.");

@@ -43,6 +43,27 @@ pub mod noxvault {
         let hash = wots::config_hash(&config.try_to_vec()?);
         let (vault, bump) = Pubkey::find_program_address(&[VAULT_SEED, &hash], &crate::ID);
         require_keys_eq!(vault, ctx.accounts.vault.key(), NoxError::WrongVault);
+
+        // $NOX tiers (docs/SPEC.md §10): multi-signer vaults need Sentinel, a testament Guardian;
+        // a free-tier vault pays the creation fee. Safety features never need a tier.
+        let p = &ctx.accounts.protocol.params;
+        let tier = tier_of(p, &vault, &ctx.accounts.nox_account)?;
+        if signers > 1 {
+            require!(tier >= TIER_SENTINEL, NoxError::TierTooLow);
+        }
+        if config.testament_active() {
+            require!(tier >= TIER_GUARDIAN, NoxError::TierTooLow);
+        }
+        if tier == TIER_FREE && p.create_fee > 0 {
+            require_keys_eq!(ctx.accounts.treasury.key(), p.treasury, NoxError::WrongDest);
+            system_program::transfer(
+                CpiContext::new(ctx.accounts.system_program.to_account_info(), system_program::Transfer {
+                    from: ctx.accounts.payer.to_account_info(),
+                    to: ctx.accounts.treasury.to_account_info(),
+                }),
+                p.create_fee,
+            )?;
+        }
         let now = Clock::get()?.unix_timestamp;
         let s = &mut ctx.accounts.state;
         s.vault = vault;
@@ -332,6 +353,8 @@ pub mod noxvault {
     pub fn execute_create_schedule(ctx: Context<ExecuteCreateSchedule>, id: u8) -> Result<()> {
         let a = &mut *ctx.accounts;
         let (action, unrestricted) = authorize(&a.approval, &a.state)?;
+        let tier = tier_of(&a.protocol.params, &a.vault.key(), &a.nox_account)?;
+        require!(tier >= TIER_GUARDIAN, NoxError::TierTooLow);
         let Kind::Schedule { id: sid, mint, dest, amount, interval, count, start } = action.kind.clone() else {
             return err!(NoxError::WrongAction);
         };
@@ -362,6 +385,8 @@ pub mod noxvault {
     pub fn execute_create_budget(ctx: Context<ExecuteCreateBudget>, id: u8) -> Result<()> {
         let a = &mut *ctx.accounts;
         let (action, _) = authorize(&a.approval, &a.state)?;
+        let tier = tier_of(&a.protocol.params, &a.vault.key(), &a.nox_account)?;
+        require!(tier >= TIER_GUARDIAN, NoxError::TierTooLow);
         let Kind::Budget { id: bid, session, mint, limit, period, expires } = action.kind.clone() else {
             return err!(NoxError::WrongAction);
         };
@@ -556,6 +581,38 @@ pub mod noxvault {
         ))
     }
 
+    // ---------- protocol parameters ----------
+
+    pub fn init_protocol(ctx: Context<InitProtocol>, params: ProtocolParams) -> Result<()> {
+        require_keys_eq!(ctx.accounts.admin.key(), PROTOCOL_ADMIN, NoxError::NotAdmin);
+        require!(params.guardian <= params.sentinel, NoxError::BadConfig);
+        let p = &mut ctx.accounts.protocol;
+        p.admin = PROTOCOL_ADMIN;
+        p.params = params;
+        Ok(())
+    }
+
+    pub fn update_protocol(ctx: Context<UpdateProtocol>, params: ProtocolParams) -> Result<()> {
+        let p = &mut ctx.accounts.protocol;
+        require!(!p.frozen, NoxError::Frozen);
+        require!(params.guardian <= params.sentinel, NoxError::BadConfig);
+        p.params = params;
+        Ok(())
+    }
+
+    /// Hands the parameters to another admin (a multisig, later governance).
+    pub fn set_protocol_admin(ctx: Context<UpdateProtocol>, admin: Pubkey) -> Result<()> {
+        require!(!ctx.accounts.protocol.frozen, NoxError::Frozen);
+        ctx.accounts.protocol.admin = admin;
+        Ok(())
+    }
+
+    /// Makes the parameters permanent.
+    pub fn freeze_protocol(ctx: Context<UpdateProtocol>) -> Result<()> {
+        ctx.accounts.protocol.frozen = true;
+        Ok(())
+    }
+
     // ---------- Escape Hatch, registry and canary ----------
 
     pub fn register_link(ctx: Context<RegisterLink>) -> Result<()> {
@@ -668,6 +725,29 @@ pub mod noxvault {
 }
 
 // ---------- rules ----------
+
+/// A vault's $NOX tier from the $NOX token account it owns (docs/SPEC.md §10).
+/// Tiers are off (everything open) while no $NOX mint is set.
+fn tier_of(p: &ProtocolParams, vault: &Pubkey, nox: &Option<Box<InterfaceAccount<TokenAccount>>>) -> Result<u8> {
+    if p.nox_mint == Pubkey::default() {
+        return Ok(TIER_SENTINEL);
+    }
+    let held = match nox {
+        Some(a) => {
+            require_keys_eq!(a.owner, *vault, NoxError::WrongDest);
+            require_keys_eq!(a.mint, p.nox_mint, NoxError::WrongAction);
+            a.amount
+        }
+        None => 0,
+    };
+    Ok(if held >= p.sentinel {
+        TIER_SENTINEL
+    } else if held >= p.guardian {
+        TIER_GUARDIAN
+    } else {
+        TIER_FREE
+    })
+}
 
 /// Checks an approval against the vault's rules. Returns the action and whether it was
 /// authorized by the recovery tree after inactivity (then destinations are unrestricted).
@@ -890,6 +970,13 @@ pub struct InitVault<'info> {
     pub vault: UncheckedAccount<'info>,
     #[account(init, payer = payer, space = 8 + VaultState::INIT_SPACE, seeds = [STATE_SEED, vault.key().as_ref()], bump)]
     pub state: Box<Account<'info, VaultState>>,
+    #[account(seeds = [PROTOCOL_SEED], bump)]
+    pub protocol: Box<Account<'info, Protocol>>,
+    /// The vault's $NOX account, if any: sets its tier.
+    pub nox_account: Option<Box<InterfaceAccount<'info, TokenAccount>>>,
+    /// CHECK: must equal protocol.params.treasury when a fee is due.
+    #[account(mut)]
+    pub treasury: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }
 
@@ -1116,6 +1203,10 @@ pub struct ExecuteCreateSchedule<'info> {
     /// CHECK: must equal the signed fee payee when there is a fee.
     #[account(mut)]
     pub fee_payee: UncheckedAccount<'info>,
+    #[account(seeds = [PROTOCOL_SEED], bump)]
+    pub protocol: Box<Account<'info, Protocol>>,
+    /// The vault's $NOX account, if any: sets its tier.
+    pub nox_account: Option<Box<InterfaceAccount<'info, TokenAccount>>>,
     pub system_program: Program<'info, System>,
 }
 
@@ -1138,6 +1229,10 @@ pub struct ExecuteCreateBudget<'info> {
     /// CHECK: must equal the signed fee payee when there is a fee.
     #[account(mut)]
     pub fee_payee: UncheckedAccount<'info>,
+    #[account(seeds = [PROTOCOL_SEED], bump)]
+    pub protocol: Box<Account<'info, Protocol>>,
+    /// The vault's $NOX account, if any: sets its tier.
+    pub nox_account: Option<Box<InterfaceAccount<'info, TokenAccount>>>,
     pub system_program: Program<'info, System>,
 }
 
@@ -1436,6 +1531,22 @@ pub struct EscapeSol<'info> {
 }
 
 #[derive(Accounts)]
+pub struct InitProtocol<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    #[account(init, payer = admin, space = 8 + Protocol::INIT_SPACE, seeds = [PROTOCOL_SEED], bump)]
+    pub protocol: Box<Account<'info, Protocol>>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateProtocol<'info> {
+    pub admin: Signer<'info>,
+    #[account(mut, seeds = [PROTOCOL_SEED], bump, has_one = admin)]
+    pub protocol: Box<Account<'info, Protocol>>,
+}
+
+#[derive(Accounts)]
 pub struct InitCanary<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
@@ -1522,4 +1633,8 @@ pub enum NoxError {
     NotTriggered,
     #[msg("This token account has not delegated to the Escape Hatch")]
     NotDelegated,
+    #[msg("This needs a higher $NOX tier: hold more $NOX in the vault")]
+    TierTooLow,
+    #[msg("Only the protocol admin can do this")]
+    NotAdmin,
 }

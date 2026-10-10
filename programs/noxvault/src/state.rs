@@ -13,6 +13,15 @@ pub const INBOX_SEED: &[u8] = b"inbox";
 pub const LINK_SEED: &[u8] = b"link";
 pub const ESCAPE_SEED: &[u8] = b"escape";
 pub const CANARY_SEED: &[u8] = b"canary";
+pub const PROTOCOL_SEED: &[u8] = b"protocol";
+
+/// Who may set the protocol parameters until governance takes over (docs/SPEC.md §10).
+/// Devnet: the deployer. Mainnet: the team multisig, later the governance program.
+pub const PROTOCOL_ADMIN: Pubkey = anchor_lang::pubkey!("BFwro7RnsG9GR2jV3yGXGwtGkRq8MDxH9LSoTAjMQf2x");
+
+pub const TIER_FREE: u8 = 0;
+pub const TIER_GUARDIAN: u8 = 1;
+pub const TIER_SENTINEL: u8 = 2;
 
 pub const SIGNER_SLOTS: usize = 3;
 pub const RECOVERY_TREE: u8 = 3;
@@ -224,6 +233,28 @@ pub struct Link {
     pub change: Option<LinkChange>,
     #[max_len(MAX_ESCAPE_TX)]
     pub escape_tx: Vec<u8>,
+}
+
+/// Protocol parameters: the $NOX mint, tier thresholds and fees (docs/SPEC.md §10).
+#[account]
+#[derive(InitSpace)]
+pub struct Protocol {
+    pub admin: Pubkey,
+    pub params: ProtocolParams,
+    /// Once true, nothing here can change again.
+    pub frozen: bool,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, InitSpace)]
+pub struct ProtocolParams {
+    /// default = tiers off: every feature open to everyone.
+    pub nox_mint: Pubkey,
+    /// $NOX base units a vault must hold for each tier.
+    pub guardian: u64,
+    pub sentinel: u64,
+    /// Lamports a free-tier vault pays the treasury once, at creation.
+    pub create_fee: u64,
+    pub treasury: Pubkey,
 }
 
 #[account]

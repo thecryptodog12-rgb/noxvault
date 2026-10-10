@@ -589,6 +589,33 @@ export type Noxvault = {
           "writable": true
         },
         {
+          "name": "protocol",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "noxAccount",
+          "docs": [
+            "The vault's $NOX account, if any: sets its tier."
+          ],
+          "optional": true
+        },
+        {
           "name": "systemProgram",
           "address": "11111111111111111111111111111111"
         }
@@ -666,6 +693,33 @@ export type Noxvault = {
         {
           "name": "feePayee",
           "writable": true
+        },
+        {
+          "name": "protocol",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "noxAccount",
+          "docs": [
+            "The vault's $NOX account, if any: sets its tier."
+          ],
+          "optional": true
         },
         {
           "name": "systemProgram",
@@ -1358,6 +1412,53 @@ export type Noxvault = {
       "args": []
     },
     {
+      "name": "freezeProtocol",
+      "docs": [
+        "Makes the parameters permanent."
+      ],
+      "discriminator": [
+        71,
+        172,
+        134,
+        201,
+        58,
+        64,
+        166,
+        16
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol"
+          ]
+        },
+        {
+          "name": "protocol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "initCanary",
       "discriminator": [
         195,
@@ -1406,6 +1507,61 @@ export type Noxvault = {
       "args": []
     },
     {
+      "name": "initProtocol",
+      "discriminator": [
+        3,
+        188,
+        141,
+        237,
+        225,
+        226,
+        232,
+        210
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "protocol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "protocolParams"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "initVault",
       "discriminator": [
         77,
@@ -1447,6 +1603,37 @@ export type Noxvault = {
               }
             ]
           }
+        },
+        {
+          "name": "protocol",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "noxAccount",
+          "docs": [
+            "The vault's $NOX account, if any: sets its tier."
+          ],
+          "optional": true
+        },
+        {
+          "name": "treasury",
+          "writable": true
         },
         {
           "name": "systemProgram",
@@ -2354,6 +2541,58 @@ export type Noxvault = {
       ]
     },
     {
+      "name": "setProtocolAdmin",
+      "docs": [
+        "Hands the parameters to another admin (a multisig, later governance)."
+      ],
+      "discriminator": [
+        48,
+        249,
+        109,
+        189,
+        157,
+        197,
+        31,
+        183
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol"
+          ]
+        },
+        {
+          "name": "protocol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "admin",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "spendBudget",
       "docs": [
         "An ordinary session key spends from its budget (docs/SPEC.md §4)."
@@ -3176,6 +3415,59 @@ export type Noxvault = {
       "args": []
     },
     {
+      "name": "updateProtocol",
+      "discriminator": [
+        206,
+        25,
+        218,
+        114,
+        109,
+        41,
+        74,
+        173
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol"
+          ]
+        },
+        {
+          "name": "protocol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "protocolParams"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "verify",
       "docs": [
         "Walks chains `from..to` to their ends. Freezes the buffer on first use. Permissionless."
@@ -3311,6 +3603,19 @@ export type Noxvault = {
         91,
         161,
         190
+      ]
+    },
+    {
+      "name": "protocol",
+      "discriminator": [
+        45,
+        39,
+        101,
+        43,
+        115,
+        72,
+        131,
+        40
       ]
     },
     {
@@ -3513,6 +3818,16 @@ export type Noxvault = {
       "code": 6031,
       "name": "notDelegated",
       "msg": "This token account has not delegated to the Escape Hatch"
+    },
+    {
+      "code": 6032,
+      "name": "tierTooLow",
+      "msg": "This needs a higher $NOX tier: hold more $NOX in the vault"
+    },
+    {
+      "code": 6033,
+      "name": "notAdmin",
+      "msg": "Only the protocol admin can do this"
     }
   ],
   "types": [
@@ -3981,6 +4296,73 @@ export type Noxvault = {
           {
             "name": "executableAt",
             "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "protocol",
+      "docs": [
+        "Protocol parameters: the $NOX mint, tier thresholds and fees (docs/SPEC.md §10)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "params",
+            "type": {
+              "defined": {
+                "name": "protocolParams"
+              }
+            }
+          },
+          {
+            "name": "frozen",
+            "docs": [
+              "Once true, nothing here can change again."
+            ],
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "protocolParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "noxMint",
+            "docs": [
+              "default = tiers off: every feature open to everyone."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "guardian",
+            "docs": [
+              "$NOX base units a vault must hold for each tier."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "sentinel",
+            "type": "u64"
+          },
+          {
+            "name": "createFee",
+            "docs": [
+              "Lamports a free-tier vault pays the treasury once, at creation."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "treasury",
+            "type": "pubkey"
           }
         ]
       }

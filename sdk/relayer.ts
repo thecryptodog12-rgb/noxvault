@@ -1,12 +1,14 @@
 // Relayer: sends a user's already-signed action as fee payer and is repaid by the vault
 // (docs/SPEC.md §7). It never sees a secret and cannot change the action: it is signed.
 import { Program } from "@coral-xyz/anchor";
-import { Connection, Keypair, PublicKey, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
-import { getAssociatedTokenAddressSync, getAccount, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { Keypair, PublicKey, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
 import type { Noxvault } from "./idl/noxvault";
 import {
   SignedAction,
   SOL_MINT,
+  TIER_SENTINEL,
+  fetchProtocol,
+  vaultTier,
   actionDigest,
   completesApproval,
   buildSteps,
@@ -32,8 +34,8 @@ export interface RelayRequest {
 export interface RelayPolicy {
   /** Lowest fee accepted, in lamports. Covers a few transaction fees with a margin. */
   minFee: bigint;
-  /** Holders of at least `threshold` base units of this mint (at the withdrawal's destination) relay for free. */
-  discount?: { mint: PublicKey; threshold: bigint };
+  /** Relay Sentinel-tier vaults ($NOX held in the vault) for free. Default true. */
+  sentinelFree?: boolean;
 }
 
 const fromHex = (h: string, len?: number) => {
@@ -108,7 +110,7 @@ export async function checkRelay(program: Program<Noxvault>, relayer: PublicKey,
   const digest = actionDigest(program.programId, s.vault, s.tree, s.leaf, s.action);
   if (!equal(recoverRoot(s.pkSeed, s.leaf, digest, s.signature, s.authPath), root)) return "signature does not match this vault";
 
-  const free = await discounted(conn, s.action, policy);
+  const free = await relaysFree(program, s.vault, policy);
   if (!free) {
     if (!equal(s.action.feePayee, relayer.toBytes())) return `fee must be paid to ${relayer.toBase58()}`;
     if (s.action.fee < policy.minFee) return `fee must be at least ${policy.minFee} lamports`;
@@ -119,18 +121,12 @@ export async function checkRelay(program: Program<Noxvault>, relayer: PublicKey,
   return null;
 }
 
-async function discounted(conn: Connection, a: Action, policy: RelayPolicy): Promise<boolean> {
-  if (!policy.discount || a.kind !== "withdraw") return false; // the discount follows the withdrawal's destination
-  const dest = new PublicKey(a.dest);
-  for (const program of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
-    try {
-      const acct = await getAccount(conn, getAssociatedTokenAddressSync(policy.discount.mint, dest, true, program), "confirmed", program);
-      if (acct.amount >= policy.discount.threshold) return true;
-    } catch {
-      /* no account under this program */
-    }
-  }
-  return false;
+/** Sentinel-tier vaults relay for free (docs/SPEC.md §10); tiers come from $NOX held in the vault. */
+async function relaysFree(program: Program<Noxvault>, vault: PublicKey, policy: RelayPolicy): Promise<boolean> {
+  if (policy.sentinelFree === false) return false;
+  const p = await fetchProtocol(program);
+  if (!p || p.noxMint.equals(PublicKey.default)) return false;
+  return (await vaultTier(program, vault, p)).tier === TIER_SENTINEL;
 }
 
 /** Checks, then sends the action as fee payer. Safe to call again with the same request. */

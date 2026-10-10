@@ -57,6 +57,12 @@ import {
   verifyRanges,
   wordsToSecret,
   CANARY_ADDRESS,
+  TIER_FREE,
+  TIER_GUARDIAN,
+  TIER_SENTINEL,
+  fetchProtocol,
+  initProtocolIx,
+  vaultTier,
 } from "../sdk/client";
 
 const SOL = (n: number) => BigInt(Math.round(n * LAMPORTS_PER_SOL));
@@ -77,6 +83,17 @@ describe("noxvault v3", () => {
   let primary: Signer;
   let vault: PublicKey;
   let mint: PublicKey;
+  let nox: PublicKey; // test $NOX, 0 decimals
+  const treasury = Keypair.generate().publicKey;
+  const GUARDIAN = 1_000n;
+  const SENTINEL = 10_000n;
+  const CREATE_FEE = SOL(0.01);
+
+  /** Puts $NOX in a vault (its ATA is created even before the vault is initialized). */
+  async function giveNox(v: PublicKey, amount: bigint) {
+    const a = await getOrCreateAssociatedTokenAccount(conn, wallet, nox, v, true, "confirmed", { commitment: "confirmed" });
+    await mintTo(conn, wallet, nox, a.address, wallet, amount, [], { commitment: "confirmed" });
+  }
 
   async function send(ixs: TransactionInstruction[], signers: Keypair[] = []) {
     let sig = "";
@@ -142,10 +159,11 @@ describe("noxvault v3", () => {
     return { plan, leaf };
   }
 
-  async function newVault(settings: Parameters<typeof makeConfig>[1] = {}, signer?: Signer) {
+  async function newVault(settings: Parameters<typeof makeConfig>[1] = {}, signer?: Signer, noxAmount = 0n) {
     const s = signer ?? makeSigner(newMasterSecret(), 0, 0);
     const config = makeConfig(s, settings);
     const v = vaultOf(config, program.programId);
+    if (noxAmount > 0n) await giveNox(v, noxAmount);
     await send([await initVaultIx(program, payer, config)]);
     return { signer: s, vault: v, config };
   }
@@ -154,7 +172,9 @@ describe("noxvault v3", () => {
     primary = makeSigner(master, 0, 0);
     vault = vaultOf(makeConfig(primary), program.programId);
     mint = await createMint(conn, wallet, payer, null, 6);
+    nox = await createMint(conn, wallet, payer, null, 0);
     await send([await initCanaryIx(program, payer)]);
+    await send([await initProtocolIx(program, payer, { noxMint: nox, guardian: GUARDIAN, sentinel: SENTINEL, createFee: CREATE_FEE, treasury })]);
   });
 
   // ---------- core ----------
@@ -174,8 +194,11 @@ describe("noxvault v3", () => {
     for (const [from, to] of verifyRanges(worst, HASHES_PER_TX)) expect(worst.slice(from, to).reduce((a, b) => a + b, 0)).to.be.at.most(HASHES_PER_TX);
   });
 
-  it("initializes a vault; the address commits to the rules", async () => {
+  it("initializes a vault; the address commits to the rules; a free-tier vault pays the creation fee", async () => {
+    expect((await fetchProtocol(program))!.noxMint.equals(nox)).to.eq(true);
+    expect((await vaultTier(program, vault)).tier).to.eq(TIER_FREE);
     await send([await initVaultIx(program, payer, makeConfig(primary))]);
+    expect(await conn.getBalance(treasury)).to.eq(Number(CREATE_FEE));
     const st = (await fetchState(program, vault))!;
     expect(wots.equal(st.config.trees[0].root, primary.pub.root)).to.eq(true);
     expect(vaultOf(makeConfig(primary, { whitelist: [payer], slowDelaySecs: 60 }), program.programId).equals(vault)).to.eq(false);
@@ -210,6 +233,26 @@ describe("noxvault v3", () => {
     await relay(rp, relayer, decodeRelayRequest(JSON.parse(JSON.stringify(encodeRelayRequest(good)))), policy);
     expect(await conn.getBalance(dest)).to.eq(Number(SOL(0.01)));
     expect(await conn.getBalance(relayer.publicKey)).to.be.greaterThan(before);
+  });
+
+  it("relays Sentinel-tier vaults for free, others only for a fee", async () => {
+    const relayer = Keypair.generate();
+    await fund(relayer.publicKey, 0.1);
+    const rp = new Program<Noxvault>(program.idl, new anchor.AnchorProvider(conn, new anchor.Wallet(relayer), { commitment: "confirmed" }));
+    const policy = { minFee: SOL(0.001) };
+    const signedFor = (s: Signer, v: PublicKey): SignedAction => {
+      const action = withdraw(payer, SOL(0.01));
+      const d = wots.messageDigest(program.programId.toBytes(), v.toBytes(), 0, 0, wots.encodeAction(action));
+      return { vault: v, tree: 0, leaf: 0, pkSeed: s.seeds.pkSeed, authPath: wots.authPath(s.pub, 0), signature: wots.sign(s.seeds, 0, d), action };
+    };
+    const free = await newVault();
+    await fund(free.vault, 0.1);
+    expect(await checkRelay(rp, relayer.publicKey, signedFor(free.signer, free.vault), policy)).to.contain("fee must be paid");
+    const sentinel = await newVault({}, undefined, SENTINEL);
+    await fund(sentinel.vault, 0.1);
+    expect(await checkRelay(rp, relayer.publicKey, signedFor(sentinel.signer, sentinel.vault), policy)).to.eq(null);
+    await relay(rp, relayer, signedFor(sentinel.signer, sentinel.vault), policy);
+    expect(leafUsed((await fetchState(program, sentinel.vault))!, 0, 0)).to.eq(true);
   });
 
   it("never accepts a used key, and rejects a tampered signature", async () => {
@@ -275,7 +318,10 @@ describe("noxvault v3", () => {
     const p = makeSigner(newMasterSecret(), 0, 0);
     const c1 = inSlot(makeSigner(newMasterSecret(), 0, 0), 1);
     const c2 = inSlot(makeSigner(newMasterSecret(), 0, 0), 2);
-    const { vault: v } = await newVault({ coSigners: [c1.pub.root, c2.pub.root], threshold: 2 }, p);
+    // Multi-signer vaults need the Sentinel tier: $NOX held in the vault itself.
+    await expectError(newVault({ coSigners: [c1.pub.root, c2.pub.root], threshold: 2 }, p, GUARDIAN), "TierTooLow");
+    const { vault: v } = await newVault({ coSigners: [c1.pub.root, c2.pub.root], threshold: 2 }, p, SENTINEL);
+    expect((await vaultTier(program, v)).tier).to.eq(TIER_SENTINEL);
     await fund(v, 1);
     const dest = Keypair.generate().publicKey;
     const action = withdraw(dest, SOL(0.3));
@@ -366,10 +412,16 @@ describe("noxvault v3", () => {
 
   // ---------- schedules and budgets ----------
 
-  it("pays a schedule on time, and only on time", async () => {
+  it("pays a schedule on time, and only on time (Guardian tier)", async () => {
     const dest = Keypair.generate().publicKey;
     await fund(dest, 0.01);
-    await act(primary, vault, { kind: "schedule", id: 1, mint: ZERO, dest: dest.toBytes(), amount: SOL(0.05), interval: 3n, count: 2, start: 0n, ...fee0 });
+    const sched: wots.Action = { kind: "schedule", id: 1, mint: ZERO, dest: dest.toBytes(), amount: SOL(0.05), interval: 3n, count: 2, start: 0n, ...fee0 };
+    const st0 = (await fetchState(program, vault))!;
+    const { leaf } = pickLeaf(st0, primary, await findSignedMessages(program, vault, primary));
+    expect((await preflightAction({ program, payer, vault, signer: primary, leaf, action: sched })).errors.join()).to.contain("Guardian");
+    await giveNox(vault, GUARDIAN);
+    expect((await vaultTier(program, vault)).tier).to.eq(TIER_GUARDIAN);
+    await act(primary, vault, sched);
     let [s] = await vaultSchedules(program, vault);
     await send([await runScheduleIx(program, payer, vault, s)]);
     expect(await conn.getBalance(dest)).to.eq(Number(SOL(0.06)));
@@ -421,7 +473,9 @@ describe("noxvault v3", () => {
   it("splits everything among the heirs once the owner is inactive", async () => {
     const h1 = Keypair.generate().publicKey;
     const h2 = Keypair.generate().publicKey;
-    const { signer: ps, vault: v } = await newVault({ heirs: [{ addr: h1, bps: 6000 }, { addr: h2, bps: 4000 }], testamentDelaySecs: 3 });
+    const heirs = { heirs: [{ addr: h1, bps: 6000 }, { addr: h2, bps: 4000 }], testamentDelaySecs: 3 };
+    await expectError(newVault(heirs), "TierTooLow");
+    const { signer: ps, vault: v } = await newVault(heirs, undefined, GUARDIAN);
     await fund(v, 1);
     const vAta = await getOrCreateAssociatedTokenAccount(conn, wallet, mint, v, true);
     await mintTo(conn, wallet, mint, vAta.address, wallet, 1000);

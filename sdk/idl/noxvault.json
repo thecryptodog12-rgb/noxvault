@@ -583,6 +583,33 @@
           "writable": true
         },
         {
+          "name": "protocol",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "nox_account",
+          "docs": [
+            "The vault's $NOX account, if any: sets its tier."
+          ],
+          "optional": true
+        },
+        {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
         }
@@ -660,6 +687,33 @@
         {
           "name": "fee_payee",
           "writable": true
+        },
+        {
+          "name": "protocol",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "nox_account",
+          "docs": [
+            "The vault's $NOX account, if any: sets its tier."
+          ],
+          "optional": true
         },
         {
           "name": "system_program",
@@ -1352,6 +1406,53 @@
       "args": []
     },
     {
+      "name": "freeze_protocol",
+      "docs": [
+        "Makes the parameters permanent."
+      ],
+      "discriminator": [
+        71,
+        172,
+        134,
+        201,
+        58,
+        64,
+        166,
+        16
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol"
+          ]
+        },
+        {
+          "name": "protocol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "init_canary",
       "discriminator": [
         195,
@@ -1400,6 +1501,61 @@
       "args": []
     },
     {
+      "name": "init_protocol",
+      "discriminator": [
+        3,
+        188,
+        141,
+        237,
+        225,
+        226,
+        232,
+        210
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "protocol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "ProtocolParams"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "init_vault",
       "discriminator": [
         77,
@@ -1441,6 +1597,37 @@
               }
             ]
           }
+        },
+        {
+          "name": "protocol",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "nox_account",
+          "docs": [
+            "The vault's $NOX account, if any: sets its tier."
+          ],
+          "optional": true
+        },
+        {
+          "name": "treasury",
+          "writable": true
         },
         {
           "name": "system_program",
@@ -2348,6 +2535,58 @@
       ]
     },
     {
+      "name": "set_protocol_admin",
+      "docs": [
+        "Hands the parameters to another admin (a multisig, later governance)."
+      ],
+      "discriminator": [
+        48,
+        249,
+        109,
+        189,
+        157,
+        197,
+        31,
+        183
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol"
+          ]
+        },
+        {
+          "name": "protocol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "admin",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "spend_budget",
       "docs": [
         "An ordinary session key spends from its budget (docs/SPEC.md §4)."
@@ -3170,6 +3409,59 @@
       "args": []
     },
     {
+      "name": "update_protocol",
+      "discriminator": [
+        206,
+        25,
+        218,
+        114,
+        109,
+        41,
+        74,
+        173
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol"
+          ]
+        },
+        {
+          "name": "protocol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "ProtocolParams"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "verify",
       "docs": [
         "Walks chains `from..to` to their ends. Freezes the buffer on first use. Permissionless."
@@ -3305,6 +3597,19 @@
         91,
         161,
         190
+      ]
+    },
+    {
+      "name": "Protocol",
+      "discriminator": [
+        45,
+        39,
+        101,
+        43,
+        115,
+        72,
+        131,
+        40
       ]
     },
     {
@@ -3507,6 +3812,16 @@
       "code": 6031,
       "name": "NotDelegated",
       "msg": "This token account has not delegated to the Escape Hatch"
+    },
+    {
+      "code": 6032,
+      "name": "TierTooLow",
+      "msg": "This needs a higher $NOX tier: hold more $NOX in the vault"
+    },
+    {
+      "code": 6033,
+      "name": "NotAdmin",
+      "msg": "Only the protocol admin can do this"
     }
   ],
   "types": [
@@ -3975,6 +4290,73 @@
           {
             "name": "executable_at",
             "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Protocol",
+      "docs": [
+        "Protocol parameters: the $NOX mint, tier thresholds and fees (docs/SPEC.md §10)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "params",
+            "type": {
+              "defined": {
+                "name": "ProtocolParams"
+              }
+            }
+          },
+          {
+            "name": "frozen",
+            "docs": [
+              "Once true, nothing here can change again."
+            ],
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProtocolParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "nox_mint",
+            "docs": [
+              "default = tiers off: every feature open to everyone."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "guardian",
+            "docs": [
+              "$NOX base units a vault must hold for each tier."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "sentinel",
+            "type": "u64"
+          },
+          {
+            "name": "create_fee",
+            "docs": [
+              "Lamports a free-tier vault pays the treasury once, at creation."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "treasury",
+            "type": "pubkey"
           }
         ]
       }
