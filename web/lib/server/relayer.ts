@@ -45,11 +45,9 @@ export function relayerContext(): { relayer: Keypair; program: Program<Noxvault>
   const conn = new Connection(process.env.RELAYER_RPC_URL || RPC_URL, "confirmed");
   const program = new Program<Noxvault>(idl as unknown as Noxvault, new AnchorProvider(conn, keypairWallet(relayer), { commitment: "confirmed", preflightCommitment: "confirmed" }));
   const minFee = BigInt(process.env.RELAY_MIN_FEE_LAMPORTS || "100000");
-  let discount: RelayPolicy["discount"];
-  if (process.env.NOX_MINT && process.env.NOX_DISCOUNT_THRESHOLD) {
-    discount = { mint: new PublicKey(process.env.NOX_MINT), threshold: BigInt(process.env.NOX_DISCOUNT_THRESHOLD) };
-  }
-  cached = { relayer, program, policy: { minFee, discount } };
+  // Sentinel-tier vaults ($NOX held in the vault) relay for free; RELAY_SENTINEL_FREE=false turns that off.
+  const sentinelFree = process.env.RELAY_SENTINEL_FREE !== "false";
+  cached = { relayer, program, policy: { minFee, sentinelFree } };
   return cached;
 }
 

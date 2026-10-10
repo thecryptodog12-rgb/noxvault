@@ -14,6 +14,7 @@ import {
   makeConfig,
   newMasterSecret,
   secretToWords,
+  tierNeeded,
   vaultOf,
   withRetry,
   type Signer,
@@ -29,6 +30,9 @@ import { forgetWords, loadWords, saveWords, type Remember } from "@/lib/secret";
 import { sendIxs } from "@/lib/unlock";
 import { configToJson } from "@/lib/configJson";
 import { duration } from "@/lib/time";
+import { TIER_FREE, TIER_NAMES, noxAmount, tierNeedText, useVaultTier } from "@/lib/nox";
+import TierBadge from "@/components/vault/TierBadge";
+import { NOX_CA } from "@/lib/config";
 
 const signerCountOf = (c: { trees: { height: number }[] }) => [0, 1, 2].filter((t) => c.trees[t].height > 0).length;
 const fromHex = (h: string) => Uint8Array.from(h.match(/../g)!.map((x) => parseInt(x, 16)));
@@ -222,6 +226,7 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
       const [b, st] = await Promise.all([connection.getBalance(vault, "confirmed"), fetchState(program, vault)]);
       setBalance(b);
       setInitialized(!!st);
+      setTierNonce((n) => n + 1);
     } catch {
       setBalance(null);
       setInitialized(null);
@@ -250,7 +255,12 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
   const [amount, setAmount] = useState("0.1");
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ kind: "ok" | "bad"; text: string; sig?: string } | null>(null);
-  const ready = !!config && !!vault && vaultNumber !== null && !scanErr && deployed !== false && initialized !== null;
+  const need = config ? tierNeeded(config) : TIER_FREE;
+  const [tierNonce, setTierNonce] = useState(0);
+  const { tier, protocol } = useVaultTier(vault ?? null, tierNonce);
+  const tierOk = !tier || !tier.tiersOn || tier.tier >= need;
+  const freeFee = tier && tier.tiersOn && tier.tier === TIER_FREE && protocol ? protocol.createFee : 0n;
+  const ready = !!config && !!vault && vaultNumber !== null && !scanErr && deployed !== false && initialized !== null && (initialized || tierOk);
 
   const initAndDeposit = async () => {
     if (!ready || !config || !vault || !wallet.publicKey) return;
@@ -267,6 +277,23 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
       const sig = await sendIxs(connection, wallet.publicKey, wallet.sendTransaction, ixs);
       setMsg({ kind: "ok", text: initialized ? `Deposited ${amount} SOL.` : `Vault initialized${lamports > 0n ? ` and funded with ${amount} SOL` : ""}.`, sig });
       refresh();
+    } catch (e) {
+      setMsg({ kind: "bad", text: errMsg(e) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const faucet = async () => {
+    if (!vault) return;
+    setMsg(null);
+    setBusy("faucet");
+    try {
+      const r = await fetch("/api/faucet", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ vault: vault.toBase58() }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || `Faucet failed (${r.status})`);
+      setMsg({ kind: "ok", text: `Sent ${j.amount.toLocaleString("en-US")} test $NOX to the vault.`, sig: j.signature });
+      await refresh();
     } catch (e) {
       setMsg({ kind: "bad", text: errMsg(e) });
     } finally {
@@ -586,6 +613,17 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
                     ? `${config!.heirs.map((h) => `${short(new PublicKey(h.addr).toBase58(), 4)} ${h.bps / 100}%`).join(", ")} after ${duration(Number(config!.testamentDelay))} of inactivity`
                     : "none"}
                 </dd>
+                <dt className="text-dim">$NOX tier needed</dt>
+                <dd>
+                  {TIER_NAMES[need]}
+                  {need === TIER_FREE
+                    ? protocol && protocol.createFee > 0n
+                      ? ` · creation fee ${sol(protocol.createFee)} SOL to the treasury (waived from Guardian up)`
+                      : ""
+                    : need === 2
+                      ? " (multi-signer vaults)"
+                      : " (testament)"}
+                </dd>
                 <dt className="text-dim">status</dt>
                 <dd>
                   {initialized === null ? "checking…" : initialized ? <span className="text-teal">initialized</span> : "not initialized yet"} ·{" "}
@@ -624,7 +662,42 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
         </div>
       </Panel>
 
-      <Panel title="step 4 // initialize and fund">
+      {vault && !initialized && (
+        <Panel title="step 4 // $NOX in the vault" lit={!!tier && tier.tiersOn && !tierOk}>
+          <div className="flex flex-col gap-3 p-4 sm:p-5 text-[12.5px]">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-mute">This address now:</span>
+              <TierBadge tier={tier} protocol={protocol} />
+            </div>
+            <p className="text-mute">
+              Tiers come from $NOX held <strong>in the vault</strong>. You can send $NOX to the address before it is initialized: the
+              program reads it at init. {need > TIER_FREE ? `These settings need ${TIER_NAMES[need]}.` : "These settings work on the Free tier."}
+              {freeFee > 0n && ` On Free, initializing costs a one-time ${sol(freeFee)} SOL fee; Guardian and up pay none.`}
+            </p>
+            {!tierOk && <Note kind="warn">Initializing is locked: {tierNeedText(need, tier, protocol)}.</Note>}
+            <div className="flex flex-wrap gap-3">
+              {NETWORK === "devnet" && (
+                <button className="btn outline sm" onClick={faucet} disabled={!!busy}>
+                  {busy === "faucet" ? "sending…" : "get test $NOX (devnet)"}
+                </button>
+              )}
+              <Link href="/token" className="btn ghost sm">
+                about $NOX
+              </Link>
+            </div>
+            {wallet.publicKey && NOX_CA && (
+              <TokenDeposit vault={vault} disabled={false} presetMint={protocol?.noxMint.toBase58() ?? NOX_CA} label="send $NOX from your wallet" onSent={refresh} />
+            )}
+            {protocol && tier?.tiersOn && (
+              <p className="text-[11px] text-dim">
+                Guardian: {noxAmount(protocol.guardian, protocol.decimals)} $NOX · Sentinel: {noxAmount(protocol.sentinel, protocol.decimals)} $NOX
+              </p>
+            )}
+          </div>
+        </Panel>
+      )}
+
+      <Panel title={vault && !initialized ? "step 5 // initialize and fund" : "step 4 // initialize and fund"}>
         <div className="grid gap-0 lg:grid-cols-2 [&>*]:min-w-0">
           <div className="flex flex-col gap-3 border-b border-line p-4 sm:p-5 lg:border-b-0 lg:border-r">
             <Label>with a wallet</Label>
@@ -655,13 +728,14 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
             <Label>no wallet</Label>
             <p className="text-[12.5px] text-mute">
               Send SOL to the address (or scan the QR) from any wallet or exchange. Once it holds at least {RELAY_INIT_MIN / LAMPORTS_PER_SOL} SOL,
-              the relayer initializes it for free.
+              the relayer initializes it for free. Relayed setup needs the Guardian tier or higher; a Free-tier vault is
+              initialized with a wallet, which pays the creation fee.
             </p>
             <div className="text-[12.5px]">
               Balance: <span className="text-bone">{balance === null ? "…" : `${sol(balance)} SOL`}</span>{" "}
               {balance !== null && balance < RELAY_INIT_MIN && !initialized && <span className="text-dim">(waiting for ≥ 0.02 SOL)</span>}
             </div>
-            <button className="btn outline self-start" onClick={initViaRelayer} disabled={!ready || !!busy || initialized === true || (balance ?? 0) < RELAY_INIT_MIN}>
+            <button className="btn outline self-start" onClick={initViaRelayer} disabled={!ready || !!busy || initialized === true || (balance ?? 0) < RELAY_INIT_MIN || freeFee > 0n}>
               {busy === "relayer" ? "asking relayer…" : initialized ? "initialized" : "initialize via relayer"}
             </button>
           </div>

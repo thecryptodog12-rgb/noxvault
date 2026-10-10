@@ -9,6 +9,8 @@ import { useNox } from "@/lib/hooks";
 import { errMsg, fromBaseUnits, short, sol, timeAgo } from "@/lib/format";
 import { explorerUrl, NETWORK } from "@/lib/config";
 import { isSol, vaultAssets, type VaultAssets } from "@/lib/unlock";
+import { TIER_NAMES, loadProtocol, tiersFor, useVaultTier } from "@/lib/nox";
+import TierBadge from "@/components/vault/TierBadge";
 import { dateTime, duration, useNow } from "@/lib/time";
 
 const signersOf = (s: VaultStateView) => [0, 1, 2].filter((t) => s.config.trees[t].height > 0).length;
@@ -19,6 +21,7 @@ export default function Explorer() {
   const q = params.get("q") ?? "";
   const [states, setStates] = useState<VaultStateView[] | null>(null);
   const [balances, setBalances] = useState<Map<string, number>>(new Map());
+  const [tiers, setTiers] = useState<Map<string, { tier: number; held: bigint }>>(new Map());
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -47,6 +50,9 @@ export default function Explorer() {
           infos.forEach((inf, k) => m.set(keys[i + k].toBase58(), inf?.lamports ?? 0));
         }
         if (live) setBalances(m);
+        const p = await loadProtocol(program).catch(() => null);
+        const t = await tiersFor(connection, keys, p).catch(() => new Map());
+        if (live) setTiers(t);
       } catch (e) {
         if (!live) return;
         setErr(errMsg(e));
@@ -102,12 +108,13 @@ export default function Explorer() {
           </Empty>
         ) : (
           <div className="overflow-x-auto">
-            <table className="tbl min-w-[860px] whitespace-nowrap">
+            <table className="tbl min-w-[940px] whitespace-nowrap">
               <thead>
                 <tr>
                   <th>vault</th>
                   <th className="!text-right">balance</th>
                   <th className="!text-right">actions</th>
+                  <th>tier</th>
                   <th>signers</th>
                   <th>keys left</th>
                   <th>pending</th>
@@ -128,6 +135,9 @@ export default function Explorer() {
                       </td>
                       <td className="text-right">{sol(balances.get(a) ?? 0)} SOL</td>
                       <td className="text-right">{s.actions}</td>
+                      <td>
+                        <TierCell t={tiers.get(a)} />
+                      </td>
                       <td className="text-mute">
                         {s.config.threshold} of {signersOf(s)}
                       </td>
@@ -146,6 +156,12 @@ export default function Explorer() {
       </Panel>
     </div>
   );
+}
+
+function TierCell({ t }: { t?: { tier: number } }) {
+  if (!t) return <span className="text-dim">…</span>;
+  const tone = ["text-mute", "text-teal", "text-warn"][t.tier];
+  return <span className={`text-[11.5px] font-bold uppercase tracking-[0.1em] ${tone}`}>{TIER_NAMES[t.tier]}</span>;
 }
 
 function Tile({ k, v }: { k: string; v: string }) {
@@ -224,6 +240,7 @@ function LookupResult({ q }: { q: string }) {
                 {st.vault.toBase58()}
               </a>
               <Copy value={st.vault.toBase58()} />
+              <LookupTier vault={st.vault} />
             </div>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 [&>*]:min-w-0">
               <Fact k="sol" v={sol(st.assets.lamports)} />
@@ -289,4 +306,9 @@ function Fact({ k, v }: { k: string; v: string }) {
       <div className="mt-1 text-[18px] font-bold">{v}</div>
     </div>
   );
+}
+
+function LookupTier({ vault }: { vault: PublicKey }) {
+  const { tier, protocol } = useVaultTier(vault);
+  return <TierBadge tier={tier} protocol={protocol} />;
 }

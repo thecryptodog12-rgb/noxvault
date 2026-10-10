@@ -1,5 +1,5 @@
 import { PublicKey, Transaction, sendAndConfirmTransaction, LAMPORTS_PER_SOL } from "@solana/web3.js";
-import { fetchState, initVaultIx, vaultOf } from "@nox/sdk/client";
+import { TIER_NAMES, fetchState, initVaultIx, tierNeeded, vaultOf, vaultTier } from "@nox/sdk/client";
 import { HttpError, errorResponse, rateLimit, relayerContext } from "@/lib/server/relayer";
 import { parseConfig } from "@/lib/server/parseConfig";
 import type { ConfigJson } from "@/lib/configJson";
@@ -27,6 +27,14 @@ export async function POST(req: Request) {
     const balance = await conn.getBalance(vault, "confirmed");
     if (balance < MIN_BALANCE)
       throw new HttpError(402, `The vault must hold at least ${MIN_BALANCE / LAMPORTS_PER_SOL} SOL before the relayer initializes it (it holds ${balance / LAMPORTS_PER_SOL}).`);
+    const need = tierNeeded(config);
+    const tier = await vaultTier(program, vault);
+    if (tier.tiersOn && tier.tier < need)
+      throw new HttpError(402, `These settings need the ${TIER_NAMES[need]} tier: send more $NOX to the vault first (it holds ${tier.held} base units).`);
+    // The program charges the creation fee to whoever pays for init: relaying a Free-tier init
+    // would have the relayer pay it, which anyone could repeat to drain the relayer.
+    if (tier.tiersOn && tier.tier < 1)
+      throw new HttpError(402, "Free-tier vaults are initialized with your own wallet (it pays the creation fee). Hold Guardian-tier $NOX in the vault to have the relayer initialize it for free.");
     const tx = new Transaction().add(await initVaultIx(program, relayer.publicKey, config));
     tx.feePayer = relayer.publicKey;
     let sig = "";

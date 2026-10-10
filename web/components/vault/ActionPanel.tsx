@@ -5,6 +5,7 @@
 // preflightAction runs before signing; "attempted" is persisted before anything is sent.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { Lock } from "lucide-react";
 import { PublicKey } from "@solana/web3.js";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import {
@@ -27,11 +28,13 @@ import {
   type SignedAction,
   type SignedMessage,
   type Signer,
+  type TierView,
   type VaultStateView,
 } from "@nox/sdk/client";
 import { authPath, equal, sign, type Action, type Kind } from "@nox/sdk/wots";
 import { Label, Note } from "@/components/ui";
 import { useNox } from "@/lib/hooks";
+import { TIER_GUARDIAN, TIER_SENTINEL, tierNeedText, useProtocol } from "@/lib/nox";
 import { errMsg, fromBaseUnits, hex, short, sol, toBaseUnits } from "@/lib/format";
 import { explorerUrl } from "@/lib/config";
 import {
@@ -103,6 +106,7 @@ export default function ActionPanel({
   schedules,
   budgets,
   preset,
+  tier,
   onPresetDone,
   onChanged,
 }: {
@@ -115,6 +119,8 @@ export default function ActionPanel({
   budgets: BudgetView[];
   /** Co-sign an existing approval: sign exactly this action. */
   preset?: Action | null;
+  /** The vault's $NOX tier (schedules / budgets need Guardian; Sentinel relays free). */
+  tier?: TierView | null;
   onPresetDone?: () => void;
   onChanged: () => void;
 }) {
@@ -128,6 +134,9 @@ export default function ActionPanel({
     ? RECOVERY_CANCELS.map((k) => KINDS.find((x) => x.k === k)!)
     : KINDS;
 
+  const protocol = useProtocol();
+  const needsGuardian = (k: KindName) => k === "schedule" || k === "budget";
+  const locked = (k: KindName) => !!tier && tier.tiersOn && needsGuardian(k) && tier.tier < TIER_GUARDIAN;
   const [history, setHistory] = useState<History>({ kind: "loading" });
   const [frozen, setFrozen] = useState<Frozen | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -164,6 +173,7 @@ export default function ActionPanel({
   const [sendErr, setSendErr] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
 
+  const sentinelFree = !!tier && tier.tier === TIER_SENTINEL && !!relayer?.sentinelFree;
   const tokens = assets?.tokens.filter((t) => t.amount > 0n) ?? [];
   const holding = isSol(asset) ? null : tokens.find((t) => t.mint.toBase58() === asset) ?? null;
   const usedStakes = stakes.filter((s): s is StakeSlot => !!s);
@@ -344,7 +354,8 @@ export default function ActionPanel({
   const feeFor = (m: Mode): { fee: bigint; feePayee: Uint8Array } => {
     if (m === "relayer") {
       if (!relayer) throw new Error(relayerErr || "Relayer info not loaded yet");
-      return { fee: BigInt(relayer.minFee), feePayee: new PublicKey(relayer.relayer).toBytes() };
+      // Sentinel vaults relay for free: fee 0, the relayer is still named as payee.
+      return { fee: sentinelFree ? 0n : BigInt(relayer.minFee), feePayee: new PublicKey(relayer.relayer).toBytes() };
     }
     if (!wallet.publicKey) throw new Error("Connect a wallet: it pays the network fees");
     return { fee: 0n, feePayee: wallet.publicKey.toBytes() };
@@ -363,7 +374,7 @@ export default function ActionPanel({
         // Co-signing: the action (including its fee) is fixed by whoever opened the approval.
         action = preset;
         if (action.kind === "withdraw" && !isSol(action.mint)) tokenProgram = await mintTokenProgram(connection, new PublicKey(action.mint));
-        useMode = action.fee > 0n && relayer && equal(action.feePayee, new PublicKey(relayer.relayer).toBytes()) ? "relayer" : "wallet";
+        useMode = relayer && equal(action.feePayee, new PublicKey(relayer.relayer).toBytes()) && (action.fee > 0n || sentinelFree) ? "relayer" : "wallet";
       } else {
         const b = await buildKind();
         action = { ...b.kind, ...feeFor(mode) } as Action;
@@ -505,8 +516,12 @@ export default function ActionPanel({
   };
 
   const relayerOk = useMemo(
-    () => !!frozen && !!relayer && frozen.action.fee >= BigInt(relayer.minFee) && equal(frozen.action.feePayee, new PublicKey(relayer.relayer).toBytes()),
-    [frozen, relayer]
+    () =>
+      !!frozen &&
+      !!relayer &&
+      equal(frozen.action.feePayee, new PublicKey(relayer.relayer).toBytes()) &&
+      (frozen.action.fee >= BigInt(relayer.minFee) || sentinelFree),
+    [frozen, relayer, sentinelFree]
   );
 
   // ---- max for SOL: everything minus the fee leaves exactly 0 (allowed) ----
@@ -680,12 +695,24 @@ export default function ActionPanel({
               <button
                 key={k.k}
                 onClick={() => (setKind(k.k), setSeed(null))}
-                className={`rounded border px-3 py-1.5 text-[12px] ${kind === k.k ? "border-teal bg-teal/[0.08] text-teal" : "border-line-2 text-mute hover:text-bone"}`}
+                title={locked(k.k) ? tierNeedText(TIER_GUARDIAN, tier ?? null, protocol) : undefined}
+                className={`rounded border px-3 py-1.5 text-[12px] ${kind === k.k ? "border-teal bg-teal/[0.08] text-teal" : "border-line-2 text-mute hover:text-bone"} ${
+                  locked(k.k) ? "opacity-60" : ""
+                }`}
               >
+                {locked(k.k) && <Lock size={11} className="mr-1 inline -mt-0.5" />}
                 {k.label}
               </button>
             ))}
           </div>
+          {locked(kind) && (
+            <Note kind="warn">
+              {kind === "schedule" ? "Schedules" : "Budgets"} {tierNeedText(TIER_GUARDIAN, tier ?? null, protocol)}.{" "}
+              <Link href="/token" className="underline">
+                About $NOX tiers
+              </Link>
+            </Note>
+          )}
 
           {kind === "withdraw" && (
             <div className="grid gap-3 sm:grid-cols-2 [&>*]:min-w-0">
@@ -816,7 +843,7 @@ export default function ActionPanel({
               {(
                 [
                   ["wallet", "My wallet pays", "fee 0 · your wallet signs the transactions"],
-                  ["relayer", "Gasless via relayer", relayer ? `vault pays ${sol(BigInt(relayer.minFee), 6)} SOL to the relayer` : "no wallet needed"],
+                  ["relayer", "Gasless via relayer", relayer ? (sentinelFree ? "free for Sentinel vaults" : `vault pays ${sol(BigInt(relayer.minFee), 6)} SOL to the relayer`) : "no wallet needed"],
                 ] as const
               ).map(([m, t, d]) => (
                 <button key={m} onClick={() => setMode(m)} className={`rounded-md border px-3 py-2.5 text-left ${mode === m ? "border-teal bg-teal/[0.06]" : "border-line-2"}`}>
@@ -836,7 +863,7 @@ export default function ActionPanel({
                 connect wallet
               </button>
             ) : (
-              <button className="btn" onClick={prepare} disabled={!!busy || (mode === "relayer" && !relayer) || (!!pre?.warnings.length && !pre.errors.length && !consent)}>
+              <button className="btn" onClick={prepare} disabled={!!busy || locked(kind) || (mode === "relayer" && !relayer) || (!!pre?.warnings.length && !pre.errors.length && !consent)}>
                 {busy ? "checking…" : "check & sign →"}
               </button>
             )}

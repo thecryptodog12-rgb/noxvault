@@ -1,4 +1,6 @@
 "use client";
+import TierBadge from "@/components/vault/TierBadge";
+import { useVaultTier } from "@/lib/nox";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Keypair, PublicKey } from "@solana/web3.js";
@@ -483,6 +485,9 @@ function LinkDetails({
           <Addr value={link.vault.toBase58()} full />
         </Row>
         <Row k="vault state">{state ? <Pill kind="ok">initialized</Pill> : <Pill kind="bad">not found</Pill>}</Row>
+        <Row k="your place in line">
+          <QueuePlace vault={link.vault} />
+        </Row>
         <Row k="registered">{dateTime(link.createdAt)}</Row>
         <Row k="registry entry" mono>
           <Addr value={linkPda(link.wallet, program.programId).toBase58()} />
@@ -622,5 +627,23 @@ function PanicPanel({
         <Result r={result} />
       </div>
     </Panel>
+  );
+}
+
+/** Q-Day priority: keepers evacuate by the linked vault's $NOX tier, then by $NOX held. */
+function QueuePlace({ vault }: { vault: PublicKey }) {
+  const { tier, protocol } = useVaultTier(vault);
+  return (
+    <span className="flex flex-col gap-1">
+      <span>
+        tier <TierBadge tier={tier} protocol={protocol} compact />
+      </span>
+      <span className="text-[12px] text-mute">
+        Keepers evacuate Sentinel vaults first, then Guardian, then Free; within a tier, more $NOX goes first.{" "}
+        <a href="/token" className="underline decoration-dotted">
+          About $NOX
+        </a>
+      </span>
+    </span>
   );
 }

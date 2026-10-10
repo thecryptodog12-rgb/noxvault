@@ -167,6 +167,43 @@ export default function Home() {
           <p className="border-t border-line px-6 py-3 text-[11px] text-dim">Nothing has been audited yet. Use devnet SOL only.</p>
         </div>
       </section>
+
+      {/* $NOX + whitepaper */}
+      <section className="grid gap-3 xl:grid-cols-[1.4fr_1fr] [&>*]:min-w-0">
+        <div className="panel overflow-hidden">
+          <div className="flex items-center justify-between border-b border-line-2 px-6 py-4">
+            <span className="text-[16px] font-medium tracking-[0.16em]">$NOX // HELD IN YOUR VAULT</span>
+            <Link href="/token" className="text-[11px] tracking-[0.14em] text-mute hover:text-teal">
+              TIERS →
+            </Link>
+          </div>
+          <div className="grid gap-px bg-line sm:grid-cols-3 [&>*]:min-w-0">
+            {[
+              ["FREE", "text-mute", "Vault, withdrawals, staking, whitelist, recovery, Escape Hatch. One-time creation fee."],
+              ["GUARDIAN", "text-teal", "+ testament, recurring schedules, session budgets. No creation fee."],
+              ["SENTINEL", "text-warn", "+ multi-signer vaults, free relayer, first in line at Q-Day."],
+            ].map(([t, c, d]) => (
+              <div key={t} className="bg-ink-2 px-5 py-5">
+                <div className={`text-[14px] font-bold tracking-[0.12em] ${c}`}>{t}</div>
+                <p className="mt-2 text-[12px] leading-6 text-mute">{d}</p>
+              </div>
+            ))}
+          </div>
+          <p className="border-t border-line px-6 py-3 text-[11.5px] text-dim">
+            Tiers come from $NOX held inside the vault, checked on-chain. Safety features never need a tier.
+          </p>
+        </div>
+        <Link href="/whitepaper" className="panel group flex flex-col justify-between gap-4 p-6 transition-colors hover:border-teal/50">
+          <div>
+            <div className="label">read</div>
+            <div className="mt-3 text-[22px] font-bold">The whitepaper</div>
+            <p className="mt-2 text-[12.5px] leading-6 text-mute">Design, Escape Hatch and canary, security model, $NOX utility and tokenomics, roadmap and risks.</p>
+          </div>
+          <span className="flex items-center gap-2 text-[13px] text-teal">
+            Open the whitepaper <ArrowRight size={16} className="transition-transform group-hover:translate-x-1" />
+          </span>
+        </Link>
+      </section>
     </div>
   );
 }

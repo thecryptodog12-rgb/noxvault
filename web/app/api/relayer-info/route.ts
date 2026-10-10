@@ -9,7 +9,7 @@ export async function GET() {
     return Response.json({
       relayer: relayer.publicKey.toBase58(),
       minFee: policy.minFee.toString(),
-      discount: policy.discount ? { mint: policy.discount.mint.toBase58(), threshold: policy.discount.threshold.toString() } : null,
+      sentinelFree: policy.sentinelFree !== false,
     });
   } catch (e) {
     return errorResponse(e);

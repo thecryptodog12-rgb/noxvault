@@ -24,6 +24,8 @@ import type { Action } from "@nox/sdk/wots";
 import { Copy, Label, Note, Panel } from "@/components/ui";
 import ActionPanel, { type StakeSlot } from "./ActionPanel";
 import TokenName from "./TokenName";
+import TierBadge from "./TierBadge";
+import { useVaultTier } from "@/lib/nox";
 import { Approvals, Budgets, Inboxes, Migration, RunMsg, Schedules, Section, Testament } from "./sections";
 import { useNox } from "@/lib/hooks";
 import { useRunner } from "@/lib/run";
@@ -56,6 +58,8 @@ export default function VaultView({
   const [readErr, setReadErr] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [preset, setPreset] = useState<Action | null>(null);
+  const [tierNonce, setTierNonce] = useState(0);
+  const { tier, protocol } = useVaultTier(vault, tierNonce);
 
   const refresh = useCallback(async () => {
     try {
@@ -63,6 +67,7 @@ export default function VaultView({
       if (s) setState(s);
       setAssets(a);
       setStakes(st);
+      setTierNonce((n) => n + 1);
       setReadErr(null);
       // these use getProgramAccounts; a public RPC may refuse them
       const [ap, sc, bu] = await Promise.all([
@@ -104,6 +109,7 @@ export default function VaultView({
           </a>
           <Copy value={vault.toBase58()} />
           <span className="rounded-full border border-teal/50 px-2 py-0.5 text-[10.5px] uppercase tracking-[0.12em] text-teal">you: {slotName(mySlot)}</span>
+          <TierBadge tier={tier} protocol={protocol} />
         </div>
         <button className="text-[10.5px] uppercase tracking-[0.14em] text-dim hover:text-teal" onClick={refresh}>
           [refresh]
@@ -216,6 +222,7 @@ export default function VaultView({
             schedules={schedules}
             budgets={budgets}
             preset={preset}
+            tier={tier}
             onPresetDone={() => setPreset(null)}
             onChanged={refresh}
           />

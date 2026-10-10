@@ -6,7 +6,7 @@ import { AlertTriangle, ArrowRight, ChevronDown, Menu, X as Close } from "lucide
 import { Mark, Wordmark } from "./Logo";
 import WalletButton from "./WalletButton";
 import { Copy } from "./ui";
-import { NETWORK, NOX_CA, NOX_CA_PLACEHOLDER, X_URL } from "@/lib/config";
+import { NETWORK, NOX_CA, NOX_CA_LABEL, NOX_CA_PLACEHOLDER, X_URL } from "@/lib/config";
 
 const NAV = [
   { href: "/", label: "Home" },
@@ -14,8 +14,8 @@ const NAV = [
   { href: "/create", label: "Create Vault" },
   { href: "/mine", label: "My Vaults" },
   { href: "/recovery", label: "Recovery" },
-  { href: "/stats", label: "Stats" },
-  { href: "/keylab", label: "Key Lab" },
+  { href: "/token", label: "$NOX" },
+  { href: "/whitepaper", label: "Whitepaper" },
   { href: "/docs", label: "Docs" },
   { href: "/faq", label: "FAQ" },
   { href: "/risks", label: "Risks" },
@@ -30,6 +30,8 @@ function XIcon({ size = 16 }: { size?: number }) {
 }
 
 const TOOLS = [
+  { href: "/stats", label: "Stats" },
+  { href: "/keylab", label: "Key Lab" },
   { href: "/escape", label: "Escape Hatch" },
   { href: "/scan", label: "Scan" },
   { href: "/canary", label: "Quantum canary" },
@@ -51,8 +53,8 @@ function NetworkChip() {
 
 function CaChip() {
   return (
-    <span className="inline-flex max-w-full items-center gap-2 rounded-full border border-line-2 px-2.5 py-1 text-[10.5px] tracking-[0.1em] text-mute">
-      <span className="text-dim">$NOX CA</span>
+    <span className="inline-flex min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-full border border-line-2 px-2.5 py-1 text-[10.5px] tracking-[0.1em] text-mute">
+      <span className="shrink-0 text-dim">{NOX_CA ? NOX_CA_LABEL : "$NOX CA"}</span>
       <span className="truncate text-bone">{NOX_CA || NOX_CA_PLACEHOLDER}</span>
       {NOX_CA && <Copy value={NOX_CA} />}
     </span>
@@ -232,7 +234,7 @@ export default function Shell({ children }: { children: ReactNode }) {
         <div className="border-t border-line">
           <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-3 px-4 py-3 text-[10.5px] text-dim md:px-10 xl:px-16">
             <span>secrets are generated and used in this browser only</span>
-            <span className="flex flex-wrap items-center gap-2">
+            <span className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
               <NetworkChip />
               <CaChip />
             </span>

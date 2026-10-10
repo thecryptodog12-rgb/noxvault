@@ -12,6 +12,7 @@ import {
   escapeTokenIx,
   executePendingIx,
   fetchCanary,
+  fetchProtocol,
   migrateIxs,
   mintTokenProgram,
   runScheduleIx,
@@ -25,6 +26,7 @@ import {
   type VaultStateView,
 } from "@nox/sdk/client";
 import { BASE_FEE, escapeTxStatus, heldTokens, packIxs } from "./escape";
+import { tiersFor } from "./tiers";
 
 export interface KeeperStep {
   what: string;
@@ -131,6 +133,22 @@ export async function runKeeper(program: Program<Noxvault>, payer: Keypair, opts
     report.links = links.length;
   } catch (e) {
     report.errors.push(`links: ${errText(e)}`);
+  }
+  // Q-Day priority (whitepaper, $NOX utility): highest tier first, then most $NOX held in the vault.
+  if (links.some((l) => tripped || l.panic)) {
+    try {
+      const protocol = await fetchProtocol(program);
+      const tiers = await tiersFor(conn, links.map((l) => l.vault), protocol);
+      const rank = (l: LinkView) => tiers.get(l.vault.toBase58()) ?? { tier: 0, held: 0n };
+      links.sort((a, b) => {
+        const ra = rank(a);
+        const rb = rank(b);
+        if (ra.tier !== rb.tier) return rb.tier - ra.tier;
+        return rb.held > ra.held ? 1 : rb.held < ra.held ? -1 : 0;
+      });
+    } catch (e) {
+      report.errors.push(`priority: ${errText(e)}`);
+    }
   }
   for (const link of links) {
     if (!(tripped || link.panic) || !budgetLeft()) continue;

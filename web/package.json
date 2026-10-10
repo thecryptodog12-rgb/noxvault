@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start -p 3100",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "predev": "node -e \"const f=require('fs');f.mkdirSync('content',{recursive:true});f.copyFileSync('../docs/WHITEPAPER.md','content/WHITEPAPER.md')\"",
+    "prebuild": "node -e \"const f=require('fs');f.mkdirSync('content',{recursive:true});f.copyFileSync('../docs/WHITEPAPER.md','content/WHITEPAPER.md')\""
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.31.1",
@@ -24,6 +26,7 @@
     "buffer": "^6.0.3",
     "jsqr": "^1.4.0",
     "lucide-react": "^1.54.0",
+    "marked": "^18.1.0",
     "next": "^15.5.27",
     "qrcode": "^1.5.4",
     "react": "^19.3.0",

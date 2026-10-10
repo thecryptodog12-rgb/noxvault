@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { RECOVERY_TREE, decodeState, vaultStakes, withRetry } from "@nox/sdk/client";
+import { loadProtocol, tiersFor } from "@/lib/nox";
 import { Empty, Note, PageHead, Panel } from "@/components/ui";
 import { useNox } from "@/lib/hooks";
 import { NETWORK } from "@/lib/config";
@@ -17,6 +18,7 @@ interface Data {
   withRecovery: number;
   withWhitelist: number;
   multisig: number;
+  tiers: [number, number, number] | null;
   withHeirs: number;
   migrating: number;
   schedules: number | null;
@@ -54,6 +56,10 @@ async function loadStats(program: ReturnType<typeof useNox>["program"]): Promise
       return []; // account from an older program version
     }
   });
+  const protocol = await loadProtocol(program).catch(() => null);
+  const tierMap = await tiersFor(conn, rows.map((r) => r.vault), protocol).catch(() => null);
+  const tiers: [number, number, number] | null = tierMap ? [0, 0, 0] : null;
+  if (tiers && tierMap) for (const t of tierMap.values()) tiers[t.tier]++;
   const [schedules, budgets] = await Promise.all([
     withRetry(() => program.account.schedule.all()).then((l) => l.length).catch(() => null),
     withRetry(() => program.account.budget.all()).then((l) => l.length).catch(() => null),
@@ -90,6 +96,7 @@ async function loadStats(program: ReturnType<typeof useNox>["program"]): Promise
     withRecovery: rows.filter((r) => r.recovery).length,
     withWhitelist: rows.filter((r) => r.whitelist).length,
     multisig: rows.filter((r) => r.multisig).length,
+    tiers,
     withHeirs: rows.filter((r) => r.heirs).length,
     migrating: rows.filter((r) => r.migrating).length,
     schedules,
@@ -246,6 +253,7 @@ export default function Stats() {
             <Tile k="SOL staked" v={sol(data.staked, 2)} sub={`stake accounts of the ${data.stakeScanned} largest vaults`} />
             <Tile k="with recovery key" v={data.withRecovery.toLocaleString("en-US")} sub={`${Math.round((100 * data.withRecovery) / data.vaults)}% of vaults`} />
             <Tile k="with whitelist" v={data.withWhitelist.toLocaleString("en-US")} sub={`${Math.round((100 * data.withWhitelist) / data.vaults)}% of vaults`} />
+            <Tile k="tiers" v={data.tiers ? `${data.tiers[0]} · ${data.tiers[1]} · ${data.tiers[2]}` : "–"} sub="Free · Guardian · Sentinel ($NOX in vault)" />
             <Tile k="multi-signer" v={data.multisig.toLocaleString("en-US")} sub="vaults with co-signers" />
             <Tile k="with testament" v={data.withHeirs.toLocaleString("en-US")} sub="heirs set" />
             <Tile k="schedules · budgets" v={`${data.schedules ?? "–"} · ${data.budgets ?? "–"}`} sub="active on chain" />

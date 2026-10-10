@@ -128,7 +128,7 @@ export async function sendIxs(conn: Connection, payer: PublicKey, send: SendFn, 
 export interface RelayerInfo {
   relayer: string;
   minFee: string; // lamports
-  discount: null | { mint: string; threshold: string };
+  sentinelFree: boolean; // Sentinel-tier vaults relay with fee 0
 }
 
 export async function fetchRelayerInfo(): Promise<RelayerInfo> {
