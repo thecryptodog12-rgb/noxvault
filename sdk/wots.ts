@@ -60,6 +60,14 @@ export function equal(a: Uint8Array, b: Uint8Array): boolean {
   return a.length === b.length && a.every((x, i) => x === b[i]);
 }
 
+/**
+ * The phrase words in a pasted text, in order. Tolerates the numbered list the app shows
+ * ("1 vocal 2 govern…", "1. vocal", "1) vocal"), line breaks, commas and mixed case.
+ */
+export function normalizeWords(text: string): string[] {
+  return text.toLowerCase().match(/[a-z]+/g) ?? [];
+}
+
 // ---------- keys, chains, leaves ----------
 
 export interface TreeSeeds {

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { wordsToSecret } from "@nox/sdk/client";
+import { normalizeWords, wordsToSecret } from "@nox/sdk/client";
 import { loadWords } from "@/lib/secret";
 import { errMsg } from "@/lib/format";
 
@@ -22,13 +22,13 @@ export default function SecretInput({
     if (s) setStored(s.where === "session" ? "this tab's session" : "this browser (local storage)");
   }, []);
 
-  const count = words.trim() ? words.trim().split(/\s+/).length : 0;
+  const count = normalizeWords(words).length;
 
   const go = (w = words) => {
     try {
       const m = wordsToSecret(w);
       setErr(null);
-      onSecret(m, w.trim().toLowerCase().split(/\s+/).join(" "));
+      onSecret(m, normalizeWords(w).join(" "));
     } catch (e) {
       setErr(errMsg(e));
     }

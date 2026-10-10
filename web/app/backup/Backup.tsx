@@ -1,4 +1,5 @@
 "use client";
+import { normalizeWords } from "@nox/sdk/wots";
 import { useRef, useState, type ReactNode } from "react";
 import { Copy, Label, Note, PageHead, Panel } from "@/components/ui";
 import { errMsg } from "@/lib/format";
@@ -17,7 +18,7 @@ const hideStyle = { WebkitTextSecurity: "disc" } as React.CSSProperties;
 
 function PhraseField({ value, onChange, placeholder = "word1 word2 … word24" }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
   const [hidden, setHidden] = useState(true);
-  const n = value.trim() ? value.trim().split(/\s+/).length : 0;
+  const n = normalizeWords(value).length;
   return (
     <div className="flex flex-col gap-1.5">
       <textarea

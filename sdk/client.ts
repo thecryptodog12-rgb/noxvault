@@ -42,6 +42,7 @@ import {
   encodeAction,
   equal,
   messageDigest,
+  normalizeWords,
   seedIndex,
   sign,
   treeSeeds,
@@ -75,8 +76,10 @@ export function secretToWords(master: Uint8Array): string {
   return entropyToMnemonic(master, wordlist);
 }
 
+export { normalizeWords };
+
 export function wordsToSecret(words: string): Uint8Array {
-  const clean = words.trim().toLowerCase().split(/\s+/).join(" ");
+  const clean = normalizeWords(words).join(" ");
   if (!validateMnemonic(clean, wordlist)) throw new Error("Those words are not a valid Noxvault phrase");
   const master = mnemonicToEntropy(clean, wordlist);
   if (master.length !== 32) throw new Error("A Noxvault phrase is 24 words");

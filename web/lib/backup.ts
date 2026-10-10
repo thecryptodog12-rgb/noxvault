@@ -1,3 +1,4 @@
+import { normalizeWords } from "@nox/sdk/wots";
 // Phrase backups, entirely local: Shamir shares and password-encrypted files.
 // Nothing in this file touches the network.
 import { split, combine } from "shamir-secret-sharing";
@@ -12,7 +13,7 @@ const dec = new TextDecoder();
 // ---------- phrase ----------
 
 export function normalizePhrase(words: string): string {
-  return words.trim().toLowerCase().split(/\s+/).join(" ");
+  return normalizeWords(words).join(" ");
 }
 
 /** Same rules as sdk/client wordsToSecret: 24 valid BIP39 words = 32-byte master secret. */
@@ -304,7 +305,7 @@ export function bytesToWords(b: Uint8Array): string {
 }
 
 export function wordsToBytes(text: string, len: number): Uint8Array {
-  const words = text.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const words = normalizeWords(text);
   const want = Math.ceil((len * 8) / 11);
   if (words.length !== want) throw new Error(`A share is ${want} words (got ${words.length})`);
   const out: number[] = [];
