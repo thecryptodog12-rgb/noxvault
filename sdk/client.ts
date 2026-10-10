@@ -258,6 +258,21 @@ export async function findVaultsFor(program: Program<Noxvault>, signer: Signer):
 
 // ---------- signature history ----------
 
+/** Transactions fetched per request; public RPCs reject large batches with 429. */
+const HISTORY_BATCH = 5;
+
+/** Retries an RPC call on rate limits (429) with exponential backoff; other errors pass through. */
+export async function withRetry<T>(fn: () => Promise<T>, attempts = 6): Promise<T> {
+  for (let i = 0; ; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (i + 1 >= attempts || !/429|Too many requests|rate limit/i.test(String(e))) throw e;
+      await new Promise((r) => setTimeout(r, 500 * 2 ** i));
+    }
+  }
+}
+
 export interface SignedMessage {
   tree: number;
   leaf: number;
@@ -304,7 +319,7 @@ export async function findSignedMessages(program: Program<Noxvault>, vault: Publ
 
   const sigs: string[] = [];
   for (let before: string | undefined; ; ) {
-    const page = await conn.getSignaturesForAddress(vault, { before, limit: 1000 }, "confirmed");
+    const page = await withRetry(() => conn.getSignaturesForAddress(vault, { before, limit: 1000 }, "confirmed"));
     sigs.push(...page.map((s) => s.signature));
     if (page.length < 1000) break;
     before = page[page.length - 1].signature;
@@ -316,9 +331,9 @@ export async function findSignedMessages(program: Program<Noxvault>, vault: Publ
   const found = new Map<string, SignedMessage>();
   const expected = new Map<string, Uint8Array[]>();
 
-  for (let i = 0; i < sigs.length; i += 25) {
-    const batch = sigs.slice(i, i + 25);
-    const txs = await conn.getTransactions(batch, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+  for (let i = 0; i < sigs.length; i += HISTORY_BATCH) {
+    const batch = sigs.slice(i, i + HISTORY_BATCH);
+    const txs = await withRetry(() => conn.getTransactions(batch, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }));
     txs.forEach((tx, t) => {
       if (!tx) throw new Error(`Could not load transaction ${batch[t]}`);
       const msg = tx.transaction.message;
