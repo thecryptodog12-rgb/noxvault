@@ -18,7 +18,6 @@ const NAV = [
   { href: "/whitepaper", label: "Whitepaper" },
   { href: "/docs", label: "Docs" },
   { href: "/faq", label: "FAQ" },
-  { href: "/risks", label: "Risks" },
 ];
 
 function XIcon({ size = 16 }: { size?: number }) {
