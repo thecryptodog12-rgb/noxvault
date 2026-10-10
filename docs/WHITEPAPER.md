@@ -31,7 +31,6 @@ Hash-based vaults exist, but each solves one piece and leaves daily use, recover
 | Project | Approach | What it leaves open |
 | --- | --- | --- |
 | [Solana Winternitz Vault](https://getblock.io/blog/what-is-solana-winternitz-vault-full-guide/) | WOTS one-time keys, Keccak-256 | A new address for every transaction; no recovery, rules or tokens |
-| arkum | WOTS vault, SOL only | Rotating addresses; no recovery; ordinary wallets unprotected |
 | [Anchor Wallet / PQ1](https://www.prnewswire.com/news-releases/freedom-factory-launches-the-worlds-first-hardware-wallet-that-solves-the-quantum-computing-threat-302836634.html) (Ethereum) | Lamport / SPHINCS+ smart accounts | Not on Solana |
 | [Quip](https://unchainedcrypto.com/new-bitcoin-wallet-offers-post-quantum-protection-without-a-fork/) (Bitcoin) | Quantum-resistant layer 2 | Not on Solana |
 | [Project Eleven Yellowpages](https://blog.projecteleven.com/posts/hello-yellowpages) (Bitcoin) | Registry linking old addresses to PQ keys | A registry, not a vault; not on Solana |
