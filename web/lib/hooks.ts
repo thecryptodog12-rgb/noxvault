@@ -3,6 +3,7 @@ import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { useEffect, useMemo, useState } from "react";
 import type { Connection, Signer, Transaction } from "@solana/web3.js";
 import { programDeployed, readProgram } from "./program";
+import { NETWORK } from "./config";
 
 let deployedCache: Promise<boolean> | null = null;
 
@@ -12,10 +13,11 @@ export function useNox() {
   const w = useWallet();
   // The wallet only signs; we broadcast through this site's own RPC. With the wallet's
   // sendTransaction, Phantom broadcasts on whatever network it is set to (often mainnet), so a
-  // devnet transaction never lands and expires ("block height exceeded").
+  // devnet transaction never lands and expires ("block height exceeded"). On mainnet we keep the
+  // wallet's own signAndSend: that is what Phantom expects and what its safety checks trust.
   const wallet = useMemo(() => {
     const { signTransaction, publicKey } = w;
-    if (!signTransaction || !publicKey) return w;
+    if (NETWORK === "mainnet-beta" || !signTransaction || !publicKey) return w;
     const sendTransaction = async (
       tx: Transaction,
       conn: Connection,
