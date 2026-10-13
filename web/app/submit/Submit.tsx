@@ -2,7 +2,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { PublicKey } from "@solana/web3.js";
-import { useWallet } from "@solana/wallet-adapter-react";
 import { RECOVERY_TREE, SOL_MINT, actionDigest, buildSteps, completesApproval, mintTokenProgram, packSteps, remainingSteps, type SignedAction } from "@nox/sdk/client";
 import { Copy, Label, Note, PageHead, Panel } from "@/components/ui";
 import WalletButton from "@/components/WalletButton";
@@ -136,8 +135,7 @@ const icon = { ok: "✓", warn: "!", bad: "✕" } as const;
 const tone = { ok: "text-teal", warn: "text-warn", bad: "text-bad" } as const;
 
 export default function Submit() {
-  const { program, connection, deployed } = useNox();
-  const wallet = useWallet();
+  const { program, connection, deployed, wallet } = useNox();
   const [input, setInput] = useState("");
   const [scanning, setScanning] = useState(false);
   const collector = useRef(new PartCollector());
