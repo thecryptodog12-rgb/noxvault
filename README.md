@@ -39,7 +39,7 @@ crate, resolve with `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback cargo up
 | what | where |
 |---|---|
 | program (devnet) | `8iDqwPFRxr2rHiuieVhGL4jdTT7XPE5qPAReS6VzTPw4` |
-| site | https://noxvault-vert.vercel.app (Vercel project `noxvault`, root `web/`, deploy with `vercel deploy --prod` from the repo root) |
+| site | https://www.nox-vault.com (also https://noxvault-vert.vercel.app; DNS at GoDaddy; Vercel project `noxvault`, root `web/`, deploy with `vercel deploy --prod` from the repo root) |
 | relayer (devnet) | `HH6D7N6wwLg1Uahdk4xm8uj8kHsrVrMo7AFNf2ymEzH8` |
 
 Web env: `NEXT_PUBLIC_RPC_URL`, `NEXT_PUBLIC_NETWORK`, `RELAYER_SECRET_KEY` (JSON array, server
