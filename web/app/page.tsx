@@ -2,6 +2,8 @@ import Link from "next/link";
 import { ArrowRight, Atom, Boxes, Check, EyeOff, FileSignature, FlaskConical, Gauge, LifeBuoy, Lock, RefreshCw, ScrollText, ShieldCheck } from "lucide-react";
 import BootLines from "@/components/home/BootLines";
 import ConsolePanel from "@/components/home/ConsolePanel";
+import { Countdown } from "@/components/Launch";
+import { NOX_TOKEN, PUMP_URL } from "@/lib/config";
 
 const PLAIN = [
   { t: "Safer wallet", Icon: ShieldCheck, d: "Keep your SOL and tokens in a vault with your own rules: trusted addresses, waiting times and daily limits." },
@@ -67,6 +69,22 @@ export default function Home() {
       <section className="grid items-center gap-8 lg:grid-cols-[0.84fr_1.16fr] xl:gap-12 [&>*]:min-w-0">
         <div>
           <BootLines />
+          <a
+            href={NOX_TOKEN ? PUMP_URL : "/token"}
+            target={NOX_TOKEN ? "_blank" : undefined}
+            rel="noreferrer"
+            className="mt-4 inline-flex items-center gap-2 rounded-full border border-teal/50 px-3.5 py-1.5 text-[12px] text-bone hover:bg-teal/10"
+          >
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-teal" />
+            {NOX_TOKEN ? (
+              <>$NOX is live on pump.fun</>
+            ) : (
+              <>
+                $NOX launches on pump.fun in <Countdown className="text-teal" />
+              </>
+            )}
+            <ArrowRight size={14} className="text-teal" />
+          </a>
           <h1 className="mt-5 text-[44px] font-bold leading-[1.02] tracking-[-0.02em] sm:text-[58px] xl:text-[58px] 2xl:text-[76px]">
             The safer wallet
             <br />
@@ -198,9 +216,16 @@ export default function Home() {
         <div className="panel overflow-hidden">
           <div className="flex items-center justify-between border-b border-line-2 px-6 py-4">
             <span className="text-[16px] font-medium tracking-[0.16em]">$NOX // HELD IN YOUR VAULT</span>
-            <Link href="/token" className="text-[11px] tracking-[0.14em] text-mute hover:text-teal">
-              TIERS →
-            </Link>
+            <span className="flex gap-4">
+              <Link href="/token" className="text-[11px] tracking-[0.14em] text-mute hover:text-teal">
+                TIERS →
+              </Link>
+              {NOX_TOKEN && (
+                <a href={PUMP_URL} target="_blank" rel="noreferrer" className="text-[11px] tracking-[0.14em] text-teal hover:underline">
+                  BUY →
+                </a>
+              )}
+            </span>
           </div>
           <div className="grid gap-px bg-line sm:grid-cols-3 [&>*]:min-w-0">
             {[

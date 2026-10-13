@@ -132,9 +132,9 @@ Safety never depends on the tier: recovery keys, the whitelist, delays and the E
 
 **Governance.** $NOX holders set the protocol parameters: tier thresholds, fees, the default validator for vault staking and treasury spending (see Governance and treasury).
 
-## Tokenomics (proposal)
+## Tokenomics
 
-Supply, launch method and allocation are not final; this section sets the principles and the decisions still open, with a recommendation for each.
+$NOX launches as a **fair launch on pump.fun** on 13 October 2026 at 18:00 UTC: no presale, no private round. The contract address is published only on www.nox-vault.com and @noxvaultHQ. The decisions that remain open are listed below with a recommendation for each.
 
 Principles:
 
@@ -144,8 +144,8 @@ Principles:
 
 | Decision | Options | Recommendation |
 | --- | --- | --- |
-| Launch method | Fair launch (bonding curve) or presale | Fair launch: no investor overhang, simpler under MiCA |
-| Total supply | Fixed at launch | Fixed, mint authority revoked |
+| Launch method | Fair launch (bonding curve) or presale | **Decided:** fair launch on pump.fun, no presale |
+| Total supply | Fixed at launch | **Decided:** 1,000,000,000 $NOX, fixed; mint and freeze authority revoked by pump.fun |
 | Team and treasury allocation | None, or a vested share | If any: a small share in a public vesting account, 12-month cliff |
 | Tier thresholds G and S | Absolute amounts | Set as a share of supply at launch, adjustable by governance |
 | Protocol fees | SOL creation fee and relay fee | 0.01 SOL creation, relay at cost plus a margin; both to treasury |

@@ -9,6 +9,15 @@ export const NETWORK = (process.env.NEXT_PUBLIC_NETWORK || "devnet") as "devnet"
 export const NOX_CA = NETWORK === "devnet" ? "9BGzxXGPpoQnFisTDGmEmaxy1hbzmd2yXSmivsfgbLA5" : "";
 export const NOX_CA_LABEL = NETWORK === "devnet" ? "tNOX · devnet test token" : "$NOX";
 export const NOX_CA_PLACEHOLDER = "soon";
+/**
+ * The real $NOX on Solana mainnet (fair launch on pump.fun). Set NEXT_PUBLIC_NOX_TOKEN at launch;
+ * until then the site counts down to NOX_LAUNCH_AT. Tiers on devnet keep using tNOX above.
+ */
+export const NOX_TOKEN = process.env.NEXT_PUBLIC_NOX_TOKEN || "";
+export const NOX_LAUNCH_AT = process.env.NEXT_PUBLIC_NOX_LAUNCH_AT || "2026-10-13T20:00:00+02:00";
+export const PUMP_URL = NOX_TOKEN ? `https://pump.fun/coin/${NOX_TOKEN}` : "https://pump.fun";
+export const CHART_URL = NOX_TOKEN ? `https://dexscreener.com/solana/${NOX_TOKEN}` : "";
+export const SOLSCAN_TOKEN_URL = NOX_TOKEN ? `https://solscan.io/token/${NOX_TOKEN}` : "";
 /** Test $NOX the devnet faucet sends per request (whole tokens). */
 export const FAUCET_AMOUNT = 100_000;
 

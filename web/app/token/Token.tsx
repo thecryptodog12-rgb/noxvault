@@ -5,7 +5,8 @@ import { useSearchParams } from "next/navigation";
 import { PublicKey } from "@solana/web3.js";
 import { Copy, Label, Note, PageHead, Panel } from "@/components/ui";
 import TierBadge from "@/components/vault/TierBadge";
-import { NETWORK, NOX_CA, NOX_CA_LABEL, explorerUrl, FAUCET_AMOUNT } from "@/lib/config";
+import { NETWORK, NOX_CA, NOX_CA_LABEL, explorerUrl, FAUCET_AMOUNT, NOX_TOKEN, PUMP_URL, CHART_URL, SOLSCAN_TOKEN_URL } from "@/lib/config";
+import { Countdown, launchClock } from "@/components/Launch";
 import { noxAmount, useProtocol, useVaultTier } from "@/lib/nox";
 import { errMsg, sol } from "@/lib/format";
 
@@ -75,6 +76,55 @@ export default function Token() {
         }
         sub="$NOX unlocks features and priority by the amount held inside your vault — where it is itself behind hash-based keys. The program checks it on-chain; safety features never depend on it."
       />
+
+      <Panel title="$NOX on solana // fair launch on pump.fun">
+        <div className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+          {NOX_TOKEN ? (
+            <div className="min-w-0">
+              <Label>contract address</Label>
+              <div className="mt-2 flex items-center gap-3 break-all text-[14px] text-bone">
+                {NOX_TOKEN} <Copy value={NOX_TOKEN} />
+              </div>
+              <p className="mt-2 text-[12px] text-mute">Always check this address. Anything else calling itself $NOX is not ours.</p>
+            </div>
+          ) : (
+            <div className="min-w-0">
+              <Label>launching on pump.fun · {launchClock()}</Label>
+              <div className="mt-2 text-[28px] font-bold text-teal sm:text-[34px]">
+                <Countdown />
+              </div>
+              <p className="mt-1 text-[12px] text-mute">
+                Fair launch: no presale. The contract address appears here and on{" "}
+                <a href="https://x.com/noxvaultHQ" target="_blank" rel="noreferrer" className="underline">
+                  @noxvaultHQ
+                </a>{" "}
+                at launch, nowhere else.
+              </p>
+            </div>
+          )}
+          <div className="flex shrink-0 flex-wrap gap-3">
+            <a href={PUMP_URL} target="_blank" rel="noreferrer" className={`btn ${NOX_TOKEN ? "" : "pointer-events-none opacity-40"}`} aria-disabled={!NOX_TOKEN}>
+              buy on pump.fun
+            </a>
+            {CHART_URL && (
+              <a href={CHART_URL} target="_blank" rel="noreferrer" className="btn ghost">
+                chart
+              </a>
+            )}
+            {SOLSCAN_TOKEN_URL && (
+              <a href={SOLSCAN_TOKEN_URL} target="_blank" rel="noreferrer" className="btn ghost">
+                solscan
+              </a>
+            )}
+          </div>
+        </div>
+        {NETWORK !== "mainnet-beta" && (
+          <p className="border-t border-line px-4 py-3 text-[11.5px] text-dim sm:px-5">
+            The vaults run on {NETWORK} for now, so tiers there use the free test token tNOX below. Real $NOX tiers start when Noxvault goes to
+            mainnet.
+          </p>
+        )}
+      </Panel>
 
       <div className="grid gap-6 xl:grid-cols-[1.3fr_1fr] [&>*]:min-w-0">
         <Panel title={`tiers // live from the protocol account${protocol === null ? " (not set on this network)" : ""}`}>

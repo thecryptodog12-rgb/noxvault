@@ -6,7 +6,8 @@ import { AlertTriangle, ArrowRight, ChevronDown, Menu, X as Close } from "lucide
 import { Mark, Wordmark } from "./Logo";
 import WalletButton from "./WalletButton";
 import { Copy } from "./ui";
-import { NETWORK, NOX_CA, NOX_CA_LABEL, NOX_CA_PLACEHOLDER, X_URL } from "@/lib/config";
+import { NETWORK, NOX_TOKEN, PUMP_URL, X_URL } from "@/lib/config";
+import { Countdown } from "./Launch";
 
 const NAV = [
   { href: "/", label: "Home" },
@@ -53,9 +54,20 @@ function NetworkChip() {
 function CaChip() {
   return (
     <span className="inline-flex min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-full border border-line-2 px-2.5 py-1 text-[10.5px] tracking-[0.1em] text-mute">
-      <span className="shrink-0 text-dim">{NOX_CA ? NOX_CA_LABEL : "$NOX CA"}</span>
-      <span className="truncate text-bone">{NOX_CA || NOX_CA_PLACEHOLDER}</span>
-      {NOX_CA && <Copy value={NOX_CA} />}
+      <span className="shrink-0 text-dim">$NOX CA</span>
+      {NOX_TOKEN ? (
+        <>
+          <span className="truncate text-bone">{NOX_TOKEN}</span>
+          <Copy value={NOX_TOKEN} />
+          <a href={PUMP_URL} target="_blank" rel="noreferrer" className="shrink-0 text-[10px] uppercase tracking-[0.18em] text-teal hover:underline">
+            [buy]
+          </a>
+        </>
+      ) : (
+        <span className="truncate text-bone">
+          pump.fun launch in <Countdown className="text-teal" />
+        </span>
+      )}
     </span>
   );
 }
