@@ -17,6 +17,8 @@ const nextConfig = {
     // app and the SDK share one copy of @solana/web3.js, anchor, etc.
     config.resolve.modules = [path.resolve(here, "node_modules"), "node_modules"];
     config.resolve.fallback = { ...config.resolve.fallback, fs: false, path: false, os: false, crypto: false };
+    // WalletConnect's logger optionally requires these; they are not needed in the browser.
+    config.externals = [...(config.externals ?? []), "pino-pretty", "lokijs", "encoding"];
     return config;
   },
 };
