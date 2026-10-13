@@ -31,7 +31,7 @@ export default function MyVaults() {
   const [scanning, setScanning] = useState(false);
   const [scanErr, setScanErr] = useState<string | null>(null);
   const [scanned, setScanned] = useState(false);
-  const [roots, setRoots] = useState<{ n: number; root: Uint8Array }[]>([]);
+  const [unfound, setUnfound] = useState<{ n: number; signer: Signer }[]>([]);
 
   const scan = useCallback(
     async (m: Uint8Array) => {
@@ -39,19 +39,19 @@ export default function MyVaults() {
       setScanErr(null);
       setScanned(false);
       setFound([]);
-      setRoots([]);
+      setUnfound([]);
       const out: Found[] = [];
-      const seen: { n: number; root: Uint8Array }[] = [];
+      const seen: { n: number; signer: Signer }[] = [];
       try {
         for (let n = 0; n < MAX_NUMBERS; n++) {
           const signer = await getSigner(m, n, 0, (done, total) => setProgress({ n, done, total }));
-          seen.push({ n, root: signer.pub.root });
+          seen.push({ n, signer });
           const states = await withRetry(() => findVaultsFor(program, signer));
           if (!states.length) break;
           for (const { state, slot } of states) out.push({ n, signer: inSlot(signer, slot), state });
           setFound([...out]);
         }
-        setRoots(seen);
+        setUnfound(seen);
         setScanned(true);
       } catch (e) {
         setScanErr(errMsg(e));
@@ -151,7 +151,7 @@ export default function MyVaults() {
             </div>
           </Panel>
 
-          {scanned && <PendingVaults roots={roots} onCreated={() => scan(master)} />}
+          {scanned && <PendingVaults signers={unfound} onCreated={() => scan(master)} />}
 
           {found.map((f) => (
             <VaultView key={f.state.vault.toBase58()} vault={f.state.vault} initialState={f.state} signer={f.signer} title={`VAULT #${f.n}`} />

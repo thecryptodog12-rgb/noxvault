@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import type { PublicKey } from "@solana/web3.js";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
-import { fetchState, initVaultIx, vaultOf } from "@nox/sdk/client";
+import { fetchState, initVaultIx, makeConfig, vaultOf, type Signer } from "@nox/sdk/client";
 import type { Config } from "@nox/sdk/wots";
 import { Copy, Note, Panel } from "@/components/ui";
 import { useNox } from "@/lib/hooks";
@@ -23,7 +23,7 @@ interface Pending {
  * Vault addresses this device set up in /create but that were never initialized on chain.
  * Their address already exists, so funds sent there are safe; they just can't be used yet.
  */
-export default function PendingVaults({ roots, onCreated }: { roots: { n: number; root: Uint8Array }[]; onCreated: () => void }) {
+export default function PendingVaults({ signers, onCreated }: { signers: { n: number; signer: Signer }[]; onCreated: () => void }) {
   const { connection, program, wallet } = useNox();
   const { setVisible } = useWalletModal();
   const [list, setList] = useState<Pending[]>([]);
@@ -32,8 +32,15 @@ export default function PendingVaults({ roots, onCreated }: { roots: { n: number
 
   const load = useCallback(async () => {
     const out: Pending[] = [];
-    for (const { n, root } of roots) {
-      for (const { vault, config } of savedConfigsFor(hex(root))) {
+    for (const { n, signer } of signers) {
+      // Settings saved by /create on this site, plus the default settings (no extra rules), which
+      // also covers a vault set up on another device or domain.
+      const def = makeConfig(signer);
+      const candidates = [{ vault: vaultOf(def, program.programId), config: def }, ...savedConfigsFor(hex(signer.pub.root))];
+      const seen = new Set<string>();
+      for (const { vault, config } of candidates) {
+        if (seen.has(vault.toBase58())) continue;
+        seen.add(vault.toBase58());
         if (!vaultOf(config, program.programId).equals(vault)) continue;
         if (await fetchState(program, vault)) continue;
         const balance = await connection.getBalance(vault, "confirmed");
@@ -42,7 +49,7 @@ export default function PendingVaults({ roots, onCreated }: { roots: { n: number
       }
     }
     setList(out);
-  }, [roots, program, connection]);
+  }, [signers, program, connection]);
 
   useEffect(() => {
     load().catch(() => setList([]));
@@ -69,7 +76,7 @@ export default function PendingVaults({ roots, onCreated }: { roots: { n: number
     <Panel title="not created yet">
       <div className="flex flex-col gap-4 p-4 sm:p-5">
         <p className="text-[12.5px] leading-6 text-mute">
-          You set up these vaults on this device but never finished creating them. The address already exists and the funds on it are
+          These vaults were set up with your words but never finished. The address already exists and the funds on it are
           safe, but you can only use them once the vault is created.
         </p>
         {list.map((p) => (
