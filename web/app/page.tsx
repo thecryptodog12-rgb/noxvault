@@ -1,7 +1,16 @@
 import Link from "next/link";
-import { ArrowRight, Boxes, Check, FileSignature, FlaskConical, Lock, RefreshCw } from "lucide-react";
+import { ArrowRight, Atom, Boxes, Check, EyeOff, FileSignature, FlaskConical, Gauge, LifeBuoy, Lock, RefreshCw, ScrollText, ShieldCheck } from "lucide-react";
 import BootLines from "@/components/home/BootLines";
 import ConsolePanel from "@/components/home/ConsolePanel";
+
+const PLAIN = [
+  { t: "Safer wallet", Icon: ShieldCheck, d: "Keep your SOL and tokens in a vault with your own rules: trusted addresses, waiting times and daily limits." },
+  { t: "Quantum-proof", Icon: Atom, d: "Ordinary wallets can be cracked by a future quantum computer. Noxvault signs with hash-based keys that can't be." },
+  { t: "Recovery", Icon: LifeBuoy, d: "Lost access? A backup key held by you or someone you trust can stop a theft and get your funds back." },
+  { t: "Privacy", Icon: EyeOff, d: "Your vault never shows a public key, only a hash. Give each payer their own invoice address." },
+  { t: "Inheritance", Icon: ScrollText, d: "Set heirs once. If you are inactive long enough, your funds go to them automatically." },
+  { t: "Limits & automation", Icon: Gauge, d: "Recurring payments and spending budgets for apps and bots, without handing over your keys." },
+];
 
 const STEPS = [
   {
@@ -59,13 +68,13 @@ export default function Home() {
         <div>
           <BootLines />
           <h1 className="mt-5 text-[44px] font-bold leading-[1.02] tracking-[-0.02em] sm:text-[58px] xl:text-[58px] 2xl:text-[76px]">
-            Lock your SOL
+            The safer wallet
             <br />
-            behind <span className="text-teal">hashes.</span>
+            for <span className="text-teal">Solana.</span>
           </h1>
           <p className="mt-6 max-w-[600px] text-[14.5px] leading-7 text-bone/85 sm:text-[16px]">
-            A hash-based vault for Solana. Withdrawals are authorized by one-time WOTS+ signatures instead of standard wallet
-            keys.
+            Noxvault is a vault for your SOL and tokens that stays safe, even against quantum computers. Add a backup key,
+            trusted addresses, limits and an inheritance plan, all enforced on-chain.
           </p>
           <div className="mt-8 flex flex-wrap gap-4">
             <Link href="/create" className="btn !px-10 !py-3.5 !text-[14px]">
@@ -77,6 +86,22 @@ export default function Home() {
           </div>
         </div>
         <ConsolePanel />
+      </section>
+
+      {/* in plain words */}
+      <section className="panel overflow-hidden">
+        <div className="border-b border-line-2 px-6 py-4 text-[16px] font-medium tracking-[0.16em]">WHAT YOU GET</div>
+        <div className="grid gap-px bg-line sm:grid-cols-2 xl:grid-cols-3 [&>*]:min-w-0">
+          {PLAIN.map(({ t, Icon, d }) => (
+            <div key={t} className="flex gap-4 bg-ink-2 px-6 py-5">
+              <Icon size={26} strokeWidth={1.4} className="mt-0.5 shrink-0 text-teal" />
+              <div className="min-w-0">
+                <div className="text-[14.5px] font-bold">{t}</div>
+                <p className="mt-1.5 text-[12.5px] leading-6 text-mute">{d}</p>
+              </div>
+            </div>
+          ))}
+        </div>
       </section>
 
       {/* steps */}

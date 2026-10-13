@@ -8,8 +8,8 @@ import "./globals.css";
 const mono = JetBrains_Mono({ subsets: ["latin"], weight: ["400", "500", "700", "800"], variable: "--font-jetbrains" });
 
 export const metadata: Metadata = {
-  title: "Noxvault — hash-based vaults for Solana",
-  description: "Lock SOL and SPL tokens behind a WOTS+ hash-based one-time signature, generated in your browser.",
+  title: "Noxvault — the safer, quantum-proof wallet for Solana",
+  description: "A safer wallet for SOL and tokens: quantum-proof keys, recovery, privacy, inheritance and spending limits, enforced on-chain.",
   icons: { icon: "/icon.svg" },
 };
 
