@@ -8,6 +8,7 @@ import { Empty, Label, Note, PageHead, Panel } from "@/components/ui";
 import SecretInput from "@/components/SecretInput";
 import TreeProgress from "@/components/vault/TreeProgress";
 import VaultView from "@/components/vault/VaultView";
+import PendingVaults from "@/components/vault/PendingVaults";
 import { useNox } from "@/lib/hooks";
 import { getSigner } from "@/lib/trees";
 import { errMsg } from "@/lib/format";
@@ -30,6 +31,7 @@ export default function MyVaults() {
   const [scanning, setScanning] = useState(false);
   const [scanErr, setScanErr] = useState<string | null>(null);
   const [scanned, setScanned] = useState(false);
+  const [roots, setRoots] = useState<{ n: number; root: Uint8Array }[]>([]);
 
   const scan = useCallback(
     async (m: Uint8Array) => {
@@ -37,15 +39,19 @@ export default function MyVaults() {
       setScanErr(null);
       setScanned(false);
       setFound([]);
+      setRoots([]);
       const out: Found[] = [];
+      const seen: { n: number; root: Uint8Array }[] = [];
       try {
         for (let n = 0; n < MAX_NUMBERS; n++) {
           const signer = await getSigner(m, n, 0, (done, total) => setProgress({ n, done, total }));
+          seen.push({ n, root: signer.pub.root });
           const states = await withRetry(() => findVaultsFor(program, signer));
           if (!states.length) break;
           for (const { state, slot } of states) out.push({ n, signer: inSlot(signer, slot), state });
           setFound([...out]);
         }
+        setRoots(seen);
         setScanned(true);
       } catch (e) {
         setScanErr(errMsg(e));
@@ -137,13 +143,15 @@ export default function MyVaults() {
               )}
               {scanned && found.length === 0 && (
                 <Empty title="no vaults found">
-                  These words have no initialized vaults on {NETWORK}. <Link href="/create" className="underline">Create one</Link>, or open
+                  These words have no created vaults on {NETWORK}. <Link href="/create" className="underline">Create one</Link>, or open
                   one by its address below.
                 </Empty>
               )}
               {(scanErr || scanned) && <OpenByAddress master={master} onFound={(f) => setFound((x) => (x.some((y) => y.state.vault.equals(f.state.vault)) ? x : [...x, f]))} />}
             </div>
           </Panel>
+
+          {scanned && <PendingVaults roots={roots} onCreated={() => scan(master)} />}
 
           {found.map((f) => (
             <VaultView key={f.state.vault.toBase58()} vault={f.state.vault} initialState={f.state} signer={f.signer} title={`VAULT #${f.n}`} />
