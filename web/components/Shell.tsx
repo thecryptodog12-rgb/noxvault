@@ -209,15 +209,15 @@ export default function Shell({ children }: { children: ReactNode }) {
       </main>
 
       <footer className="border-t border-line bg-ink/40">
-        <div className="mx-auto grid max-w-[1600px] items-center gap-6 px-4 py-7 md:px-10 lg:grid-cols-[1fr_auto_1fr] xl:px-16">
+        <div className="mx-auto grid max-w-[1600px] items-center justify-items-center gap-6 px-4 py-7 text-center lg:justify-items-stretch lg:text-left md:px-10 lg:grid-cols-[1fr_auto_1fr] xl:px-16">
           <div className="flex items-center gap-5">
-            <span className="h-[2px] w-10 bg-teal" />
+            <span className="hidden h-[2px] w-10 bg-teal lg:block" />
             <span className="text-[12px] font-medium leading-5 tracking-[0.2em] text-bone">
               DIFFERENT KEYS
               <br />A SAFER TOMORROW
             </span>
           </div>
-          <div className="flex items-center gap-4 lg:justify-center">
+          <div className="flex items-center gap-4 text-left lg:justify-center">
             <svg width="34" height="40" viewBox="0 0 34 40" fill="none" aria-hidden>
               <path d="M13 3 3 20l10 17M21 3l10 17-10 17" stroke="#e6f0ef" strokeWidth="1.5" />
             </svg>
@@ -231,7 +231,7 @@ export default function Shell({ children }: { children: ReactNode }) {
           </div>
           <Link
             href="/risks"
-            className="group flex items-center gap-4 rounded-md border border-line-2 bg-ink-2/80 px-5 py-3.5 transition-colors hover:border-teal/50 lg:justify-self-end"
+            className="group flex w-full items-center gap-4 rounded-md border border-line-2 bg-ink-2/80 px-5 py-3.5 text-left transition-colors hover:border-teal/50 lg:w-auto lg:justify-self-end"
           >
             <AlertTriangle size={22} className="shrink-0 text-warn" strokeWidth={1.6} />
             <span className="min-w-0">
@@ -244,9 +244,9 @@ export default function Shell({ children }: { children: ReactNode }) {
           </Link>
         </div>
         <div className="border-t border-line">
-          <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-3 px-4 py-3 text-[10.5px] text-dim md:px-10 xl:px-16">
+          <div className="mx-auto flex max-w-[1600px] flex-col items-center gap-3 px-4 py-3 text-center text-[10.5px] text-dim sm:flex-row sm:flex-wrap sm:justify-between sm:text-left md:px-10 xl:px-16">
             <span>secrets are generated and used in this browser only</span>
-            <span className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+            <span className="flex min-w-0 max-w-full flex-wrap items-center justify-center gap-2">
               <NetworkChip />
               <CaChip />
             </span>

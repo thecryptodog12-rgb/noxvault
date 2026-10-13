@@ -149,7 +149,19 @@ Principles:
 | Team and treasury allocation | None, or a vested share | If any: a small share in a public vesting account, 12-month cliff |
 | Tier thresholds G and S | Absolute amounts | Set as a share of supply at launch, adjustable by governance |
 | Protocol fees | SOL creation fee and relay fee | 0.01 SOL creation, relay at cost plus a margin; both to treasury |
-| Treasury use | Canary bounty, audits, keeper and relayer costs, development | In that order; buybacks only after legal review |
+| Treasury use | Canary bounty, audits, keeper and relayer costs, development, buyback and burn | See The flywheel; burns are public and on-chain |
+
+## The flywheel
+
+Every part of the loop is usage, not a promise of profit: $NOX is bought to unlock features and burned when fees come in.
+
+1. **Buyback and burn.** 50% of the pump.fun creator fees, and after mainnet 50% of the protocol fees (vault creation, relayer), buy $NOX on the open market and burn it. Every burn is a public transaction from the published treasury address, listed on www.nox-vault.com/token.
+2. **Held, not traded.** Tiers count only $NOX inside the vault itself, behind hash-based keys. Relayer and keeper perks (free relaying, Q-Day priority) read the vault's current balance, and new schedules and budgets need the tier at the moment they are created; selling below the threshold loses them. Features already enabled keep working, so heirs and co-signers are never locked out.
+3. **Pay fees in $NOX (mainnet).** Fees paid in $NOX get a discount; that $NOX is burned.
+4. **Lock bonus (after mainnet).** $NOX locked in the vault for 3, 6 or 12 months counts for more toward a tier, so committed users need fewer tokens and the locked supply cannot be sold.
+5. **A growing canary.** The other half of the fees funds the canary bounty, audits, and the relayer and keeper. A bigger bounty is a louder alarm.
+
+$NOX gives holders no claim on fees or revenue: nothing is paid out to holders. Percentages are set by the team until governance takes them over, and every change is announced before it applies.
 
 ## Governance and treasury
 
@@ -158,7 +170,7 @@ The vault logic becomes immutable at mainnet; only a small set of protocol param
 - **Immutable:** signature verification, approvals, vault rules, testament, Escape Hatch and canary logic. The program's upgrade authority is burned once the audited version is deployed.
 - **Adjustable parameters:** the $NOX mint, tier thresholds G and S, the creation and relay fees, the treasury address. They live in one protocol account; until governance launches, a multisig of the team controls it, and every change is public on-chain.
 - **Governance:** $NOX holders vote on parameter changes and treasury spending through a standard Solana governance program (SPL Governance / Realms), with $NOX held in vaults counting as voting power.
-- **Treasury:** receives protocol fees in SOL. Its first uses are the canary bounty (a larger bounty is a louder, more credible alarm), independent audits, and the running costs of the public relayer and keeper.
+- **Treasury:** receives protocol fees in SOL. Half of it buys back and burns $NOX (see The flywheel); the other half funds the canary bounty (a larger bounty is a louder, more credible alarm), independent audits, and the running costs of the public relayer and keeper.
 
 ## Roadmap
 

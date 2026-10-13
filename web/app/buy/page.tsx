@@ -143,8 +143,8 @@ export default function Page() {
         </p>
       </Panel>
 
-      <div className="flex flex-wrap gap-3">
-        <a href={PUMP_URL} target="_blank" rel="noreferrer" className={`btn ${NOX_TOKEN ? "" : "pointer-events-none opacity-40"}`} aria-disabled={!NOX_TOKEN}>
+      <div className="grid grid-cols-2 gap-3 sm:flex sm:flex-wrap [&>*]:justify-center">
+        <a href={PUMP_URL} target="_blank" rel="noreferrer" className={`btn col-span-2 ${NOX_TOKEN ? "" : "pointer-events-none opacity-40"}`} aria-disabled={!NOX_TOKEN}>
           buy on pump.fun
         </a>
         <Link href="/token" className="btn ghost">

@@ -94,11 +94,11 @@ export default function Home() {
             Noxvault is a vault for your SOL and tokens that stays safe, even against quantum computers. Add a backup key,
             trusted addresses, limits and an inheritance plan, all enforced on-chain.
           </p>
-          <div className="mt-8 flex flex-wrap gap-4">
-            <Link href="/create" className="btn !px-10 !py-3.5 !text-[14px]">
+          <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:gap-4">
+            <Link href="/create" className="btn justify-center !px-10 !py-3.5 !text-[14px]">
               Create a Vault <ArrowRight size={17} />
             </Link>
-            <Link href="/keylab" className="btn ghost !border-bone/50 !px-9 !py-3.5 !text-[14px]">
+            <Link href="/keylab" className="btn ghost justify-center !border-bone/50 !px-9 !py-3.5 !text-[14px]">
               <FlaskConical size={17} strokeWidth={1.6} /> Try the Key Lab
             </Link>
           </div>
@@ -143,7 +143,22 @@ export default function Home() {
       <section className="grid gap-3 xl:grid-cols-[1.12fr_0.88fr] [&>*]:min-w-0">
         <div className="panel overflow-hidden">
           <div className="border-b border-line-2 px-6 py-4 text-[16px] font-medium tracking-[0.16em]">WALLET vs NOXVAULT</div>
-          <div className="overflow-x-auto">
+          <dl className="divide-y divide-line sm:hidden">
+            <div className="grid grid-cols-2 gap-3 px-5 py-2.5 text-[10px] tracking-[0.14em] text-dim">
+              <span>STANDARD WALLET</span>
+              <span className="text-teal">NOXVAULT</span>
+            </div>
+            {ROWS.map(([k, a, b]) => (
+              <div key={k} className="px-5 py-3.5">
+                <dt className="text-[10.5px] tracking-[0.14em] text-dim">{k.toUpperCase()}</dt>
+                <dd className="mt-1.5 grid grid-cols-2 gap-3 text-[12px] leading-5">
+                  <span className="text-mute">{a}</span>
+                  <span className="text-teal">{b}</span>
+                </dd>
+              </div>
+            ))}
+          </dl>
+          <div className="hidden overflow-x-auto sm:block">
             <table className="tbl min-w-[600px] whitespace-nowrap text-[12px] [&_td]:!px-3.5 [&_td]:!py-[9px] [&_th]:!px-3.5">
               <thead>
                 <tr>
@@ -170,13 +185,13 @@ export default function Home() {
             <span className="text-[16px] font-medium tracking-[0.16em]">WHERE WE ARE</span>
             <span className="text-[10.5px] tracking-[0.14em] text-dim">{"ROADMAP // v2"}</span>
           </div>
-          <div className="flex flex-1 items-center overflow-x-auto">
-            <ol className="grid w-full min-w-[520px] grid-cols-4 px-6 py-6">
+          <div className="flex flex-1 items-center">
+            <ol className="grid w-full grid-cols-2 gap-y-6 px-6 py-6 sm:grid-cols-4 sm:gap-y-0">
               {ROADMAP.map((r, i) => (
                 <li key={r.n} className="relative">
                   {i < ROADMAP.length - 1 && (
                     <span
-                      className={`absolute left-9 right-1 top-[13px] border-t border-dashed ${r.state === "done" ? "border-teal" : "border-line-2"}`}
+                      className={`absolute left-9 right-1 top-[13px] hidden border-t sm:block border-dashed ${r.state === "done" ? "border-teal" : "border-line-2"}`}
                     />
                   )}
                   <span
@@ -214,9 +229,9 @@ export default function Home() {
       {/* $NOX + whitepaper */}
       <section className="grid gap-3 xl:grid-cols-[1.4fr_1fr] [&>*]:min-w-0">
         <div className="panel overflow-hidden">
-          <div className="flex items-center justify-between border-b border-line-2 px-6 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-line-2 px-6 py-4">
             <span className="text-[16px] font-medium tracking-[0.16em]">$NOX // HELD IN YOUR VAULT</span>
-            <span className="flex gap-4">
+            <span className="flex shrink-0 gap-4">
               <Link href="/token" className="text-[11px] tracking-[0.14em] text-mute hover:text-teal">
                 TIERS →
               </Link>

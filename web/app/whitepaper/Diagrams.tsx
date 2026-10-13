@@ -147,3 +147,23 @@ export function RoadmapDiagram() {
     </Frame>
   );
 }
+
+export function FlywheelDiagram() {
+  const w = 230;
+  const h = 64;
+  return (
+    <Frame title="the flywheel // fees buy back and burn $NOX" w={600} h={290} caption="Usage pays fees, fees burn $NOX, tiers keep $NOX in vaults. Nothing is paid out to holders.">
+      <Box x={20} y={20} w={w} h={h} n="01" title="more vaults" sub="fees in SOL" accent />
+      <Box x={350} y={20} w={w} h={h} n="02" title="buy back + burn" sub="50% of every fee" accent />
+      <Box x={350} y={200} w={w} h={h} n="03" title="less $NOX supply" sub="burned for good" />
+      <Box x={20} y={200} w={w} h={h} n="04" title="$NOX held in vaults" sub="tiers, priority" />
+      <Arrow x1={20 + w + 6} y1={52} x2={344} y2={52} />
+      <Arrow x1={465} y1={20 + h + 6} x2={465} y2={194} />
+      <Arrow x1={344} y1={232} x2={20 + w + 6} y2={232} />
+      <Arrow x1={135} y1={194} x2={135} y2={20 + h + 6} />
+      <text x={300} y={150} textAnchor="middle" fill={C.mute} fontSize={11} fontFamily="var(--font-mono)">
+        other 50%: canary, audits, keeper
+      </text>
+    </Frame>
+  );
+}

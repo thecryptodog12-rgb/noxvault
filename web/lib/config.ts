@@ -18,6 +18,10 @@ export const NOX_LAUNCH_AT = process.env.NEXT_PUBLIC_NOX_LAUNCH_AT || "2026-10-1
 export const PUMP_URL = NOX_TOKEN ? `https://pump.fun/coin/${NOX_TOKEN}` : "https://pump.fun";
 export const CHART_URL = NOX_TOKEN ? `https://dexscreener.com/solana/${NOX_TOKEN}` : "";
 export const SOLSCAN_TOKEN_URL = NOX_TOKEN ? `https://solscan.io/token/${NOX_TOKEN}` : "";
+/** Wallet that receives the creator and protocol fees and sends the buyback-and-burn transactions. */
+export const TREASURY = process.env.NEXT_PUBLIC_TREASURY || "";
+/** Share of fees that buys back and burns $NOX (docs/WHITEPAPER.md, The flywheel). */
+export const BURN_SHARE = 50;
 /** Test $NOX the devnet faucet sends per request (whole tokens). */
 export const FAUCET_AMOUNT = 100_000;
 

@@ -96,3 +96,23 @@ Noxvault: the safer, quantum-proof wallet for Solana. $NOX fair launch on pump.f
 ## Disclaimer reply (under the launch post)
 
 Noxvault runs on devnet and is unaudited; mainnet follows an audit. $NOX is a utility token for the protocol, not an investment. DYOR.
+
+---
+
+## Post: where the fees go (the flywheel)
+
+Where do Noxvault fees go? 🔁
+
+50% of every fee buys $NOX on the market and burns it.
+→ pump.fun creator fees: from day one
+→ vault + relayer fees: from mainnet
+
+The other 50%: canary bounty, audits, relayer and keeper.
+
+Tiers only count $NOX inside your vault. Sell below the line, lose the perks.
+
+Every burn is public, on-chain, from one wallet.
+
+www.nox-vault.com/token
+
+*(image: screenshot of the flywheel on /whitepaper#the-flywheel)*

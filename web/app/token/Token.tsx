@@ -5,11 +5,18 @@ import { useSearchParams } from "next/navigation";
 import { PublicKey } from "@solana/web3.js";
 import { Copy, Label, Note, PageHead, Panel } from "@/components/ui";
 import TierBadge from "@/components/vault/TierBadge";
-import { NETWORK, NOX_CA, NOX_CA_LABEL, explorerUrl, FAUCET_AMOUNT, NOX_TOKEN, PUMP_URL, CHART_URL, SOLSCAN_TOKEN_URL } from "@/lib/config";
+import { NETWORK, NOX_CA, NOX_CA_LABEL, explorerUrl, FAUCET_AMOUNT, NOX_TOKEN, PUMP_URL, CHART_URL, SOLSCAN_TOKEN_URL, TREASURY, BURN_SHARE } from "@/lib/config";
 import { Countdown, launchClock } from "@/components/Launch";
 import MarketStats from "@/components/Market";
 import { noxAmount, useProtocol, useVaultTier } from "@/lib/nox";
 import { errMsg, sol } from "@/lib/format";
+
+const LOOP = [
+  { k: "01", t: "use", d: "People create vaults and relay actions. That costs a small fee in SOL; pump.fun trading adds creator fees." },
+  { k: "02", t: "burn", d: `${BURN_SHARE}% of every fee buys $NOX on the market and burns it. Public transactions, from one public wallet.` },
+  { k: "03", t: "hold", d: "Tiers count only $NOX inside your vault. Sell below the line and you lose free relaying and Q-Day priority." },
+  { k: "04", t: "protect", d: `The other ${100 - BURN_SHARE}% funds the canary bounty, audits, and the relayer and keeper.` },
+];
 
 const ROWS = [
   { t: "Free", need: "0", unlocks: "Vault, withdrawals, staking, whitelist and delays, recovery key, Escape Hatch, relayer at the standard fee", fee: "one-time creation fee" },
@@ -131,9 +138,53 @@ export default function Token() {
         )}
       </Panel>
 
+      <Panel title="where the fees go // the flywheel">
+        <div className="grid gap-px bg-line sm:grid-cols-2 xl:grid-cols-4">
+          {LOOP.map((s) => (
+            <div key={s.k} className="bg-ink p-4 sm:p-5">
+              <div className="text-[11px] text-dim">{s.k}</div>
+              <div className="mt-1 text-[18px] font-bold uppercase text-teal">{s.t}</div>
+              <p className="mt-2 text-[12.5px] leading-relaxed text-mute">{s.d}</p>
+            </div>
+          ))}
+        </div>
+        <div className="flex flex-col gap-2 border-t border-line px-4 py-3 text-[11.5px] text-dim sm:px-5">
+          {TREASURY ? (
+            <span className="flex flex-wrap items-center gap-2 break-all">
+              treasury and burns:{" "}
+              <a href={`https://solscan.io/account/${TREASURY}`} target="_blank" rel="noreferrer" className="underline">
+                {TREASURY}
+              </a>{" "}
+              <Copy value={TREASURY} />
+            </span>
+          ) : (
+            <span>The treasury wallet is published here after launch; every burn is a public transaction from it.</span>
+          )}
+          <span>
+            $NOX is a utility: nothing is paid out to holders. Details in the{" "}
+            <Link href="/whitepaper" className="underline">
+              whitepaper
+            </Link>
+            .
+          </span>
+        </div>
+      </Panel>
+
       <div className="grid gap-6 xl:grid-cols-[1.3fr_1fr] [&>*]:min-w-0">
         <Panel title={`tiers // live from the protocol account${protocol === null ? " (not set on this network)" : ""}`}>
-          <div className="overflow-x-auto">
+          <div className="divide-y divide-line sm:hidden">
+            {ROWS.map((r, i) => (
+              <div key={r.t} className="px-4 py-3.5">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className={["text-mute", "text-teal", "text-warn"][i] + " font-bold"}>{r.t}</span>
+                  <span className="text-[12px] text-bone">{amount(r.need)} $NOX</span>
+                </div>
+                <p className="mt-1.5 text-[12px] leading-5 text-mute">{r.unlocks}</p>
+                <p className="mt-1 text-[11px] text-dim">{i === 0 && protocol ? `${sol(protocol.createFee)} SOL at creation` : r.fee}</p>
+              </div>
+            ))}
+          </div>
+          <div className="hidden overflow-x-auto sm:block">
             <table className="tbl min-w-[560px]">
               <thead>
                 <tr>

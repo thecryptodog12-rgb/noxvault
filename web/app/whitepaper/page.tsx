@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Metadata } from "next";
 import { Marked, type Tokens } from "marked";
-import { DesignFlow, EscapeFlow, RoadmapDiagram } from "./Diagrams";
+import { DesignFlow, EscapeFlow, RoadmapDiagram, FlywheelDiagram } from "./Diagrams";
 import PrintButton from "./PrintButton";
 
 export const metadata: Metadata = {
@@ -67,6 +67,7 @@ const DIAGRAMS: Record<string, React.ReactNode> = {
   design: <DesignFlow />,
   "escape-hatch-canary-and-registry": <EscapeFlow />,
   roadmap: <RoadmapDiagram />,
+  "the-flywheel": <FlywheelDiagram />,
 };
 
 export default function WhitepaperPage() {
