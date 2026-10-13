@@ -217,6 +217,8 @@ The summaries of regulation above are general and not legal advice.
 | Program (devnet) | 8iDqwPFRxr2rHiuieVhGL4jdTT7XPE5qPAReS6VzTPw4 |
 | Quantum canary | 6S396A19NFHWdABtBP17tjfFCZA9LJuuvuPK7hWzj7w9, the first i = 0 with SHA256("noxvault/canary/v1" ‖ u32le(i)) on the ed25519 curve |
 | Test $NOX (devnet) | tNOX 9BGzxXGPpoQnFisTDGmEmaxy1hbzmd2yXSmivsfgbLA5; Guardian 10,000, Sentinel 100,000 |
+| Website | https://www.nox-vault.com |
+| X | https://x.com/noxvaultHQ |
 
 Glossary: **WOTS+** — Winternitz one-time signature with per-hash tweaks; **Merkle tree** — a hash tree whose root commits to all its leaves; **leaf** — one one-time key; **approval** — a verified signature recorded on-chain; **keeper** — anyone who runs permissionless follow-up instructions; **relayer** — anyone who pays network fees for a signed action; **Q-Day** — the day ed25519 can be broken in practice.
 

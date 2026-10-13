@@ -25,4 +25,4 @@ export function explorerUrl(value: string, kind: "address" | "tx" = "address"): 
 }
 
 /** Project X/Twitter link shown in the nav. */
-export const X_URL = "https://x.com";
+export const X_URL = "https://x.com/noxvaultHQ";

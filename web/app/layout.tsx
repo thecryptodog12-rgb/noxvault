@@ -11,6 +11,8 @@ export const metadata: Metadata = {
   title: "Noxvault — the safer, quantum-proof wallet for Solana",
   description: "A safer wallet for SOL and tokens: quantum-proof keys, recovery, privacy, inheritance and spending limits, enforced on-chain.",
   icons: { icon: "/icon.svg" },
+  metadataBase: new URL("https://www.nox-vault.com"),
+  twitter: { card: "summary_large_image", site: "@noxvaultHQ", creator: "@noxvaultHQ" },
 };
 
 export const viewport: Viewport = { themeColor: "#03070a", width: "device-width", initialScale: 1 };
