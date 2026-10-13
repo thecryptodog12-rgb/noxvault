@@ -7,6 +7,7 @@ import { Copy, Label, Note, PageHead, Panel } from "@/components/ui";
 import TierBadge from "@/components/vault/TierBadge";
 import { NETWORK, NOX_CA, NOX_CA_LABEL, explorerUrl, FAUCET_AMOUNT, NOX_TOKEN, PUMP_URL, CHART_URL, SOLSCAN_TOKEN_URL } from "@/lib/config";
 import { Countdown, launchClock } from "@/components/Launch";
+import MarketStats from "@/components/Market";
 import { noxAmount, useProtocol, useVaultTier } from "@/lib/nox";
 import { errMsg, sol } from "@/lib/format";
 
@@ -116,8 +117,12 @@ export default function Token() {
                 solscan
               </a>
             )}
+            <Link href="/buy" className="btn ghost">
+              how to buy
+            </Link>
           </div>
         </div>
+        <MarketStats />
         {NETWORK !== "mainnet-beta" && (
           <p className="border-t border-line px-4 py-3 text-[11.5px] text-dim sm:px-5">
             The vaults run on {NETWORK} for now, so tiers there use the free test token tNOX below. Real $NOX tiers start when Noxvault goes to
