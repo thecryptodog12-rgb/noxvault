@@ -16,6 +16,7 @@ const NAV = [
   { href: "/mine", label: "My Vaults" },
   { href: "/recovery", label: "Recovery" },
   { href: "/token", label: "$NOX" },
+  { href: "/buy", label: "Buy" },
   { href: "/whitepaper", label: "Whitepaper" },
   { href: "/docs", label: "Docs" },
   { href: "/faq", label: "FAQ" },
