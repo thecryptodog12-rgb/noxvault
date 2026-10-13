@@ -25,6 +25,9 @@ The first poll after `/watch` only records the latest signature — no backfill.
 | `/watch <address>` | watch a vault address (base58, max 10 per chat) |
 | `/unwatch <address>` | stop watching |
 | `/list` | addresses this chat watches |
+| `/ca` | the $NOX contract address + pump.fun link (before launch: countdown to 20:00 CEST) |
+| `/buy` | short how-to-buy steps + https://www.nox-vault.com/buy |
+| `/links` | site, X, buy guide, whitepaper |
 | `/start`, `/help` | explanation + safety note |
 
 If someone pastes what looks like a 12/24-word phrase, the bot tells them to delete it.
@@ -40,6 +43,8 @@ If someone pastes what looks like a 12/24-word phrase, the bot tells them to del
 | `POLL_SECONDS` | `20` | seconds between poll cycles (min 5) |
 | `STATE_PATH` | `./data/state.json` | watches + cursors, written atomically (tmp + rename) |
 | `RPC_DELAY_MS` | `250` | minimum gap between RPC calls |
+| `NOX_TOKEN` | empty | $NOX mainnet mint for `/ca` and `/buy`. Empty = pre-launch countdown. The bot refuses to start on an invalid address. Set it at launch and redeploy. |
+| `NOX_LAUNCH_AT` | `2026-10-13T20:00:00+02:00` | launch time used for the `/ca` countdown |
 
 Polling is sequential over all watched addresses with `RPC_DELAY_MS` between calls; 429s and
 transient errors are retried with exponential backoff (1s → 30s). Per cycle, at most 25 new
@@ -75,7 +80,7 @@ Tests: `pnpm test` (summarizer on a recorded devnet tx + fakes, state store, pol
 2. Add a **Volume** to the service, mount path `/data`.
 3. Variables: `TELEGRAM_BOT_TOKEN`, `STATE_PATH=/data/state.json`, `NETWORK`, `RPC_URL`
    (a private RPC is recommended once there are more than a handful of watches),
-   optionally `NOXVAULT_PROGRAM_ID` and `POLL_SECONDS`.
+   optionally `NOXVAULT_PROGRAM_ID` and `POLL_SECONDS`. At launch add `NOX_TOKEN` (the $NOX mint).
 4. Keep replicas at 1 (set in `railway.json`). No port / domain is needed.
 
 Without the volume, watches are lost on every redeploy.

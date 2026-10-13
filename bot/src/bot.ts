@@ -4,6 +4,7 @@ import type { Config } from "./config.js";
 import type { StateStore } from "./state.js";
 import { short } from "./summarize.js";
 import { HELP, SEED_WARNING } from "./texts.js";
+import { buyText, caText, linksText } from "./launch.js";
 
 const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
@@ -28,6 +29,11 @@ export function createBot(cfg: Config, state: StateStore): Bot {
   const html = { parse_mode: "HTML" as const, link_preview_options: { is_disabled: true } };
 
   bot.command(["start", "help"], (ctx) => ctx.reply(HELP, html));
+
+  const launch = { token: cfg.noxToken, launchAt: cfg.noxLaunchAt };
+  bot.command("ca", (ctx) => ctx.reply(caText(launch), html));
+  bot.command("links", (ctx) => ctx.reply(linksText(), html));
+  bot.command("buy", (ctx) => ctx.reply(buyText(launch), html));
 
   bot.command("watch", async (ctx) => {
     const address = parseAddress(ctx.match ?? "");

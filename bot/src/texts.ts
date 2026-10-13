@@ -12,6 +12,9 @@ export const HELP =
   "/watch &lt;vault address&gt; — start watching (max 10 per chat)\n" +
   "/unwatch &lt;vault address&gt; — stop watching\n" +
   "/list — show what this chat watches\n" +
+  "/ca — the $NOX contract address\n" +
+  "/buy — how to buy $NOX\n" +
+  "/links — site, X, buy guide, whitepaper\n" +
   "/help — this message\n\n" +
   SAFETY;
 
