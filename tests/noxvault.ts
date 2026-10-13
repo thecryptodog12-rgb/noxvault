@@ -560,12 +560,20 @@ describe("noxvault v3", () => {
     const vote = new PublicKey((votes.current[0] ?? votes.delinquent[0]).votePubkey);
     const amount = SOL(1.5);
     const before = await conn.getBalance(vault);
+    // The stake program refuses changes while epoch rewards are paid out at the start of an
+    // epoch (EpochRewardsActive, 0x10); with 64-slot epochs that window is hit by chance.
+    const clearOfBoundary = async () => {
+      while ((await conn.getEpochInfo()).slotIndex < 8) await sleep(500);
+    };
+    await clearOfBoundary();
     await act(primary, vault, { kind: "stake", seed: 0, vote: vote.toBytes(), amount, ...fee0 });
     const stake = stakePda(vault, 0, program.programId);
     expect(await conn.getBalance(stake)).to.eq(Number(amount));
+    await clearOfBoundary();
     await act(primary, vault, { kind: "unstake", seed: 0, ...fee0 });
     const epoch = (await conn.getEpochInfo()).epoch;
     while ((await conn.getEpochInfo()).epoch <= epoch + 1) await sleep(2000);
+    await clearOfBoundary();
     await act(primary, vault, { kind: "collectStake", seed: 0, ...fee0 });
     expect(await conn.getAccountInfo(stake)).to.eq(null);
     expect(await conn.getBalance(vault)).to.be.at.least(before);
