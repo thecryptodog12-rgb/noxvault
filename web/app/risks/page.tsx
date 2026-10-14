@@ -11,7 +11,7 @@ const RISKS = [
   },
   {
     t: `${NETWORK === "mainnet-beta" ? "Early mainnet" : "Devnet only"}`,
-    d: "Noxvault v3 runs on devnet. Devnet can be reset and devnet SOL has no value. The program is still upgradeable; the upgrade authority is to be burned only at mainnet launch.",
+    d: "Noxvault v3 runs on devnet. Devnet can be reset and devnet SOL has no value. The program is upgradeable. At mainnet the upgrade authority moves to a team multisig and every upgrade is announced 7 days ahead.",
   },
   {
     t: "Your words are the vault",

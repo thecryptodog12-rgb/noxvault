@@ -106,7 +106,7 @@ A vault is as strong as SHA-256 and the program's code; nothing in it depends on
 - funds left in ordinary wallets, except what the Escape Hatch moves in time;
 - a stolen phrase: whoever has the 24 words controls the vault, within its rules (whitelist, delay, limits and the recovery key are the mitigation);
 - browser compromise at the moment of signing;
-- the program's upgrade authority, an ed25519 key, until it is burned at mainnet launch.
+- the program's upgrade authority: a team multisig whose upgrades are announced in advance (see Governance and treasury).
 
 **One message per key, enforced from the chain.** Before any signature, the client reads the vault's full transaction history and refuses to sign if that one-time key ever published part of a signature for a different message, from any device or payer, in any failed or cancelled attempt. Signing is deterministic, so retrying the same message reveals nothing new.
 
@@ -165,9 +165,9 @@ $NOX gives holders no claim on fees or revenue: nothing is paid out to holders. 
 
 ## Governance and treasury
 
-The vault logic becomes immutable at mainnet; only a small set of protocol parameters stays adjustable, first by the team and then by $NOX governance.
+The program stays upgradeable at mainnet so bugs can be fixed, but only through a public, delayed process; protocol parameters are adjustable first by the team and then by $NOX governance.
 
-- **Immutable:** signature verification, approvals, vault rules, testament, Escape Hatch and canary logic. The program's upgrade authority is burned once the audited version is deployed.
+- **Upgrades:** the upgrade authority moves to a team multisig (Squads) at mainnet. Every upgrade is announced at least 7 days before it applies, with the audited source, so anyone can review it and withdraw first. The program is never closed while vaults hold funds. Governance may later take over the authority or vote to make the program final.
 - **Adjustable parameters:** the $NOX mint, tier thresholds G and S, the creation and relay fees, the treasury address. They live in one protocol account; until governance launches, a multisig of the team controls it, and every change is public on-chain.
 - **Governance:** $NOX holders vote on parameter changes and treasury spending through a standard Solana governance program (SPL Governance / Realms), with $NOX held in vaults counting as voting power.
 - **Treasury:** receives protocol fees in SOL. Half of it buys back and burns $NOX (see The flywheel); the other half funds the canary bounty (a larger bounty is a louder, more credible alarm), independent audits, and the running costs of the public relayer and keeper.
@@ -181,7 +181,7 @@ Noxvault is on devnet today; mainnet follows an independent audit, and governanc
 | Build | Done | Protocol v1 to v3, 25 program tests |
 | Devnet | Now | Public testing, test $NOX tiers |
 | Audit | Next | External review, bug bounty |
-| Mainnet | After the audit gate: report public, findings fixed | Upgrade authority burned, $NOX tiers live |
+| Mainnet | After the audit gate: report public, findings fixed | Upgrade authority to a team multisig, $NOX tiers live |
 | Governance | Then | Parameters and treasury by vote |
 
 No dates are committed until the audit is scheduled. Each phase starts only when the previous one's exit condition is met, published on-chain or in the repository.
@@ -198,7 +198,7 @@ The largest risk today is unaudited code; the largest long-term risk is that the
 | Browser compromise | Phrase read while signing | Offline signing on an air-gapped device |
 | Escape Hatch race | An attacker who breaks a wallet key moves its funds first | Keep most funds in the vault; canary priority |
 | Quantum timeline | Q-Day is decades away or never comes | Noxvault is useful today as a rules-based vault; it is a precaution, not a prediction |
-| Upgrade authority | An ed25519 key could change the program until burned | Burned at mainnet after audit |
+| Upgrade authority | The team could change the program | Multisig, upgrades announced 7 days ahead with source, time to withdraw |
 | Infrastructure | Relayer, keeper or RPC unavailable | All are optional and replaceable: anyone can run them |
 | Market | $NOX price falls; tiers become cheap or expensive | Thresholds adjustable by governance |
 | Regulatory | Token or service treated as regulated | Legal review, MiCA white paper before any public offer in the EU |

@@ -47,7 +47,7 @@ only), `RELAY_MIN_FEE_LAMPORTS`, optional `NOX_MINT` + `NOX_DISCOUNT_THRESHOLD`.
 
 Keys that are never in git: the program keypair (`target/deploy/`) and the relayer keypair
 (`~/.config/solana/noxvault-relayer-devnet.json`). Before mainnet: an independent review, then
-deploy and burn the upgrade authority (`solana program set-upgrade-authority --final`).
+deploy and move the upgrade authority to the team multisig (Squads); upgrades are announced 7 days ahead.
 
 ## Costs (measured)
 

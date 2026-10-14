@@ -59,7 +59,7 @@ const ROADMAP = [
   { n: "01", t: "BUILD", state: "done", items: ["Protocol spec", "Anchor program", "Browser key generation"] },
   { n: "02", t: "DEVNET", state: "now", items: ["Public devnet", "Community testing", "SDK & web app"] },
   { n: "03", t: "AUDIT", state: "next", items: ["Third-party audit", "Bug bounty", "Not started yet"] },
-  { n: "04", t: "MAINNET", state: "next", items: ["Mainnet launch", "Authority burned", "Integrations"] },
+  { n: "04", t: "MAINNET", state: "next", items: ["Mainnet launch", "Multisig upgrades", "Integrations"] },
 ];
 
 export default function Home() {
