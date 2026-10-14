@@ -237,7 +237,7 @@ export default function Shell({ children }: { children: ReactNode }) {
             <span className="min-w-0">
               <span className="block text-[11px] font-bold tracking-[0.16em]">RISKS &amp; DISCLAIMER</span>
               <span className="mt-0.5 block max-w-[420px] text-[10.5px] leading-snug text-dim">
-                Experimental, unaudited software on {NETWORK}. You hold the only key. Always do your own research.
+                You hold the only key. Always do your own research.
               </span>
             </span>
             <ArrowRight size={18} className="shrink-0 text-mute transition-transform group-hover:translate-x-1 group-hover:text-teal" />
