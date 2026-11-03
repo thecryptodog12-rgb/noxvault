@@ -106,6 +106,22 @@ export default function Home() {
         <ConsolePanel />
       </section>
 
+      {/* new in v4 */}
+      <section className="grid gap-3 sm:grid-cols-2 [&>*]:min-w-0">
+        <Link href="/duress" className="panel group flex flex-col gap-2 border-teal/40 p-6 transition-colors hover:border-teal">
+          <span className="label text-teal">new in v4</span>
+          <span className="text-[19px] font-bold">Duress mode</span>
+          <span className="text-[13px] leading-6 text-mute">A second phrase for when someone forces you: it pays a small amount at once and locks everything else for days.</span>
+          <ArrowRight size={16} className="mt-auto self-end text-teal transition-transform group-hover:translate-x-1" />
+        </Link>
+        <Link href="/treasury" className="panel group flex flex-col gap-2 border-teal/40 p-6 transition-colors hover:border-teal">
+          <span className="label text-teal">new in v4</span>
+          <span className="text-[19px] font-bold">Treasuries for token projects</span>
+          <span className="text-[13px] leading-6 text-mute">A public page, badge and API that prove a project&apos;s treasury rules live from the chain: signers, delays, vesting, pending payouts.</span>
+          <ArrowRight size={16} className="mt-auto self-end text-teal transition-transform group-hover:translate-x-1" />
+        </Link>
+      </section>
+
       {/* in plain words */}
       <section className="panel overflow-hidden">
         <div className="border-b border-line-2 px-6 py-4 text-[16px] font-medium tracking-[0.16em]">WHAT YOU GET</div>

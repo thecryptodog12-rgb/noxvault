@@ -14,6 +14,7 @@ const NAV = [
   { href: "/vaults", label: "Vaults" },
   { href: "/create", label: "Create Vault" },
   { href: "/mine", label: "My Vaults" },
+  { href: "/treasury", label: "Treasuries" },
   { href: "/recovery", label: "Recovery" },
   { href: "/token", label: "$NOX" },
   { href: "/buy", label: "Buy" },
@@ -33,6 +34,7 @@ function XIcon({ size = 16 }: { size?: number }) {
 const TOOLS = [
   { href: "/stats", label: "Stats" },
   { href: "/keylab", label: "Key Lab" },
+  { href: "/duress", label: "Duress mode" },
   { href: "/escape", label: "Escape Hatch" },
   { href: "/scan", label: "Scan" },
   { href: "/canary", label: "Quantum canary" },
