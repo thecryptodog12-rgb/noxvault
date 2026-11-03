@@ -1,7 +1,7 @@
 // Noxvault service worker: keeps the app shell and /offline usable with no network.
 // Strategy: hashed build assets (/_next/static) cache-first; pages network-first with a
 // cached fallback; /offline and its assets are precached on install.
-const VERSION = "nox-v2-1";
+const VERSION = "nox-v2-2"; // bump: /offline now ships the QR scanner (BarcodeDetector + jsQR)
 const SHELL = `${VERSION}-shell`;
 const STATIC = `${VERSION}-static`;
 const PRECACHE_PAGES = ["/offline", "/backup", "/"];

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { PublicKey } from "@solana/web3.js";
 import { PROGRAM_ID, TREE_PRIMARY, RECOVERY_TREE, actionDigest, type SignedAction } from "@nox/sdk/client";
@@ -8,9 +8,41 @@ import { authPath, equal, recoverRoot, sign, type PublicTree, type TreeSeeds } f
 import SecretInput from "@/components/SecretInput";
 import { Copy, Label, Note, PageHead, Panel } from "@/components/ui";
 import { errMsg, hex } from "@/lib/format";
-import { ACTION_KINDS, EMPTY_FORM, KIND_FIELDS, KIND_LABEL, SLOT_LABEL, actionFromForm, splitForQr, summarize, type ActionForm } from "@/lib/offline";
+import {
+  EMPTY_FORM,
+  KIND_FIELDS,
+  KIND_LABEL,
+  PartCollector,
+  SIGNED_PREFIX,
+  SLOT_LABEL,
+  UNSIGNED_PREFIX,
+  actionFromForm,
+  decodeUnsigned,
+  splitForQr,
+  summarize,
+  type ActionForm,
+  type UnsignedRequest,
+} from "@/lib/offline";
+import Scanner from "../submit/Scanner";
+import { ActionFields, FeeFields, KindSelect } from "./ActionFields";
 import QrParts from "./QrParts";
 import Summary from "./Summary";
+
+// What this device has signed, per vault / slot / leaf: the digest only (public, no secret). A
+// second, different message for the same leaf is refused here even if the online device asks.
+const signedKey = (vault: string, tree: number, leaf: number) => `nox.offline.signed.${vault}.${tree}.${leaf}`;
+function signedBefore(vault: string, tree: number, leaf: number): string | null {
+  try {
+    return localStorage.getItem(signedKey(vault, tree, leaf));
+  } catch {
+    return null;
+  }
+}
+function rememberSigned(vault: string, tree: number, leaf: number, digest: string) {
+  try {
+    localStorage.setItem(signedKey(vault, tree, leaf), digest);
+  } catch {}
+}
 
 interface Built {
   tree: number;
@@ -23,6 +55,13 @@ const PART_SIZES = [
   { v: 600, l: "small parts (easiest to scan)" },
   { v: 800, l: "medium parts" },
   { v: 1000, l: "large parts (fewest QRs)" },
+];
+
+const AIRGAP_STEPS: [string, ReactNode][] = [
+  ["online", <>On <Link key="l" href="/submit" className="text-teal">/submit</Link>, look up the vault and compose the action. It shows an animated QR.</>],
+  ["offline", "Here, scan that QR. Every field of the action is shown before you sign."],
+  ["offline", "Sign with your words. The signed request appears as an animated QR."],
+  ["online", "Scan it back on /submit. It is checked against the chain, then sent via the relayer or your wallet."],
 ];
 
 function useOnline() {
@@ -58,6 +97,44 @@ export default function OfflineSigner() {
   const [signErr, setSignErr] = useState<string | null>(null);
   const [partSize, setPartSize] = useState(800);
 
+  // Air-gapped input: an unsigned action scanned from the online device's animated QR.
+  const [imported, setImported] = useState<UnsignedRequest | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanState, setScanState] = useState<{ have: number; n: number; note?: string }>({ have: 0, n: 0 });
+  const collector = useRef(new PartCollector(UNSIGNED_PREFIX));
+  const startScan = () => {
+    collector.current = new PartCollector(UNSIGNED_PREFIX);
+    setScanState({ have: 0, n: 0 });
+    setScanning(true);
+  };
+  const onCode = (text: string) => {
+    const c = collector.current;
+    const r = c.add(text);
+    if (r === "bad") {
+      if (text.startsWith(`${SIGNED_PREFIX}:`)) setScanState((x) => ({ ...x, note: "That is a signed request. Scan it on the online device, at /submit." }));
+      return;
+    }
+    if (r === "other") return setScanState((x) => ({ ...x, note: "That QR belongs to a different action. Scan again from the start." }));
+    if (r === "new") setScanState({ have: c.parts.size, n: c.n });
+    if (!c.done) return;
+    try {
+      const u = decodeUnsigned(c.text()!);
+      setImported(u);
+      setVault(u.vault.toBase58());
+      setLeaf(String(u.leaf));
+      setTree(u.tree);
+      setScanning(false);
+    } catch (e) {
+      collector.current = new PartCollector(UNSIGNED_PREFIX);
+      setScanState({ have: 0, n: 0, note: errMsg(e) });
+    }
+  };
+  const dropImport = () => {
+    setImported(null);
+    setVault("");
+    setLeaf("");
+  };
+
   const newWorker = () => new Worker(new URL("./tree.worker.ts", import.meta.url));
 
   // Load the worker once while the page is open, so its code is cached for offline use.
@@ -87,7 +164,7 @@ export default function OfflineSigner() {
   useEffect(() => {
     setOut(null);
     setAck(false);
-  }, [vault, leaf, form]);
+  }, [vault, leaf, form, imported]);
 
   const build = () => {
     if (!master || !vnOk) return;
@@ -134,19 +211,32 @@ export default function OfflineSigner() {
       const v = new PublicKey(vault.trim());
       const l = Number(leaf);
       if (leaf === "" || !Number.isInteger(l) || l < 0 || l > maxLeaf) throw new Error(`Leaf must be 0–${maxLeaf}`);
-      const action = actionFromForm(form);
-      const dec = KIND_FIELDS[form.kind].includes("asset") && form.asset === "token" ? Number(form.decimals) : undefined;
-      return { ok: true as const, v, l, action, summary: summarize(v.toBase58(), tree, l, action, dec) };
+      if (imported && (!imported.vault.equals(v) || imported.leaf !== l || imported.tree !== tree))
+        throw new Error("Vault, leaf or slot no longer match the scanned action. Scan again or clear it.");
+      const action = imported ? imported.action : actionFromForm(form);
+      const dec = imported ? imported.decimals : KIND_FIELDS[form.kind].includes("asset") && form.asset === "token" ? Number(form.decimals) : undefined;
+      const digest = hex(actionDigest(PROGRAM_ID, v, tree, l, action));
+      return { ok: true as const, v, l, action, digest, summary: summarize(v.toBase58(), tree, l, action, dec) };
     } catch (e) {
       return { ok: false as const, err: errMsg(e) };
     }
-  }, [vault, leaf, form, tree, maxLeaf]);
+  }, [vault, leaf, form, tree, maxLeaf, imported]);
+
+  // Did this device already sign something with this leaf? (localStorage, read after mount)
+  const [prior, setPrior] = useState<string | null>(null);
+  useEffect(() => {
+    setPrior(preview.ok ? signedBefore(preview.v.toBase58(), tree, preview.l) : null);
+  }, [preview, tree, out]);
+  const conflict = preview.ok && prior !== null && prior !== preview.digest;
 
   const doSign = () => {
     setSignErr(null);
     try {
       if (!built || !preview.ok) return;
       const { v, l, action } = preview;
+      const before = signedBefore(v.toBase58(), built.tree, l);
+      if (before !== null && before !== preview.digest)
+        throw new Error(`This device already signed a different message with one-time key #${l}. Signing a second one could let anyone forge signatures. Refused.`);
       const digest = actionDigest(PROGRAM_ID, v, built.tree, l, action);
       const signature = sign(built.seeds, l, digest);
       const path = authPath(built.pub, l);
@@ -154,6 +244,7 @@ export default function OfflineSigner() {
         throw new Error("Self-check failed: the signature does not rebuild this tree's root.");
       const s: SignedAction = { vault: v, tree: built.tree, leaf: l, pkSeed: built.pub.pkSeed, authPath: path, signature, action };
       const text = JSON.stringify(encodeRelayRequest(s));
+      rememberSigned(v.toBase58(), built.tree, l, hex(digest));
       setOut({ text, summary: preview.summary, digest: hex(digest) });
     } catch (e) {
       setSignErr(errMsg(e));
@@ -161,7 +252,6 @@ export default function OfflineSigner() {
   };
 
   const parts = useMemo(() => (out ? splitForQr(out.text, partSize) : []), [out, partSize]);
-  const set = (k: keyof ActionForm) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
   return (
     <div className="flex flex-col gap-6">
@@ -172,7 +262,7 @@ export default function OfflineSigner() {
             Sign <span className="inv">offline</span>
           </>
         }
-        sub="Sign a vault action on a device that is never online. This page makes no network requests at all: it turns your words into keys, signs one action and gives you the result as text and QR codes. Carry that to an online device and send it from /submit."
+        sub="Sign a vault action on a device that is never online. This page makes no network requests at all: it turns your words into keys, signs one action and gives you the result as text and an animated QR. Carry that to an online device and send it from /submit."
       />
 
       <div className="grid gap-3 md:grid-cols-3 [&>*]:min-w-0">
@@ -192,6 +282,66 @@ export default function OfflineSigner() {
           publish both: anyone could then forge signatures.
         </Note>
       </div>
+
+      <Panel title="air-gapped over QR // no cable, no clipboard, no network" lit={!!imported}>
+        <div className="grid gap-5 p-4 sm:p-5 lg:grid-cols-[1fr_420px] [&>*]:min-w-0">
+          <div className="flex flex-col gap-3">
+            <ol className="grid gap-2 text-[12.5px] sm:grid-cols-2">
+              {AIRGAP_STEPS.map(([who, d], i) => (
+                <li key={i} className="flex gap-3 rounded border border-line px-3 py-2">
+                  <span className="text-teal">0{i + 1}</span>
+                  <span className="min-w-0">
+                    <span className={`mr-2 text-[10px] uppercase tracking-[0.16em] ${who === "offline" ? "text-teal" : "text-dim"}`}>{who}</span>
+                    <span className="text-mute">{d}</span>
+                  </span>
+                </li>
+              ))}
+            </ol>
+            <p className="text-[11.5px] text-dim">
+              Only public data crosses the gap: the action going in, a one-time signature coming out. Your words never leave this device.
+              Typing the action by hand below works too.
+            </p>
+          </div>
+          <div className="flex flex-col gap-3">
+            {imported ? (
+              <>
+                <Note kind="ok">
+                  Action scanned: <strong>{KIND_LABEL[imported.action.kind as keyof typeof KIND_LABEL] ?? imported.action.kind}</strong> for vault{" "}
+                  {imported.vault.toBase58().slice(0, 6)}…, {SLOT_LABEL(imported.tree)} key #{imported.leaf}. Review every field in step 03.
+                </Note>
+                <div className="flex flex-wrap gap-2">
+                  <button className="btn ghost sm" onClick={startScan}>
+                    scan another
+                  </button>
+                  <button className="btn ghost sm" onClick={dropImport}>
+                    clear, type it by hand
+                  </button>
+                </div>
+              </>
+            ) : !scanning ? (
+              <button className="btn self-start" onClick={startScan}>
+                scan action from online device
+              </button>
+            ) : null}
+            {scanning && (
+              <>
+                <span className="text-[12px] text-mute">
+                  {scanState.n ? (
+                    <>
+                      scanned <span className="text-teal">{scanState.have}</span> of {scanState.n} parts · any order
+                    </>
+                  ) : (
+                    "point the camera at the online device's QR…"
+                  )}
+                </span>
+                {scanState.note && <Note kind="warn">{scanState.note}</Note>}
+                <Scanner onCode={onCode} onClose={() => setScanning(false)} />
+              </>
+            )}
+            {!scanning && scanState.note && !imported && <Note kind="bad">{scanState.note}</Note>}
+          </div>
+        </div>
+      </Panel>
 
       <div className="grid gap-6 lg:grid-cols-2 [&>*]:min-w-0">
         <Panel title="01 // your words">
@@ -261,110 +411,26 @@ export default function OfflineSigner() {
           <div className="flex flex-col gap-3 p-4 sm:p-5">
             <div className="flex flex-col gap-1.5">
               <Label>vault address</Label>
-              <input className="field" value={vault} onChange={(e) => setVault(e.target.value)} placeholder="the vault's deposit address" spellCheck={false} />
+              <input className="field" value={vault} onChange={(e) => setVault(e.target.value)} placeholder="the vault's deposit address" spellCheck={false} readOnly={!!imported} />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
                 <Label>leaf (one-time key #)</Label>
-                <input className="field" inputMode="numeric" value={leaf} onChange={(e) => setLeaf(e.target.value.trim())} placeholder={`0–${maxLeaf}, from prepare`} />
+                <input className="field" inputMode="numeric" value={leaf} onChange={(e) => setLeaf(e.target.value.trim())} placeholder={`0–${maxLeaf}, from prepare`} readOnly={!!imported} />
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label>action</Label>
-                <select className="field" value={form.kind} onChange={set("kind")}>
-                  {ACTION_KINDS.map((k) => (
-                    <option key={k} value={k}>
-                      {KIND_LABEL[k]}
-                    </option>
-                  ))}
-                </select>
+                <KindSelect form={form} setForm={setForm} value={imported?.action.kind} disabled={!!imported} />
               </div>
             </div>
 
-            {(() => {
-              const f = KIND_FIELDS[form.kind];
-              const tokenAsset = f.includes("asset") && form.asset === "token";
-              const field = (k: keyof ActionForm, label: string, extra: Record<string, string> = {}) => (
-                <div className="flex flex-col gap-1.5">
-                  <Label>{label}</Label>
-                  <input className="field" value={form[k] as string} onChange={set(k)} spellCheck={false} {...extra} />
-                </div>
-              );
-              const unit = (k: "intervalUnit" | "periodUnit") => (
-                <select className="field !w-24" value={form[k]} onChange={(e) => setForm((x) => ({ ...x, [k]: e.target.value as "h" | "d" }))}>
-                  <option value="h">hours</option>
-                  <option value="d">days</option>
-                </select>
-              );
-              return (
-                <>
-                  {f.includes("asset") && (
-                    <>
-                      <div className="flex gap-2">
-                        {(["sol", "token"] as const).map((a) => (
-                          <button key={a} className={`btn sm ${form.asset === a ? "outline" : "ghost"}`} onClick={() => setForm((x) => ({ ...x, asset: a }))}>
-                            {a === "sol" ? "SOL" : "SPL / Token-2022"}
-                          </button>
-                        ))}
-                      </div>
-                      {tokenAsset && (
-                        <div className="grid grid-cols-[1fr_96px] gap-3">
-                          {field("mint", "mint")}
-                          {field("decimals", "decimals", { inputMode: "numeric" })}
-                        </div>
-                      )}
-                    </>
-                  )}
-                  {f.includes("id") && field("id", form.kind === "schedule" || form.kind === "cancelSchedule" ? "schedule slot (0–255)" : "budget slot (0–255)", { inputMode: "numeric" })}
-                  {f.includes("session") && field("session", "session wallet (an ordinary wallet that may spend)")}
-                  {f.includes("dest") && field("dest", form.kind === "schedule" ? "pay to" : "destination wallet")}
-                  {f.includes("vote") && field("vote", "validator vote account")}
-                  {f.includes("newVault") && field("newVault", "new vault address (must be an initialized Noxvault)")}
-                  <div className="grid grid-cols-2 gap-3">
-                    {f.includes("amount") &&
-                      field(
-                        "amount",
-                        `${form.kind === "schedule" ? "amount per payment" : form.kind === "budget" ? "limit per period" : "amount"} (${tokenAsset ? "tokens" : "SOL"})`,
-                        { inputMode: "decimal", placeholder: "0.0" }
-                      )}
-                    {f.includes("seed") && field("seed", "stake slot (0–7)", { inputMode: "numeric" })}
-                    {f.includes("count") && field("count", "number of payments", { inputMode: "numeric" })}
-                  </div>
-                  {f.includes("interval") && (
-                    <div className="flex flex-col gap-1.5">
-                      <Label>every</Label>
-                      <div className="flex gap-2">
-                        <input className="field flex-1" inputMode="decimal" value={form.interval} onChange={set("interval")} />
-                        {unit("intervalUnit")}
-                      </div>
-                    </div>
-                  )}
-                  {f.includes("period") && (
-                    <div className="flex flex-col gap-1.5">
-                      <Label>period</Label>
-                      <div className="flex gap-2">
-                        <input className="field flex-1" inputMode="decimal" value={form.period} onChange={set("period")} />
-                        {unit("periodUnit")}
-                      </div>
-                    </div>
-                  )}
-                  {f.includes("start") && field("start", "first payment", { type: "datetime-local" })}
-                  {f.includes("expires") && field("expires", "budget expires", { type: "datetime-local" })}
-                  {(form.kind === "schedule" || form.kind === "budget" || form.kind === "cancelSchedule" || form.kind === "cancelBudget") && (
-                    <p className="text-[11px] text-dim">Slots: take a free one (new) or the existing one (stop) from the online prepare step / vault view.</p>
-                  )}
-                </>
-              );
-            })()}
-            <div className="grid grid-cols-[120px_1fr] gap-3">
-              <div className="flex flex-col gap-1.5">
-                <Label>fee (SOL)</Label>
-                <input className="field" inputMode="decimal" value={form.fee} onChange={set("fee")} />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label>fee payee (relayer)</Label>
-                <input className="field" value={form.feePayee} onChange={set("feePayee")} disabled={!Number(form.fee)} placeholder={Number(form.fee) ? "relayer address" : "no fee: you submit with a wallet"} spellCheck={false} />
-              </div>
-            </div>
+            {imported && (
+              <Note kind="info">
+                The action came from the online device&apos;s QR, so the fields are locked. Step 03 shows exactly what will be signed.
+              </Note>
+            )}
+            {!imported && <ActionFields form={form} setForm={setForm} />}
+            {!imported && <FeeFields form={form} setForm={setForm} />}
             <p className="text-[11px] text-dim">
               To use the gasless relayer, set its fee and address exactly as the prepare step shows. With fee 0 you send it yourself
               with a wallet that pays network fees.
@@ -376,7 +442,7 @@ export default function OfflineSigner() {
       <Panel title="03 // review & sign" lit={!!out}>
         <div className="flex flex-col gap-4 p-4 sm:p-5">
           {preview.ok ? (
-            <Summary {...preview.summary} />
+            <Summary {...preview.summary} digest={preview.digest} />
           ) : (
             <div className="text-[12.5px] text-dim">Fill in the action to see exactly what will be signed. ({preview.err})</div>
           )}
@@ -388,11 +454,20 @@ export default function OfflineSigner() {
             </span>
           </label>
           <div className="flex flex-wrap items-center gap-3">
-            <button className="btn" onClick={doSign} disabled={!built || !preview.ok || !ack}>
+            <button className="btn" onClick={doSign} disabled={!built || !preview.ok || !ack || conflict}>
               sign this action
             </button>
             {!built && <span className="text-[11px] text-dim">build keys first</span>}
           </div>
+          {conflict && (
+            <Note kind="bad">
+              This device already signed a <strong>different</strong> message with one-time key #{leaf}. It will not sign another. Ask the
+              online device for a fresh leaf (prepare step on /submit).
+            </Note>
+          )}
+          {preview.ok && prior !== null && !conflict && (
+            <Note kind="info">This device signed this exact action with this key before. Signing again gives the same signature, which is safe.</Note>
+          )}
           {signErr && <div className="text-[12px] text-bad">✕ {signErr}</div>}
         </div>
       </Panel>
@@ -403,7 +478,7 @@ export default function OfflineSigner() {
             <div className="flex flex-col gap-3">
               <Note kind="ok">
                 Signed and self-checked against your tree root. This text holds no secret: it can only ever perform the action
-                above. Move it to an online device and open <strong>/submit</strong>.
+                above. On the online device, open <strong>/submit</strong> and scan the animated QR (or paste the text).
               </Note>
               <Label>request ({out.text.length.toLocaleString("en-US")} characters)</Label>
               <textarea className="field h-56 resize-y text-[11px] leading-snug" readOnly value={out.text} onFocus={(e) => e.target.select()} />
@@ -420,7 +495,7 @@ export default function OfflineSigner() {
                   ))}
                 </select>
               </div>
-              <QrParts parts={parts} />
+              <QrParts parts={parts} animate />
             </div>
           </div>
         </Panel>

@@ -2,11 +2,31 @@
 import { useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
 
+// The browser's own QR decoder where it exists (Chrome/Android, Safari 17+ behind flags); jsQR
+// everywhere else. Both run on this device only: frames never leave the page.
+interface Detector {
+  detect(source: CanvasImageSource): Promise<{ rawValue: string }[]>;
+}
+type DetectorCtor = { new (opts: { formats: string[] }): Detector; getSupportedFormats?: () => Promise<string[]> };
+
+async function nativeDetector(): Promise<Detector | null> {
+  const BD = (globalThis as unknown as { BarcodeDetector?: DetectorCtor }).BarcodeDetector;
+  if (!BD) return null;
+  try {
+    const formats = (await BD.getSupportedFormats?.()) ?? ["qr_code"];
+    if (!formats.includes("qr_code")) return null;
+    return new BD({ formats: ["qr_code"] });
+  } catch {
+    return null;
+  }
+}
+
 /** Camera QR scanner. Calls onCode for every decoded QR (deduping is up to the caller). */
 export default function Scanner({ onCode, onClose }: { onCode: (text: string) => void; onClose: () => void }) {
   const video = useRef<HTMLVideoElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [engine, setEngine] = useState<"native" | "jsqr" | null>(null);
   const cb = useRef(onCode);
   cb.current = onCode;
 
@@ -22,22 +42,33 @@ export default function Scanner({ onCode, onClose }: { onCode: (text: string) =>
         const v = video.current!;
         v.srcObject = stream;
         await v.play();
-        const tick = () => {
+        let native = await nativeDetector();
+        setEngine(native ? "native" : "jsqr");
+        const tick = async () => {
           if (stopped) return;
           const c = canvas.current;
           if (c && v.readyState >= 2 && v.videoWidth) {
-            const w = Math.min(v.videoWidth, 960);
-            const h = Math.round((v.videoHeight * w) / v.videoWidth);
-            c.width = w;
-            c.height = h;
-            const ctx = c.getContext("2d", { willReadFrequently: true })!;
-            ctx.drawImage(v, 0, 0, w, h);
-            const code = jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: "dontInvert" });
-            if (code?.data) cb.current(code.data);
+            if (native) {
+              try {
+                for (const code of await native.detect(v)) if (code.rawValue) cb.current(code.rawValue);
+              } catch {
+                native = null; // fall back for the rest of this session
+                setEngine("jsqr");
+              }
+            } else {
+              const w = Math.min(v.videoWidth, 960);
+              const h = Math.round((v.videoHeight * w) / v.videoWidth);
+              c.width = w;
+              c.height = h;
+              const ctx = c.getContext("2d", { willReadFrequently: true })!;
+              ctx.drawImage(v, 0, 0, w, h);
+              const code = jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: "dontInvert" });
+              if (code?.data) cb.current(code.data);
+            }
           }
-          raf = requestAnimationFrame(tick);
+          if (!stopped) raf = requestAnimationFrame(() => void tick());
         };
-        raf = requestAnimationFrame(tick);
+        raf = requestAnimationFrame(() => void tick());
       } catch (e) {
         setErr((e as Error).message || "Camera unavailable");
       }
@@ -60,9 +91,12 @@ export default function Scanner({ onCode, onClose }: { onCode: (text: string) =>
         </div>
       )}
       <canvas ref={canvas} className="hidden" />
-      <button className="btn ghost sm self-start" onClick={onClose}>
-        stop camera
-      </button>
+      <div className="flex items-center justify-between gap-3">
+        <button className="btn ghost sm" onClick={onClose}>
+          stop camera
+        </button>
+        {engine && <span className="text-[10.5px] text-dim">decoder: {engine === "native" ? "built-in (BarcodeDetector)" : "jsQR"} · on this device only</span>}
+      </div>
     </div>
   );
 }

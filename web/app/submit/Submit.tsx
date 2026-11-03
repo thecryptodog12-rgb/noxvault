@@ -9,10 +9,11 @@ import { useNox } from "@/lib/hooks";
 import { fetchRelayerInfo, relayAction, sendIxs, type RelayerInfo } from "@/lib/unlock";
 import { explorerUrl } from "@/lib/config";
 import { errMsg, fromBaseUnits, hex, short } from "@/lib/format";
-import { PartCollector, SLOT_LABEL, actionMint, checkSigned, parseSubmitInput, prepareLeaves, summarize, type Check } from "@/lib/offline";
+import { PartCollector, SLOT_LABEL, actionMint, checkSigned, matchesUnsigned, parseSubmitInput, prepareLeaves, summarize, type Check, type UnsignedRequest } from "@/lib/offline";
 import { tokenInfo } from "@/lib/tokens";
 import Summary from "../offline/Summary";
 import Scanner from "./Scanner";
+import Compose from "./Compose";
 
 type Prepared = NonNullable<Awaited<ReturnType<typeof prepareLeaves>>>;
 
@@ -147,6 +148,8 @@ export default function Submit() {
   const [sending, setSending] = useState<string | null>(null);
   const [sent, setSent] = useState<string[] | null>(null);
   const [sendErr, setSendErr] = useState<string | null>(null);
+  // The unsigned action this page showed to an offline device (A2), if any.
+  const [outgoing, setOutgoing] = useState<UnsignedRequest | null>(null);
 
   const parsed = useMemo(() => {
     if (!input.trim()) return null;
@@ -226,7 +229,8 @@ export default function Submit() {
     }
   };
 
-  const blocked = !checks || checks.some((c) => c.level === "bad");
+  const mismatch = !!(signed && outgoing && !matchesUnsigned(signed, outgoing));
+  const blocked = !checks || checks.some((c) => c.level === "bad") || mismatch;
 
   const viaRelayer = async () => {
     if (!signed) return;
@@ -293,6 +297,8 @@ export default function Submit() {
 
       <Prepare />
 
+      <Compose onComposed={setOutgoing} />
+
       <Panel title="B // load the signed request">
         <div className="flex flex-col gap-3 p-4 sm:p-5">
           <textarea
@@ -345,6 +351,15 @@ export default function Submit() {
       {signed && summary && (
         <Panel title="C // what this does" lit>
           <div className="flex flex-col gap-4 p-4 sm:p-5">
+            {outgoing &&
+              (mismatch ? (
+                <Note kind="bad">
+                  This signed request is <strong>not</strong> the action shown in A2 (vault, slot, leaf or action differ). It will not be sent from
+                  here. Check the offline device, or clear A2 if you meant to submit a different request.
+                </Note>
+              ) : (
+                <Note kind="ok">Matches the action you sent to the offline device in A2, field for field.</Note>
+              ))}
             <Summary {...summary} digest={digest} />
             <div className="flex flex-wrap items-center gap-3">
               <button className="btn" onClick={runChecks} disabled={checking}>
@@ -399,7 +414,7 @@ export default function Submit() {
             </div>
             {blocked && (
               <div className="md:col-span-2 text-[11.5px] text-dim">
-                {checks ? "Fix the errors above before sending." : "Run the checks first."}
+                {mismatch ? "The signed request does not match the action composed in A2." : checks ? "Fix the errors above before sending." : "Run the checks first."}
               </div>
             )}
             {sendErr && <div className="md:col-span-2 text-[12px] text-bad">✕ {sendErr}</div>}

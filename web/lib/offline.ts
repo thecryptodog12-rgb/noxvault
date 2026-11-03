@@ -324,20 +324,25 @@ export function actionMint(a: Action): PublicKey | null {
 
 // ---------- QR framing ----------
 //
-// A part is "NOX1:<id>:<i>/<n>:<chunk>", id = first 8 hex of sha256(full text), so parts of two
-// different requests never mix.
+// A part is "<prefix>:<id>:<i>/<n>:<chunk>", id = first 8 hex of sha256(full text), so parts of two
+// different requests never mix. Signed requests use "NOX1"; unsigned actions sent from the online
+// device to the offline one use "NOXA1", so neither side can mistake one for the other.
 
-const PART_RE = /^NOX1:([0-9a-f]{8}):(\d+)\/(\d+):([\s\S]*)$/;
+export const SIGNED_PREFIX = "NOX1";
+export const UNSIGNED_PREFIX = "NOXA1";
+const MAX_PARTS = 64;
 
 export function textId(text: string): string {
   return Array.from(sha256(new TextEncoder().encode(text)).slice(0, 4), (x) => x.toString(16).padStart(2, "0")).join("");
 }
 
-export function splitForQr(text: string, maxChars: number): string[] {
+export function splitForQr(text: string, maxChars: number, prefix: string = SIGNED_PREFIX): string[] {
+  if (!(maxChars > 0)) throw new Error("Part size must be more than 0");
   const n = Math.max(1, Math.ceil(text.length / maxChars));
+  if (n > MAX_PARTS) throw new Error(`Too many QR parts (${n}); pick a larger part size`);
   const size = Math.ceil(text.length / n);
   const id = textId(text);
-  return Array.from({ length: n }, (_, i) => `NOX1:${id}:${i + 1}/${n}:${text.slice(i * size, (i + 1) * size)}`);
+  return Array.from({ length: n }, (_, i) => `${prefix}:${id}:${i + 1}/${n}:${text.slice(i * size, (i + 1) * size)}`);
 }
 
 export interface QrPart {
@@ -347,26 +352,34 @@ export interface QrPart {
   chunk: string;
 }
 
-export function parsePart(s: string): QrPart | null {
-  const m = PART_RE.exec(s.trim());
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+export function parsePart(s: string, prefix: string = SIGNED_PREFIX): QrPart | null {
+  // Strip what scanners and pasting add around a frame, but never spaces inside a chunk.
+  const frame = s.replace(/^\s+/, "").replace(/[\r\n]+$/, "");
+  const m = new RegExp(`^${escapeRe(prefix)}:([0-9a-f]{8}):(\\d+)\\/(\\d+):([\\s\\S]*)$`).exec(frame);
   if (!m) return null;
   const i = Number(m[2]);
   const n = Number(m[3]);
-  if (i < 1 || i > n || n > 64) return null;
+  if (i < 1 || i > n || n > MAX_PARTS) return null;
   return { id: m[1], i, n, chunk: m[4] };
 }
 
-/** Collects parts; returns the full text once complete and its checksum matches. */
+/**
+ * Collects parts in any order, ignoring repeats; returns the full text once complete and its
+ * checksum matches. Animated QR loops, so out-of-order and duplicate frames are the normal case.
+ */
 export class PartCollector {
   id: string | null = null;
   n = 0;
   parts = new Map<number, string>();
+  constructor(readonly prefix: string = SIGNED_PREFIX) {}
 
   /** Returns "new" | "dup" | "other" (part of a different request) | "bad". */
   add(raw: string): "new" | "dup" | "other" | "bad" {
-    const p = parsePart(raw);
+    const p = parsePart(raw, this.prefix);
     if (!p) return "bad";
-    if (this.id && p.id !== this.id) return "other";
+    if (this.id && (p.id !== this.id || p.n !== this.n)) return "other";
     this.id = p.id;
     this.n = p.n;
     if (this.parts.has(p.i)) return "dup";
@@ -378,6 +391,11 @@ export class PartCollector {
     return this.n > 0 && this.parts.size === this.n;
   }
 
+  /** Part numbers (1-based) still missing. */
+  missing(): number[] {
+    return Array.from({ length: this.n }, (_, i) => i + 1).filter((i) => !this.parts.has(i));
+  }
+
   text(): string | null {
     if (!this.done) return null;
     const t = Array.from({ length: this.n }, (_, i) => this.parts.get(i + 1)).join("");
@@ -386,12 +404,97 @@ export class PartCollector {
   }
 }
 
+// ---------- unsigned action (online device → offline device) ----------
+//
+// The online device looks up the next safe leaf (prepareLeaves: state bitmap + full history) and
+// the relayer fee, then hands the offline device exactly what to sign. It carries no secret, and
+// the offline device shows it in full before anything is signed.
+
+export const UNSIGNED_TYPE = "nox-unsigned/1";
+
+export interface UnsignedRequest {
+  vault: PublicKey;
+  tree: number;
+  leaf: number;
+  action: Action;
+  /** Display hint for token amounts, from the online device. Never part of what is signed. */
+  decimals?: number;
+}
+
+const KEY_FIELDS = new Set(["mint", "dest", "vote", "session", "newVault", "feePayee", "key"]);
+const BIG_FIELDS = new Set(["amount", "interval", "start", "limit", "period", "expires", "fee"]);
+const NUM_FIELDS = new Set(["seed", "id", "count"]);
+
+export function encodeUnsigned(u: UnsignedRequest): string {
+  const a: Record<string, string | number> = { kind: u.action.kind };
+  for (const [k, v] of Object.entries(u.action)) {
+    if (k === "kind") continue;
+    a[k] = v instanceof Uint8Array ? new PublicKey(v).toBase58() : typeof v === "bigint" ? v.toString() : (v as number);
+  }
+  return JSON.stringify({ t: UNSIGNED_TYPE, vault: u.vault.toBase58(), tree: u.tree, leaf: u.leaf, action: a, ...(u.decimals !== undefined && { decimals: u.decimals }) });
+}
+
+/** Strict parse of an unsigned request; throws a readable error on anything unexpected. */
+export function decodeUnsigned(text: string): UnsignedRequest {
+  let j: Record<string, unknown>;
+  try {
+    j = JSON.parse(text);
+  } catch {
+    throw new Error("Not a Noxvault unsigned action (bad JSON)");
+  }
+  if (!j || j.t !== UNSIGNED_TYPE) throw new Error("Not a Noxvault unsigned action");
+  const raw = j.action as Record<string, unknown> | undefined;
+  if (!raw || typeof raw.kind !== "string" || !(ACTION_KINDS as readonly string[]).includes(raw.kind))
+    throw new Error("Unknown or unsupported action kind");
+  const action: Record<string, unknown> = { kind: raw.kind };
+  for (const [k, v] of Object.entries(raw)) {
+    if (k === "kind") continue;
+    if (KEY_FIELDS.has(k)) {
+      try {
+        action[k] = new PublicKey(String(v)).toBytes();
+      } catch {
+        throw new Error(`Bad address in ${k}`);
+      }
+    } else if (BIG_FIELDS.has(k)) {
+      if (!/^\d+$/.test(String(v))) throw new Error(`Bad ${k}`);
+      action[k] = BigInt(String(v));
+    } else if (NUM_FIELDS.has(k)) {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 0 || n > 65535) throw new Error(`Bad ${k}`);
+      action[k] = n;
+    } else throw new Error(`Unexpected field ${k}`);
+  }
+  try {
+    encodeAction(action as Action); // throws if a field is missing or out of range
+  } catch {
+    throw new Error("The action is incomplete");
+  }
+  const tree = Number(j.tree);
+  const leaf = Number(j.leaf);
+  if (!Number.isInteger(tree) || tree < 0 || tree > RECOVERY_TREE) throw new Error("Bad key slot");
+  if (!Number.isInteger(leaf) || leaf < 0 || leaf > 255) throw new Error("Bad leaf");
+  let vault: PublicKey;
+  try {
+    vault = new PublicKey(String(j.vault));
+  } catch {
+    throw new Error("Bad vault address");
+  }
+  const d = j.decimals;
+  const decimals = typeof d === "number" && Number.isInteger(d) && d >= 0 && d <= 18 ? d : undefined;
+  return { vault, tree, leaf, action: action as Action, decimals };
+}
+
+/** True when a signed request is for exactly this unsigned one (vault, slot, leaf and action). */
+export function matchesUnsigned(s: SignedAction, u: UnsignedRequest): boolean {
+  return s.vault.equals(u.vault) && s.tree === u.tree && s.leaf === u.leaf && equal(encodeAction(s.action), encodeAction(u.action));
+}
+
 /** Accepts raw RelayRequest JSON, or one or more "NOX1:" parts (one per line). */
 export function parseSubmitInput(input: string): { request: RelayRequest; signed: SignedAction; text: string } {
   let text = input.trim();
   if (!text) throw new Error("Paste the signed request first");
-  if (text.startsWith("NOX1:")) {
-    const c = new PartCollector();
+  if (text.startsWith(`${SIGNED_PREFIX}:`)) {
+    const c = new PartCollector(SIGNED_PREFIX);
     for (const line of text.split(/\s*\n\s*/).filter(Boolean)) {
       const r = c.add(line);
       if (r === "bad") throw new Error("A line is not a Noxvault QR part");

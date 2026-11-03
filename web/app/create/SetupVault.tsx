@@ -39,13 +39,26 @@ const signerCountOf = (c: { trees: { height: number }[] }) => [0, 1, 2].filter((
 const fromHex = (h: string) => Uint8Array.from(h.match(/../g)!.map((x) => parseInt(x, 16)));
 const RELAY_INIT_MIN = 0.02 * LAMPORTS_PER_SOL;
 type RecoveryMode = "none" | "code" | "generate";
-type Preset = "personal" | "team" | "slow" | "vesting";
+type Preset = "personal" | "team" | "slow" | "vesting" | "dao";
 const PRESETS: readonly (readonly [Preset, string, string])[] = [
   ["personal", "Personal", "just you; add what you like below"],
   ["team", "Team multisig", "2 of 3 signers approve every action"],
   ["slow", "Slow treasury", "every payout waits 72 h, cancellable"],
   ["vesting", "Vesting treasury", "2 of 3 + 72 h wait; add schedules after"],
+  ["dao", "DAO treasury", "pays out only to a Squads or Realms address"],
 ];
+
+/** The DAO preset's one destination: any valid public key (Squads vaults and Realms treasuries are PDAs). */
+function daoCheck(raw: string): { ok: true; pda: boolean } | { ok: false; error: string } | null {
+  const v = raw.trim();
+  if (!v) return null;
+  try {
+    const k = new PublicKey(v);
+    return { ok: true, pda: !PublicKey.isOnCurve(k.toBytes()) };
+  } catch {
+    return { ok: false, error: "Not a valid Solana address." };
+  }
+}
 
 export default function SetupVault({ master, words, onForget }: { master: Uint8Array; words: string; onForget: () => void }) {
   const { connection, program, wallet, deployed } = useNox();
@@ -117,6 +130,8 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
   const [duressSol, setDuressSol] = useState("0.5");
   const [duressDays, setDuressDays] = useState("3");
   const [preset, setPreset] = useState<Preset>("personal");
+  const [daoAddr, setDaoAddr] = useState("");
+  const dao = daoCheck(daoAddr);
 
   const applyPreset = (p: Preset) => {
     setPreset(p);
@@ -132,6 +147,18 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
       setRecMode((m) => (m === "none" ? "generate" : m));
       setRecDays("30");
     }
+    if (p === "dao") {
+      // the DAO address is the only destination; everything else is refused (strict, no instant limit)
+      setWhitelist([daoAddr.trim()]);
+      setStrict(true);
+      setRecMode((m) => (m === "none" ? "generate" : m));
+      setRecDays("90");
+    }
+  };
+  const changeDao = (v: string) => {
+    setDaoAddr(v);
+    setWhitelist([v.trim()]);
+    setStrict(true);
   };
   const [remember, setRemember] = useState<Remember>(() => {
     const s = loadWords();
@@ -194,6 +221,9 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
     }
     const days = Number(recDays);
     if (recoveryRoot && (!Number.isFinite(days) || days < 1 || days > 3650)) return { error: "Recovery delay must be 1–3650 days." } as const;
+    const daoIn = preset === "dao" ? daoCheck(daoAddr) : null;
+    if (preset === "dao" && !daoIn) return { error: "Paste the DAO's Squads vault or Realms treasury address." } as const;
+    if (daoIn && !daoIn.ok) return { error: "The DAO address is not a valid Solana address." } as const;
     const wl: PublicKey[] = [];
     for (const w of whitelist.map((x) => x.trim()).filter(Boolean)) {
       try {
@@ -271,7 +301,7 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
       duressLockSecs,
     });
     return { config, vault: vaultOf(config, program.programId) } as const;
-  }, [signer, recMode, recCode, recRoot, recHanded, recDays, whitelist, strict, slowHours, coCodes, threshold, instantSol, heirs, testDays, duressRoot, duressHanded, duressSol, duressDays, program]);
+  }, [signer, recMode, recCode, recRoot, recHanded, recDays, whitelist, strict, slowHours, coCodes, threshold, instantSol, heirs, testDays, duressRoot, duressHanded, duressSol, duressDays, program, preset, daoAddr]);
 
   const config = "config" in built ? built.config : null;
   const vault = "vault" in built ? built.vault : null;
@@ -427,7 +457,7 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
           {/* presets */}
           <div className="flex flex-col gap-3">
             <Label>start from</Label>
-            <div className="grid gap-2 sm:grid-cols-4 [&>*]:min-w-0">
+            <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-5 [&>*]:min-w-0">
               {PRESETS.map(([p, t, d]) => (
                 <button
                   key={p}
@@ -439,7 +469,33 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
                 </button>
               ))}
             </div>
-            {preset !== "personal" && (
+            {preset === "dao" && (
+              <div className="flex flex-col gap-2">
+                <input
+                  className="field"
+                  placeholder="Squads multisig vault or Realms treasury address"
+                  value={daoAddr}
+                  onChange={(e) => changeDao(e.target.value)}
+                  spellCheck={false}
+                />
+                {dao && !dao.ok && <div className="text-[12px] text-bad">✕ {dao.error}</div>}
+                {dao?.ok && !dao.pda && (
+                  <div className="text-[12px] text-warn">
+                    ! This address is an ordinary key, not a program address. Squads vaults and Realms treasuries are program addresses: check you
+                    pasted the vault / treasury, not a member wallet.
+                  </div>
+                )}
+                {dao?.ok && dao.pda && <div className="text-[12px] text-teal">✓ Valid program address. It becomes the only whitelisted destination.</div>}
+                <Note kind="info">
+                  The DAO decides where funds go next; this Noxvault guarantees nothing leaves except to the DAO. Withdrawals to any other
+                  address are refused on chain (strict mode, no instant limit), so a stolen or quantum-broken signer key can at most send funds
+                  home to the DAO. Paste the Squads <strong>vault</strong> address (not the multisig account) or the Realms <strong>treasury</strong>{" "}
+                  wallet. The recovery key can always cancel a pending action, and gains full control only after the inactivity delay below:
+                  give it to people the DAO trusts, or set it to None if there must be no exception.
+                </Note>
+              </div>
+            )}
+            {preset !== "personal" && preset !== "dao" && (
               <Note kind="info">
                 {preset === "slow"
                   ? "Payouts above 0.01 SOL a day wait 72 hours and show up as pending on the public treasury page, so holders see them coming. A recovery key (set below) can cancel them."
