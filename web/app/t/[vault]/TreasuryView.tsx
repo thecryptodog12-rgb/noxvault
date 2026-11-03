@@ -4,7 +4,7 @@ import { PublicKey } from "@solana/web3.js";
 import { Copy, Empty, Label, Note, PageHead, Panel } from "@/components/ui";
 import { useNox } from "@/lib/hooks";
 import { errMsg, fromBaseUnits, short, sol } from "@/lib/format";
-import { explorerUrl } from "@/lib/config";
+import { NETWORK, explorerUrl } from "@/lib/config";
 import { loadTreasury, isSolMint, type Treasury } from "@/lib/treasury";
 import { useTokenInfo } from "@/lib/tokens";
 import { dateTime, duration, useNow } from "@/lib/time";
@@ -41,6 +41,8 @@ export default function TreasuryView({ vault }: { vault: string }) {
   const badgeUrl = `${origin}/api/treasury/${vault}/badge`;
   const pageUrl = `${origin}/t/${vault}`;
   const embed = `<a href="${pageUrl}"><img src="${badgeUrl}" alt="Noxvault treasury"></a>`;
+  // Blink: dial.to renders the Action at /api/actions/fund/<vault> (app/actions.json maps /fund/* to it).
+  const blinkUrl = `https://dial.to/?action=${encodeURIComponent(`solana-action:${origin}/api/actions/fund/${vault}`)}${NETWORK === "mainnet-beta" ? "" : `&cluster=${NETWORK === "testnet" ? "testnet" : "devnet"}`}`;
 
   return (
     <div className="flex flex-col gap-6">
@@ -144,6 +146,18 @@ export default function TreasuryView({ vault }: { vault: string }) {
               Created {dateTime(t.createdAt)} · last signer activity {dateTime(t.lastActive)} · {t.actions} actions
             </span>
           </div>
+
+          <Panel title="share as blink">
+            <div className="flex flex-col gap-2 p-4 text-[12.5px] text-mute sm:p-5">
+              <span>A link that shows a &quot;Fund this Noxvault&quot; card with these rules in Blink-aware wallets and on dial.to. Funding is a plain SOL transfer.</span>
+              <div className="flex items-start gap-2">
+                <a href={blinkUrl} target="_blank" rel="noreferrer" className="block flex-1 break-all rounded border border-line p-2 text-[11.5px] hover:text-teal">
+                  {blinkUrl}
+                </a>
+                <Copy value={blinkUrl} />
+              </div>
+            </div>
+          </Panel>
 
           <Panel title="put this on your site">
             <div className="flex flex-col gap-3 p-4 sm:p-5">
