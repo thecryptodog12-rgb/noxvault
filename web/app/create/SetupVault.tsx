@@ -31,8 +31,9 @@ import { forgetWords, loadWords, saveWords, type Remember } from "@/lib/secret";
 import { sendIxs } from "@/lib/unlock";
 import { configToJson } from "@/lib/configJson";
 import { duration } from "@/lib/time";
-import { TIER_FREE, TIER_NAMES, noxAmount, tierNeedText, useVaultTier } from "@/lib/nox";
+import { TIER_FREE, TIER_NAMES, TIER_SENTINEL, noxAmount, useVaultTier } from "@/lib/nox";
 import TierBadge from "@/components/vault/TierBadge";
+import TierHint from "@/components/vault/TierHint";
 import { NOX_CA } from "@/lib/config";
 
 const signerCountOf = (c: { trees: { height: number }[] }) => [0, 1, 2].filter((t) => c.trees[t].height > 0).length;
@@ -825,7 +826,7 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
               program reads it at init. {need > TIER_FREE ? `These settings need ${TIER_NAMES[need]}.` : "These settings work on the Free tier."}
               {freeFee > 0n && ` On Free, initializing costs a one-time ${sol(freeFee)} SOL fee; Guardian and up pay none.`}
             </p>
-            {!tierOk && <Note kind="warn">Initializing is locked: {tierNeedText(need, tier, protocol)}.</Note>}
+            {!tierOk && <TierHint need={need} tier={tier} protocol={protocol} feature={need === TIER_SENTINEL ? "Multi-signer vaults" : "Testaments"} />}
             <div className="flex flex-wrap gap-3">
               {NETWORK === "devnet" && (
                 <button className="btn outline sm" onClick={faucet} disabled={!!busy}>

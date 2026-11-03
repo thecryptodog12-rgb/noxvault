@@ -28,6 +28,7 @@ import { Copy, Label, Note, Panel } from "@/components/ui";
 import ActionPanel, { type StakeSlot } from "./ActionPanel";
 import TokenName from "./TokenName";
 import TierBadge from "./TierBadge";
+import { TierProgress } from "./TierHint";
 import LetterAutoRefresh from "@/components/letters/LetterAutoRefresh";
 import { useVaultTier } from "@/lib/nox";
 import { Approvals, Budgets, Inboxes, Migration, RunMsg, Schedules, Section, Testament } from "./sections";
@@ -125,6 +126,7 @@ export default function VaultView({
           [refresh]
         </button>
       </div>
+      {!duress && <TierProgress tier={tier} protocol={protocol} />}
 
       <div className="grid grid-cols-2 gap-px bg-line md:grid-cols-4 [&>*]:min-w-0">
         <Tile k="sol" v={assets ? sol(duress ? duressShown : assets.lamports) : "…"} />

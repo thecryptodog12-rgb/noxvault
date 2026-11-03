@@ -34,6 +34,7 @@ import {
 } from "@nox/sdk/client";
 import { authPath, equal, sign, type Action, type Kind } from "@nox/sdk/wots";
 import { Label, Note } from "@/components/ui";
+import TierHint from "./TierHint";
 import { useNox } from "@/lib/hooks";
 import { TIER_GUARDIAN, TIER_SENTINEL, tierNeedText, useProtocol } from "@/lib/nox";
 import { errMsg, fromBaseUnits, hex, short, sol, toBaseUnits } from "@/lib/format";
@@ -718,14 +719,7 @@ export default function ActionPanel({
               </button>
             ))}
           </div>
-          {locked(kind) && (
-            <Note kind="warn">
-              {kind === "schedule" ? "Schedules" : "Budgets"} {tierNeedText(TIER_GUARDIAN, tier ?? null, protocol)}.{" "}
-              <Link href="/token" className="underline">
-                About $NOX tiers
-              </Link>
-            </Note>
-          )}
+          {locked(kind) && <TierHint need={TIER_GUARDIAN} tier={tier} protocol={protocol} feature={kind === "schedule" ? "Schedules" : "Session budgets"} />}
 
           {kind === "withdraw" && (
             <div className="grid gap-3 sm:grid-cols-2 [&>*]:min-w-0">
@@ -866,6 +860,7 @@ export default function ActionPanel({
               ))}
             </div>
             {mode === "relayer" && relayerErr && <Note kind="warn">Relayer unavailable: {relayerErr}</Note>}
+            {mode === "relayer" && relayer?.sentinelFree && <TierHint kind="perk" need={TIER_SENTINEL} tier={tier} protocol={protocol} feature="The relayer is free" />}
           </div>
 
           {formErr && <div className="text-[12px] text-bad">✕ {formErr}</div>}
