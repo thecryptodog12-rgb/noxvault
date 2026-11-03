@@ -189,7 +189,7 @@ export default function Stats() {
           Protocol <span className="inv">stats</span>
         </>
       }
-      sub={`Live numbers for every Noxvault v3 vault on ${NETWORK}, read straight from the program's accounts. No indexer, no backend.`}
+      sub={`Live numbers for every Noxvault vault on ${NETWORK}, read straight from the program's accounts. No indexer, no backend.`}
     />
   );
 
@@ -209,7 +209,7 @@ export default function Stats() {
         {head}
         <Panel>
           <Empty title="Not live on this network yet">
-            The Noxvault v3 program is not deployed on {NETWORK}. Stats appear here as soon as it is.
+            The Noxvault program is not deployed on {NETWORK}. Stats appear here as soon as it is.
           </Empty>
         </Panel>
       </div>

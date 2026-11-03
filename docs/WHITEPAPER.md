@@ -1,12 +1,12 @@
 # Noxvault — Hash-based vaults for a post-quantum Solana
 
-Whitepaper · draft v0.1 · 10 October 2026
+Whitepaper · draft v0.2 · 3 November 2026 (protocol v4)
 
 ![Noxvault: hash-based vaults for a post-quantum Solana](/whitepaper/cover.jpg)
 
 ## Abstract
 
-Noxvault is a Solana vault whose funds move only with hash-based one-time signatures, so a quantum computer that breaks ed25519 cannot touch them. One fixed vault address serves 256 actions through a Merkle tree of WOTS+ keys, and the vault's rules — co-signers, a recovery key, a testament, a whitelist with delays, schedules and capped session budgets — are fixed in its address forever. An Escape Hatch extends protection to ordinary wallets: when an on-chain quantum canary trips, linked wallets are evacuated into their vaults. $NOX is the protocol's access and priority token: features unlock by $NOX held inside the vault itself, and holders stand first in line at Q-Day.
+Noxvault is a Solana vault whose funds move only with hash-based one-time signatures, so a quantum computer that breaks ed25519 cannot touch them. One fixed vault address serves 256 actions through a Merkle tree of WOTS+ keys, and the vault's rules — co-signers, a recovery key, a testament, a whitelist with delays, schedules, capped session budgets and a duress phrase — are fixed in its address forever. Sealed letters carry information to heirs, and any vault can publish its rules as a public treasury page. An Escape Hatch extends protection to ordinary wallets: when an on-chain quantum canary trips, linked wallets are evacuated into their vaults. $NOX is the protocol's access and priority token: features unlock by $NOX held inside the vault itself, and holders stand first in line at Q-Day.
 
 - **Security that does not depend on elliptic curves.** Only SHA-256 stands between an attacker and a vault's funds; Grover's algorithm gives a square-root speedup, not a break.
 - **A vault people can actually live with.** A fixed address, gasless withdrawals, staking, schedules and a Phantom budget for daily use, for SOL and every SPL or Token-2022 token.
@@ -73,9 +73,13 @@ Every feature below is enforced by the on-chain program, works for SOL and for S
 | Migration | Moves all SOL and tokens to a new vault, e.g. when the 256 keys run low | Owner signs; anyone executes |
 | Invoice addresses | Per-payer deposit addresses that sweep into the vault | Anyone |
 | Staking | Native stake accounts owned by the vault: delegate, deactivate, collect | Owner signs |
+| Duress phrase | A separate 24-word phrase to hand over under coercion: it can only withdraw SOL, pays at most a set amount at once (default 0.5 SOL) and then locks the vault for a set time (default 3 days). Every vault stores a duress slot (a decoy when unused), so no vault reveals whether it has one | Whoever holds the duress phrase; the recovery key's Cancel ends a lockdown |
+| Sealed letters | Messages for heirs, encrypted in the browser to a future drand round (timelock encryption) and stored on chain. While the owner is active the app re-seals them to a later date; when the owner stops, they open around the time the testament runs | A letter key authorized by the signers; it can write letters but never move funds |
 | Gasless relayer | A relayer pays network fees and is repaid from the vault by a signed fee; it cannot change the action | The relayer |
 
 A vault's rules are part of its address: changing any rule means a new vault, so nobody, including the owner, can quietly weaken them.
+
+**Treasuries for token projects.** Because the rules cannot change, a vault doubles as a verifiable treasury. Every vault has a public page (`/t/<vault>`) that reads its rules from the chain and states them in plain words: signers and threshold, delays, whitelist, recovery, vesting schedules and any pending payout with its countdown, plus a 0–5 protection score. Projects can embed an SVG badge or read a JSON endpoint. The create flow offers presets: team multisig 2-of-3, slow treasury (72 h delay) and vesting treasury.
 
 ## Escape Hatch, canary and registry
 
@@ -105,6 +109,8 @@ A vault is as strong as SHA-256 and the program's code; nothing in it depends on
 
 - funds left in ordinary wallets, except what the Escape Hatch moves in time;
 - a stolen phrase: whoever has the 24 words controls the vault, within its rules (whitelist, delay, limits and the recovery key are the mitigation);
+- coercion beyond the duress phrase: an attacker who knows the vault and its balance from a block explorer may not accept the duress payout, and a vault without a recovery key stays locked only for the lockdown period;
+- a sealed letter after its opening date: anyone with the ciphertext can read it unless the owner added a passphrase; a letter also opens if the owner simply did not refresh it in time; opening depends on the drand network;
 - browser compromise at the moment of signing;
 - the program's upgrade authority: a team multisig whose upgrades are announced in advance (see Governance and treasury).
 
@@ -112,7 +118,7 @@ A vault is as strong as SHA-256 and the program's code; nothing in it depends on
 
 **One tree, one vault.** A key tree is used in exactly one vault, because the signed message names the vault.
 
-**Status:** devnet only. Unaudited. 25 end-to-end program tests, plus an internal review that found and fixed one critical client issue before launch.
+**Status:** devnet only. Unaudited. 36 end-to-end program tests (v4: duress mode and sealed letters included), plus an internal review that found and fixed one critical client issue before launch.
 
 ## $NOX utility
 
@@ -178,7 +184,7 @@ Noxvault is on devnet today; mainnet follows an independent audit, and governanc
 
 | Phase | Status | What it contains |
 | --- | --- | --- |
-| Build | Done | Protocol v1 to v3, 25 program tests |
+| Build | Done | Protocol v1 to v4 (duress mode, sealed letters, treasury pages), 36 program tests |
 | Devnet | Now | Public testing, test $NOX tiers |
 | Audit | Next | External review, bug bounty |
 | Mainnet | After the audit gate: report public, findings fixed | Upgrade authority to a team multisig, $NOX tiers live |
@@ -195,6 +201,7 @@ The largest risk today is unaudited code; the largest long-term risk is that the
 | Smart-contract bug | Funds locked or lost | Independent audit before mainnet, bug bounty, small limits at launch |
 | Lost phrase | Vault unrecoverable | Recovery key, testament, Shamir and encrypted backups |
 | Stolen phrase | Funds moved within the vault's rules | Whitelist, delays, instant limit, recovery key can cancel |
+| Coercion | Someone forces the owner to open the vault | Duress phrase: capped payout, then lockdown that only the recovery key lifts |
 | Browser compromise | Phrase read while signing | Offline signing on an air-gapped device |
 | Escape Hatch race | An attacker who breaks a wallet key moves its funds first | Keep most funds in the vault; canary priority |
 | Quantum timeline | Q-Day is decades away or never comes | Noxvault is useful today as a rules-based vault; it is a precaution, not a prediction |
@@ -220,7 +227,9 @@ The summaries of regulation above are general and not legal advice.
 | --- | --- |
 | Hash | SHA-256, 32-byte chain values |
 | Winternitz parameter | w = 256, 34 chains (32 message + 2 checksum) |
-| Keys per vault | 256 per signer tree (height 8), 16 for the recovery tree (height 4) |
+| Keys per vault | 256 per signer tree (height 8), 16 for the recovery tree (height 4), 256 for the duress tree |
+| Duress defaults | 0.5 SOL at once, then a 3-day lockdown (minimum 1 day) |
+| Sealed letter | up to 8,192 bytes of ciphertext and a 64-byte label per letter; drand quicknet; opens at testament delay + 7 days unless refreshed |
 | Signature | 1,088 B + 32 B seed + 256 B authentication path |
 | On-chain verification | about 180 compute units per hash, 4,000 to 5,000 hashes per signature on average |
 | Transactions per action | usually 2; worst case 3 |

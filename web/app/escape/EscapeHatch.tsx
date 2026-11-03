@@ -165,7 +165,7 @@ export default function EscapeHatch() {
                   onRequest={(v) =>
                     act("link", "request", async () => {
                       const st = await fetchState(program, v);
-                      if (!st) throw new Error("That address is not an initialized Noxvault v3 vault.");
+                      if (!st) throw new Error("That address is not an initialized Noxvault vault.");
                       const sig = await walletSend(connection, wallet, [await requestLinkChangeIx(program, me, v)]);
                       return { kind: "ok", text: "Change requested. It can be applied after 30 days.", sigs: [sig] };
                     })
@@ -431,7 +431,7 @@ function RegisterForm({ busy, onLink }: { busy: string | null; onLink: (v: Publi
     if (!v) return;
     let live = true;
     fetchState(program, v)
-      .then((st) => live && setCheck(st ? { ok: true, text: `Noxvault v3 vault · created ${dateTime(st.createdAt)} · ${st.config.trees.filter((t, i) => i < 3 && t.height).length} signer tree(s), threshold ${st.config.threshold}`, state: st } : { ok: false, text: "Not an initialized Noxvault v3 vault. Create one first, or paste the vault address (not a wallet or an invoice address)." }))
+      .then((st) => live && setCheck(st ? { ok: true, text: `Noxvault vault · created ${dateTime(st.createdAt)} · ${st.config.trees.filter((t, i) => i < 3 && t.height).length} signer tree(s), threshold ${st.config.threshold}`, state: st } : { ok: false, text: "Not an initialized Noxvault vault. Create one first, or paste the vault address (not a wallet or an invoice address)." }))
       .catch((e) => live && setCheck({ ok: false, text: errMsg(e) }));
     return () => {
       live = false;

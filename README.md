@@ -3,7 +3,9 @@
 Vaults on Solana that only open with **hash-based one-time signatures** (WOTS+ in a Merkle tree).
 No ed25519 key — not the depositor's wallet, not ours — can move what is inside. One fixed vault
 address serves 256 actions; an optional recovery key, a whitelist with a delay, staking and a
-gasless relayer are part of the protocol (`docs/SPEC.md`).
+gasless relayer are part of the protocol (`docs/SPEC.md`). v4 adds a duress phrase (capped
+payout, then lockdown), sealed letters for heirs (timelock-encrypted, on chain) and public
+treasury pages with a badge and JSON API for token projects.
 
 > Unaudited software, devnet only. Do not put in what you cannot afford to lose.
 
@@ -11,7 +13,7 @@ gasless relayer are part of the protocol (`docs/SPEC.md`).
 
 | path | what |
 |---|---|
-| `docs/SPEC.md` | the protocol (v4): keys, tree, config, actions, duress mode, on-chain flow, relayer, client rules. Change this first. |
+| `docs/SPEC.md` | the protocol (v4): keys, tree, config, actions, duress mode, sealed letters, on-chain flow, relayer, client rules. Change this first. |
 | `programs/noxvault` | Anchor program (Rust) |
 | `sdk/wots.ts` | WOTS+ chains, Merkle tree, borsh encodings — pure, runs in a web worker |
 | `sdk/client.ts` | configs, PDAs, `planAction`, `findSignedMessages`, `pickLeaf`, `preflightAction`, `findVaultsFor` |

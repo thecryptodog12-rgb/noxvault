@@ -6,6 +6,30 @@ export const metadata: Metadata = { title: "FAQ — Noxvault" };
 
 const QA: [string, React.ReactNode][] = [
   [
+    "What if someone forces me to open my vault?",
+    <>
+      Give them your <strong>duress phrase</strong>, a second set of 24 words you can make when you create the vault. It pays out
+      at most a small amount you chose, right away, and then locks the vault; only your recovery key lifts the lock early. Nobody can
+      see on chain whether a vault has a duress phrase. It is not a guarantee: someone who checks a block explorer sees the real
+      balance. See <Link href="/duress">duress mode</Link>.
+    </>,
+  ],
+  [
+    "How do my heirs learn what they need to know?",
+    <>
+      Write them <strong>sealed letters</strong>: encrypted to a date in the future and stored next to your vault. While you are
+      active the date keeps moving forward; when you stop, they open around the time your testament pays out. See{" "}
+      <Link href="/letters">sealed letters</Link>.
+    </>,
+  ],
+  [
+    "Can a token project use Noxvault as its treasury?",
+    <>
+      Yes. Pick the team multisig, slow treasury or vesting preset in Create. Every vault has a public page that shows its rules,
+      balances, vesting and pending payouts, plus a badge for the project site. See <Link href="/treasury">treasuries</Link>.
+    </>,
+  ],
+  [
     "Can my Phantom wallet open my vault?",
     <>
       Not by itself. Moving anything out needs a one-time signature made from your 24 words. The one exception is one you choose:

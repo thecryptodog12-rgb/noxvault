@@ -13,6 +13,9 @@ const TOC = [
   ["rules", "Rules: whitelist, limit, delay"],
   ["recovery", "Recovery key"],
   ["testament", "Testament"],
+  ["duress", "Duress phrase"],
+  ["letters", "Sealed letters"],
+  ["treasury", "Treasuries"],
   ["schedules", "Schedules"],
   ["budgets", "Session budgets"],
   ["migration", "Migration"],
@@ -37,7 +40,7 @@ export default function Docs() {
             How it <span className="inv">works</span>
           </>
         }
-        sub="A walk through the Noxvault v3 spec. The program, the SDK, the relayer, the keeper and this site all follow the same document."
+        sub="A walk through the Noxvault v4 spec. The program, the SDK, the relayer, the keeper and this site all follow the same document."
       />
       <div className="grid [&>*]:min-w-0 gap-10 lg:grid-cols-[200px_1fr]">
         <nav className="hidden lg:block">
@@ -164,6 +167,35 @@ export default function Docs() {
             default). When the owner has been inactive that long, anyone may distribute all SOL and every token to the heirs by
             share, and deactivate and collect stakes first. Keepers do this automatically. Any signer action, including a Ping,
             postpones it.
+          </p>
+
+          <h2 id="duress">Duress phrase</h2>
+          <p>
+            An optional fifth tree from its <strong>own 24 words</strong>, to hand over if someone forces you. It can only withdraw SOL,
+            pays at most the duress limit at once (0.5 SOL by default, fee included), ignoring whitelist and delay, and then puts the
+            vault in <strong>lockdown</strong> for the duress lock (3 days by default, at least 1). During a lockdown only Ping and
+            cancels execute; a Cancel from the recovery key ends it at once. Every vault stores a duress root, a decoy derived from the
+            owner&apos;s seed when unused, so the chain does not show which vaults have one. Opening <Link href="/mine">My vaults</Link>{" "}
+            with the duress phrase shows an ordinary vault holding only that amount. See <Link href="/duress">/duress</Link>.
+          </p>
+
+          <h2 id="letters">Sealed letters</h2>
+          <p>
+            The signers authorize a <strong>letter key</strong>, an ordinary ed25519 key that may write the vault&apos;s letters (
+            <code>PDA[&quot;letter&quot;, vault, id]</code>, up to 8,192 bytes each) but never move funds. The browser encrypts each
+            letter with timelock encryption to a future drand quicknet round: about the testament delay plus 7 days. While the owner is
+            active the app re-seals letters to a later round; when the owner stops, they open around the time the testament runs.
+            After that anyone can read them at <code>/letters/&lt;vault&gt;</code>, unless a passphrase was added. Duress and recovery
+            keys cannot authorize a letter key. See <Link href="/letters">/letters</Link>.
+          </p>
+
+          <h2 id="treasury">Treasuries</h2>
+          <p>
+            A vault&apos;s rules are part of its address, so a token project can prove how its treasury works. <code>/t/&lt;vault&gt;</code>{" "}
+            reads the rules from the chain and states them in plain words, with balances, vesting schedules, pending payouts and a
+            0–5 protection score; <code>/api/treasury/&lt;vault&gt;</code> returns the same as JSON and <code>…/badge</code> as an
+            embeddable SVG. Create offers presets: team multisig 2-of-3, slow treasury (72 h) and vesting. See{" "}
+            <Link href="/treasury">/treasury</Link>.
           </p>
 
           <h2 id="schedules">Schedules</h2>
@@ -307,6 +339,8 @@ export default function Docs() {
                   ["signer trees", "up to 3, height 8 = 256 one-time keys each"],
                   ["threshold", "1 to the number of signer trees"],
                   ["recovery tree", "height 4 = 16 one-time keys (optional)"],
+                  ["duress tree", "height 8; default 0.5 SOL, 3-day lockdown (min 1 day)"],
+                  ["sealed letter", "≤ 8,192 bytes ciphertext + 64-byte label; drand quicknet"],
                   ["signature", "34 × 32 + 32 pk_seed + 8 × 32 path = 1,376 bytes"],
                   ["whitelist", "up to 4 addresses"],
                   ["heirs", "up to 4, shares in basis points"],

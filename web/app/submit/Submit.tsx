@@ -289,7 +289,7 @@ export default function Submit() {
         }
       />
 
-      {deployed === false && <Note kind="warn">The Noxvault v3 program is not deployed on this network yet, so checks and sending will fail.</Note>}
+      {deployed === false && <Note kind="warn">The Noxvault program is not deployed on this network yet, so checks and sending will fail.</Note>}
 
       <Prepare />
 
