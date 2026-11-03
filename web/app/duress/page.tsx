@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
+import { pageMeta } from "@/lib/meta";
 import Link from "next/link";
 import { ArrowRight, EyeOff, Lock, Siren, Wallet } from "lucide-react";
 
-export const metadata: Metadata = {
-  title: "Duress mode — Noxvault",
-  description: "A second phrase for when someone forces you to open your vault: it pays a small amount at once and locks the rest.",
-};
+export const metadata: Metadata = pageMeta(
+  "Duress mode — Noxvault",
+  "A second phrase for when someone forces you to open your vault: it pays a small amount at once and locks the rest for days."
+);
 
 const STEPS = [
   { Icon: Wallet, t: "Hand over the duress phrase", d: "Under threat, you open your vault with your second phrase. The app shows only your duress limit as the balance." },
@@ -28,9 +29,9 @@ export default function Page() {
         </p>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 [&>*]:min-w-0">
+      <div className="grid gap-3 sm:grid-cols-2 [&>*]:min-w-0" data-reveal-group>
         {STEPS.map(({ Icon, t, d }, i) => (
-          <div key={t} className="panel p-5">
+          <div key={t} data-reveal className="panel glow p-5">
             <div className="flex items-center gap-3">
               <span className="text-[13px] text-teal">0{i + 1}</span>
               <Icon size={22} strokeWidth={1.4} className="text-teal" />
@@ -41,10 +42,10 @@ export default function Page() {
         ))}
       </div>
 
-      <div className="panel p-5">
+      <div data-reveal className="panel p-5">
         <div className="flex items-center gap-3">
           <EyeOff size={22} strokeWidth={1.4} className="text-teal" />
-          <div className="text-[15px] font-bold">Nobody can tell whether you have one</div>
+          <div className="rv-glitch text-[15px] font-bold">Nobody can tell whether you have one</div>
         </div>
         <p className="mt-2 text-[13px] leading-6 text-mute">
           Every v4 vault carries a duress key slot. Vaults without a duress phrase get a decoy that has no key. From the outside all vaults look the same, so an attacker cannot
@@ -52,8 +53,8 @@ export default function Page() {
         </p>
       </div>
 
-      <div className="panel border-warn/40 p-5 text-[13px] leading-6 text-mute">
-        <div className="mb-1 font-bold text-warn">What it does not do</div>
+      <div data-reveal className="panel border-warn/40 p-5 text-[13px] leading-6 text-mute">
+        <div className="rv-glitch mb-1 font-bold text-warn">What it does not do</div>
         Someone who reads your vault&apos;s on-chain state can see that it locked. Duress mode caps the loss and ends the encounter; it does not make the lockdown invisible. SOL only;
         tokens stay locked. Unaudited, devnet.
       </div>

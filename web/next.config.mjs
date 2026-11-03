@@ -11,6 +11,8 @@ const nextConfig = {
   distDir: process.env.NEXT_DIST_DIR || ".next",
   experimental: { externalDir: true },
   outputFileTracingRoot: path.resolve(here, ".."),
+  // fonts and art read at request time by the dynamic Open Graph image of /t/[vault]
+  outputFileTracingIncludes: { "/t/[vault]/opengraph-image": ["./assets/**/*"] },
   webpack(config) {
     config.resolve.alias = { ...config.resolve.alias, "@nox/sdk": sdk };
     // The SDK lives outside web/; make its imports resolve to web/node_modules so the

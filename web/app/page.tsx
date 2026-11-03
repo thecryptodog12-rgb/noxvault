@@ -2,6 +2,8 @@ import Link from "next/link";
 import { ArrowRight, Atom, Boxes, Check, EyeOff, FileSignature, FlaskConical, Gauge, LifeBuoy, Lock, RefreshCw, ScrollText, ShieldCheck } from "lucide-react";
 import BootLines from "@/components/home/BootLines";
 import ConsolePanel from "@/components/home/ConsolePanel";
+import LiveStrip from "@/components/home/LiveStrip";
+import { SignDemo } from "@/components/home/HomeLazy";
 import { Countdown } from "@/components/Launch";
 import { NOX_TOKEN, PUMP_URL } from "@/lib/config";
 
@@ -55,6 +57,24 @@ const ROWS: [string, string, string][] = [
   ["Key uses", "unlimited", "256 actions per vault"],
 ];
 
+const V4 = [
+  {
+    href: "/duress",
+    t: "Duress mode",
+    d: "A second phrase for when someone forces you: it pays a small amount at once and locks everything else for days.",
+  },
+  {
+    href: "/treasury",
+    t: "Treasuries for token projects",
+    d: "A public page, badge and API that prove a project's treasury rules live from the chain: signers, delays, vesting, pending payouts.",
+  },
+  {
+    href: "/letters",
+    t: "Sealed letters",
+    d: "Messages for your heirs, encrypted to a future date and stored next to your vault. While you are active the date moves forward; when you stop, they open.",
+  },
+];
+
 const ROADMAP = [
   { n: "01", t: "BUILD", state: "done", items: ["Protocol spec", "Anchor program", "Browser key generation"] },
   { n: "02", t: "DEVNET", state: "now", items: ["Public devnet", "Community testing", "SDK & web app"] },
@@ -106,28 +126,31 @@ export default function Home() {
         <ConsolePanel />
       </section>
 
+      <LiveStrip />
+
       {/* new in v4 */}
-      <section className="grid gap-3 sm:grid-cols-2 [&>*]:min-w-0">
-        <Link href="/duress" className="panel group flex flex-col gap-2 border-teal/40 p-6 transition-colors hover:border-teal">
-          <span className="label text-teal">new in v4</span>
-          <span className="text-[19px] font-bold">Duress mode</span>
-          <span className="text-[13px] leading-6 text-mute">A second phrase for when someone forces you: it pays a small amount at once and locks everything else for days.</span>
-          <ArrowRight size={16} className="mt-auto self-end text-teal transition-transform group-hover:translate-x-1" />
-        </Link>
-        <Link href="/treasury" className="panel group flex flex-col gap-2 border-teal/40 p-6 transition-colors hover:border-teal">
-          <span className="label text-teal">new in v4</span>
-          <span className="text-[19px] font-bold">Treasuries for token projects</span>
-          <span className="text-[13px] leading-6 text-mute">A public page, badge and API that prove a project&apos;s treasury rules live from the chain: signers, delays, vesting, pending payouts.</span>
-          <ArrowRight size={16} className="mt-auto self-end text-teal transition-transform group-hover:translate-x-1" />
-        </Link>
+      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 [&>*]:min-w-0" data-reveal-group>
+        {V4.map((c, i) => (
+          <Link
+            key={c.href}
+            href={c.href}
+            data-reveal
+            className={`panel glow group flex flex-col gap-2 border-teal/40 p-6 transition-colors hover:border-teal ${i === 2 ? "sm:col-span-2 lg:col-span-1" : ""}`}
+          >
+            <span className="label text-teal">new in v4</span>
+            <span className="text-[19px] font-bold">{c.t}</span>
+            <span className="text-[13px] leading-6 text-mute">{c.d}</span>
+            <ArrowRight size={16} className="mt-auto self-end text-teal transition-transform group-hover:translate-x-1" />
+          </Link>
+        ))}
       </section>
 
       {/* in plain words */}
-      <section className="panel overflow-hidden">
-        <div className="border-b border-line-2 px-6 py-4 text-[16px] font-medium tracking-[0.16em]">WHAT YOU GET</div>
+      <section className="panel overflow-hidden" data-reveal>
+        <div className="rv-glitch border-b border-line-2 px-6 py-4 text-[16px] font-medium tracking-[0.16em]">WHAT YOU GET</div>
         <div className="grid gap-px bg-line sm:grid-cols-2 xl:grid-cols-3 [&>*]:min-w-0">
           {PLAIN.map(({ t, Icon, d }) => (
-            <div key={t} className="flex gap-4 bg-ink-2 px-6 py-5">
+            <div key={t} className="glow relative flex gap-4 bg-ink-2 px-6 py-5">
               <Icon size={26} strokeWidth={1.4} className="mt-0.5 shrink-0 text-teal" />
               <div className="min-w-0">
                 <div className="text-[14.5px] font-bold">{t}</div>
@@ -138,10 +161,21 @@ export default function Home() {
         </div>
       </section>
 
+      {/* live signing demo */}
+      <section className="panel overflow-hidden" data-reveal aria-labelledby="sign-demo-title">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-line-2 px-6 py-4">
+          <h2 id="sign-demo-title" className="rv-glitch text-[16px] font-medium tracking-[0.16em]">
+            SIGN SOMETHING // WOTS+ LIVE
+          </h2>
+          <span className="text-[10.5px] tracking-[0.14em] text-dim">THE SAME CODE YOUR VAULT USES, IN THIS TAB</span>
+        </div>
+        <SignDemo />
+      </section>
+
       {/* steps */}
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 [&>*]:min-w-0">
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 [&>*]:min-w-0" data-reveal-group>
         {STEPS.map(({ n, t, Icon, href, d }) => (
-          <Link key={n} href={href} className="panel group flex gap-5 p-5 transition-colors hover:border-teal/50 sm:p-6">
+          <Link key={n} href={href} data-reveal className="panel glow group flex gap-5 p-5 transition-colors hover:border-teal/50 sm:p-6">
             <div className="flex shrink-0 flex-col gap-5">
               <span className="text-[18px] font-medium text-teal">{n}</span>
               <Icon size={40} strokeWidth={1.25} className="text-teal" />
@@ -156,9 +190,9 @@ export default function Home() {
       </section>
 
       {/* compare + roadmap */}
-      <section className="grid gap-3 xl:grid-cols-[1.12fr_0.88fr] [&>*]:min-w-0">
-        <div className="panel overflow-hidden">
-          <div className="border-b border-line-2 px-6 py-4 text-[16px] font-medium tracking-[0.16em]">WALLET vs NOXVAULT</div>
+      <section className="grid gap-3 xl:grid-cols-[1.12fr_0.88fr] [&>*]:min-w-0" data-reveal-group>
+        <div className="panel overflow-hidden" data-reveal>
+          <div className="rv-glitch border-b border-line-2 px-6 py-4 text-[16px] font-medium tracking-[0.16em]">WALLET vs NOXVAULT</div>
           <dl className="divide-y divide-line sm:hidden">
             <div className="grid grid-cols-2 gap-3 px-5 py-2.5 text-[10px] tracking-[0.14em] text-dim">
               <span>STANDARD WALLET</span>
@@ -196,10 +230,10 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="panel flex flex-col overflow-hidden">
+        <div className="panel flex flex-col overflow-hidden" data-reveal>
           <div className="flex items-center justify-between border-b border-line-2 px-6 py-4">
-            <span className="text-[16px] font-medium tracking-[0.16em]">WHERE WE ARE</span>
-            <span className="text-[10.5px] tracking-[0.14em] text-dim">{"ROADMAP // v2"}</span>
+            <span className="rv-glitch text-[16px] font-medium tracking-[0.16em]">WHERE WE ARE</span>
+            <span className="text-[10.5px] tracking-[0.14em] text-dim">{"ROADMAP // v4"}</span>
           </div>
           <div className="flex flex-1 items-center">
             <ol className="grid w-full grid-cols-2 gap-y-6 px-6 py-6 sm:grid-cols-4 sm:gap-y-0">
@@ -243,10 +277,10 @@ export default function Home() {
       </section>
 
       {/* $NOX + whitepaper */}
-      <section className="grid gap-3 xl:grid-cols-[1.4fr_1fr] [&>*]:min-w-0">
-        <div className="panel overflow-hidden">
+      <section className="grid gap-3 xl:grid-cols-[1.4fr_1fr] [&>*]:min-w-0" data-reveal-group>
+        <div className="panel overflow-hidden" data-reveal>
           <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-line-2 px-6 py-4">
-            <span className="text-[16px] font-medium tracking-[0.16em]">$NOX // HELD IN YOUR VAULT</span>
+            <span className="rv-glitch text-[16px] font-medium tracking-[0.16em]">$NOX // HELD IN YOUR VAULT</span>
             <span className="flex shrink-0 gap-4">
               <Link href="/token" className="text-[11px] tracking-[0.14em] text-mute hover:text-teal">
                 TIERS →
@@ -274,7 +308,7 @@ export default function Home() {
             Tiers come from $NOX held inside the vault, checked on-chain. Safety features never need a tier.
           </p>
         </div>
-        <Link href="/whitepaper" className="panel group flex flex-col justify-between gap-4 p-6 transition-colors hover:border-teal/50">
+        <Link href="/whitepaper" data-reveal className="panel glow group flex flex-col justify-between gap-4 p-6 transition-colors hover:border-teal/50">
           <div>
             <div className="label">read</div>
             <div className="mt-3 text-[22px] font-bold">The whitepaper</div>

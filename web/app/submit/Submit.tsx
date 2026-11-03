@@ -31,7 +31,7 @@ function Prepare() {
     try {
       const v = new PublicKey(vault.trim());
       const [p, r] = await Promise.all([prepareLeaves(program, v), fetchRelayerInfo().catch(() => null)]);
-      if (!p) throw new Error("No v3 vault state found for this address on this network.");
+      if (!p) throw new Error("No vault state found for this address on this network.");
       setRes(p);
       setRelayer(r);
     } catch (e) {

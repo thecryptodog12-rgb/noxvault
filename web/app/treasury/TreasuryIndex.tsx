@@ -67,13 +67,13 @@ export default function TreasuryIndex() {
         sub="Token teams ask holders to trust that the treasury, team tokens and LP won't be dumped. Put them in a Noxvault and every rule is public, live and impossible to change, with a page and a badge to prove it."
       />
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 [&>*]:min-w-0">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 [&>*]:min-w-0" data-reveal-group>
         {WHY.map(({ Icon, t, d }) => (
-          <Panel key={t} className="p-5">
+          <div key={t} data-reveal className="panel glow p-5">
             <Icon size={26} strokeWidth={1.4} className="text-teal" />
             <div className="mt-3 text-[14.5px] font-bold">{t}</div>
             <p className="mt-1.5 text-[12.5px] leading-6 text-mute">{d}</p>
-          </Panel>
+          </div>
         ))}
       </div>
 
@@ -91,7 +91,8 @@ export default function TreasuryIndex() {
         <span className="self-center text-[12.5px] text-mute">Use 2–3 signers, a recovery key and a delay of 48 h or more for a 5/5 score.</span>
       </div>
 
-      <Panel title="treasuries on this network">
+      <div data-reveal>
+      <Panel title={<span className="rv-glitch inline-block">treasuries on this network</span>}>
         {list === null ? (
           <Empty title="reading the chain…" />
         ) : list.length === 0 ? (
@@ -128,6 +129,7 @@ export default function TreasuryIndex() {
           </div>
         )}
       </Panel>
+      </div>
     </div>
   );
 }

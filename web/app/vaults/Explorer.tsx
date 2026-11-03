@@ -104,7 +104,7 @@ export default function Explorer() {
           <Empty title="loading…" />
         ) : states!.length === 0 ? (
           <Empty title="no vaults yet">
-            {deployed === false ? "Waiting for the program to go live." : <>Nobody has initialized a v3 vault yet. <Link href="/create" className="underline">Create one</Link>.</>}
+            {deployed === false ? "Waiting for the program to go live." : <>Nobody has initialized a vault yet. <Link href="/create" className="underline">Create one</Link>.</>}
           </Empty>
         ) : (
           <div className="overflow-x-auto">

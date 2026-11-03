@@ -8,6 +8,7 @@ import WalletButton from "./WalletButton";
 import { Copy } from "./ui";
 import { NETWORK, NOX_TOKEN, PUMP_URL, X_URL } from "@/lib/config";
 import { Countdown } from "./Launch";
+import Fx from "./Fx";
 
 const NAV = [
   { href: "/", label: "Home" },
@@ -42,6 +43,43 @@ const TOOLS = [
   { href: "/cosign", label: "Co-signer codes" },
   { href: "/offline", label: "Offline signing" },
   { href: "/backup", label: "Backup" },
+];
+
+// Mobile menu: the same pages, grouped so the list stays short.
+const MOBILE_GROUPS: { label: string; items: { href: string; label: string }[] }[] = [
+  {
+    label: "vault",
+    items: [
+      { href: "/create", label: "Create" },
+      { href: "/mine", label: "My vaults" },
+      { href: "/recovery", label: "Recovery" },
+      { href: "/vaults", label: "Explorer" },
+    ],
+  },
+  {
+    label: "new in v4",
+    items: [
+      { href: "/treasury", label: "Treasuries" },
+      { href: "/duress", label: "Duress" },
+      { href: "/letters", label: "Letters" },
+    ],
+  },
+  {
+    label: "token",
+    items: [
+      { href: "/token", label: "$NOX" },
+      { href: "/buy", label: "Buy" },
+    ],
+  },
+  {
+    label: "learn",
+    items: [
+      { href: "/whitepaper", label: "Whitepaper" },
+      { href: "/docs", label: "Docs" },
+      { href: "/faq", label: "FAQ" },
+    ],
+  },
+  { label: "tools", items: TOOLS.filter((t) => t.href !== "/duress" && t.href !== "/letters") },
 ];
 
 const isActive = (path: string, href: string) => (href === "/" ? path === "/" : path.startsWith(href));
@@ -114,6 +152,7 @@ export default function Shell({ children }: { children: ReactNode }) {
 
   return (
     <div className="nox-bg flex min-h-dvh flex-col">
+      <Fx />
       <header className="sticky top-0 z-30 border-b border-line bg-ink/80 backdrop-blur-md">
         <div className="mx-auto flex h-[62px] max-w-[1600px] items-center gap-4 px-4 md:px-10 xl:px-16">
           <Link href="/" className="flex shrink-0 items-center gap-3">
@@ -165,35 +204,35 @@ export default function Shell({ children }: { children: ReactNode }) {
                 <Close size={16} />
               </button>
             </div>
-            <nav className="flex-1 overflow-y-auto p-3">
-              {NAV.map((n) => {
-                const a = isActive(path, n.href);
-                return (
-                  <Link
-                    key={n.href}
-                    href={n.href}
-                    className={`flex items-center justify-between rounded px-3 py-2.5 text-[14px] ${a ? "bg-teal/[0.08] text-teal" : "text-mute hover:text-bone"}`}
-                  >
-                    {n.label}
-                    {a && <span className="h-1.5 w-1.5 rounded-full bg-teal" />}
-                  </Link>
-                );
-              })}
-              <div className="label mb-1 mt-4 px-3">tools</div>
-              {TOOLS.map((n) => {
-                const a = isActive(path, n.href);
-                return (
-                  <Link
-                    key={n.href}
-                    href={n.href}
-                    className={`flex items-center justify-between rounded px-3 py-2.5 text-[14px] ${a ? "bg-teal/[0.08] text-teal" : "text-mute hover:text-bone"}`}
-                  >
-                    {n.label}
-                  </Link>
-                );
-              })}
-              <a href={X_URL} target="_blank" rel="noreferrer" className="mt-2 flex items-center gap-2 px-3 py-2.5 text-mute">
-                <XIcon size={14} /> X
+            <nav className="flex-1 overflow-y-auto overscroll-contain px-3 pb-3 pt-2" aria-label="Mobile">
+              <Link
+                href="/"
+                className={`flex items-center justify-between rounded px-3 py-2.5 text-[14px] ${path === "/" ? "bg-teal/[0.08] text-teal" : "text-mute hover:text-bone"}`}
+              >
+                Home
+                {path === "/" && <span className="h-1.5 w-1.5 rounded-full bg-teal" />}
+              </Link>
+              {MOBILE_GROUPS.map((g) => (
+                <div key={g.label} className="mt-3 border-t border-line pt-3">
+                  <div className="label mb-1.5 px-3">{g.label}</div>
+                  <div className="grid grid-cols-2 gap-x-1 [&>*]:min-w-0">
+                    {g.items.map((n) => {
+                      const a = isActive(path, n.href);
+                      return (
+                        <Link
+                          key={n.href}
+                          href={n.href}
+                          className={`truncate rounded px-3 py-2 text-[13.5px] ${a ? "bg-teal/[0.08] text-teal" : "text-mute hover:text-bone"}`}
+                        >
+                          {n.label}
+                        </Link>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+              <a href={X_URL} target="_blank" rel="noreferrer" className="mt-3 flex items-center gap-2 border-t border-line px-3 pb-1 pt-4 text-[13.5px] text-mute">
+                <XIcon size={14} /> Noxvault on X
               </a>
             </nav>
             <div className="flex flex-col gap-3 border-t border-line p-4">

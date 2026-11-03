@@ -1,7 +1,8 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { RECOVERY_TREE, decodeState, vaultStakes, withRetry } from "@nox/sdk/client";
+import { vaultStakes, withRetry } from "@nox/sdk/client";
+import { loadVaultRows } from "@/lib/stats";
 import { loadProtocol, tiersFor } from "@/lib/nox";
 import { Empty, Note, PageHead, Panel } from "@/components/ui";
 import { useNox } from "@/lib/hooks";
@@ -32,30 +33,7 @@ interface Data {
 
 async function loadStats(program: ReturnType<typeof useNox>["program"]): Promise<Data> {
   const conn = program.provider.connection;
-  const accts = await withRetry(() =>
-    conn.getProgramAccounts(program.programId, { commitment: "confirmed", filters: [{ memcmp: program.coder.accounts.memcmp("vaultState") }] })
-  );
-  const rows = accts.flatMap(({ account }) => {
-    try {
-      const s = decodeState(program, account.data);
-      return [
-        {
-          vault: s.vault,
-          actions: s.actions,
-          createdAt: s.createdAt,
-          recovery: s.config.trees[RECOVERY_TREE].height > 0,
-          whitelist: s.config.whitelist.length > 0,
-          multisig: [0, 1, 2].filter((t) => s.config.trees[t].height > 0).length > 1,
-          heirs: s.config.heirs.length > 0,
-          migrating: !!s.migrateTo,
-          pending: !!s.pending,
-          lamports: 0,
-        },
-      ];
-    } catch {
-      return []; // account from an older program version
-    }
-  });
+  const rows = await loadVaultRows(program);
   const protocol = await loadProtocol(program).catch(() => null);
   const tierMap = await tiersFor(conn, rows.map((r) => r.vault), protocol).catch(() => null);
   const tiers: [number, number, number] | null = tierMap ? [0, 0, 0] : null;
@@ -64,12 +42,6 @@ async function loadStats(program: ReturnType<typeof useNox>["program"]): Promise
     withRetry(() => program.account.schedule.all()).then((l) => l.length).catch(() => null),
     withRetry(() => program.account.budget.all()).then((l) => l.length).catch(() => null),
   ]);
-
-  for (let i = 0; i < rows.length; i += 100) {
-    const chunk = rows.slice(i, i + 100);
-    const infos = await withRetry(() => conn.getMultipleAccountsInfo(chunk.map((r) => r.vault), "confirmed"));
-    infos.forEach((info, j) => (chunk[j].lamports = info?.lamports ?? 0));
-  }
 
   // Stake accounts: only the largest vaults, to keep this to a handful of RPC calls.
   const top = [...rows].sort((a, b) => b.lamports - a.lamports).slice(0, STAKE_SCAN);
@@ -220,8 +192,8 @@ export default function Stats() {
       <div className="flex flex-col gap-4">
         {head}
         <Panel>
-          <Empty title="No v3 data to show">
-            The program on {NETWORK} did not return v3 vault accounts (it may still run an older version, or the RPC refused the
+          <Empty title="No vault data to show">
+            The program on {NETWORK} did not return vault accounts (it may still run an older version, or the RPC refused the
             query). <span className="text-mute">Details: {err.slice(0, 160)}</span>
           </Empty>
           <div className="flex justify-center pb-8">
@@ -241,7 +213,7 @@ export default function Stats() {
       {data.vaults === 0 ? (
         <Panel>
           <Empty title="No vaults yet">
-            Nobody has initialized a v3 vault on {NETWORK} so far. <Link href="/create" className="text-teal">Create the first one</Link>.
+            Nobody has initialized a vault on {NETWORK} so far. <Link href="/create" className="text-teal">Create the first one</Link>.
           </Empty>
         </Panel>
       ) : (

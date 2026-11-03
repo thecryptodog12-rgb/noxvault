@@ -12,6 +12,13 @@ export const metadata: Metadata = {
   description: "A safer wallet for SOL and tokens: quantum-proof keys, recovery, privacy, inheritance and spending limits, enforced on-chain.",
   icons: { icon: "/icon.svg" },
   metadataBase: new URL("https://www.nox-vault.com"),
+  openGraph: {
+    type: "website",
+    siteName: "Noxvault",
+    url: "/",
+    title: "Noxvault — the safer, quantum-proof wallet for Solana",
+    description: "A safer wallet for SOL and tokens: quantum-proof keys, recovery, privacy, inheritance and spending limits, enforced on-chain.",
+  },
   twitter: { card: "summary_large_image", site: "@noxvaultHQ", creator: "@noxvaultHQ" },
 };
 

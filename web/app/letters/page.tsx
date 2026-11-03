@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
+import { pageMeta } from "@/lib/meta";
 import { Clock, FileLock2, KeyRound, RefreshCw } from "lucide-react";
 import LettersOwner from "./LettersOwner";
 
-export const metadata: Metadata = {
-  title: "Sealed letters — Noxvault",
-  description: "Letters to your heirs, encrypted to a future date with drand timelock encryption and stored with your vault. They open around the time your testament runs.",
-};
+export const metadata: Metadata = pageMeta(
+  "Sealed letters — Noxvault",
+  "Messages for your heirs, encrypted to a future date and stored next to your vault. While you are active the date moves forward; when you stop, they open."
+);
 
 const STEPS = [
   { Icon: KeyRound, t: "Authorize a letter key", d: "Your phrase signs one action that lets a separate, ordinary key write your vault's letters. That key can never move funds." },
@@ -28,9 +29,9 @@ export default function Page() {
         </p>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 [&>*]:min-w-0">
+      <div className="grid gap-3 sm:grid-cols-2 [&>*]:min-w-0" data-reveal-group>
         {STEPS.map(({ Icon, t, d }, i) => (
-          <div key={t} className="panel p-5">
+          <div key={t} data-reveal className="panel glow p-5">
             <div className="flex items-center gap-3">
               <span className="text-[13px] text-teal">0{i + 1}</span>
               <Icon size={22} strokeWidth={1.4} className="text-teal" />
@@ -41,8 +42,8 @@ export default function Page() {
         ))}
       </div>
 
-      <div className="panel border-warn/40 p-5 text-[13px] leading-6 text-mute">
-        <div className="mb-1 font-bold text-warn">Know the limits</div>
+      <div data-reveal className="panel border-warn/40 p-5 text-[13px] leading-6 text-mute">
+        <div className="rv-glitch mb-1 font-bold text-warn">Know the limits</div>
         <ul className="list-disc pl-5">
           <li>
             A letter opens at its date <span className="text-bone">even if you are alive</span> and simply did not open your vault in time. The app re-seals on every visit; if you
