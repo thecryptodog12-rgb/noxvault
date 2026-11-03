@@ -2,13 +2,13 @@
 
 A vault on Solana whose funds move only with **hash-based one-time signatures** (WOTS+), arranged
 in Merkle trees so one fixed vault address serves many actions. On top of that: multi-signer
-vaults, a recovery key, a duress phrase, an on-chain testament, spending rules, schedules and session budgets,
+vaults, a recovery key, a duress phrase, an on-chain testament, sealed letters, spending rules, schedules and session budgets,
 migration, invoice addresses, and an **Escape Hatch** that also protects a user's ordinary
 ed25519 wallet, triggered by an on-chain **quantum canary**. Everything works for SOL and for
 SPL / Token-2022 tokens.
 
 This file is the single source of truth for the program, the SDK, the web app and the keeper.
-v3, v2 and v1 are in git history. v4 adds duress mode (§11) and changes the `Config` and
+v3, v2 and v1 are in git history. v4 adds duress mode (§11) and sealed letters (§12) and changes the `Config` and
 `VaultState` layouts, so v3 devnet vaults are not readable by the v4 program (domains unchanged).
 
 ## 1. Parameters
@@ -78,6 +78,7 @@ enum Kind {
   8  Budget         { id: u8, session: Pubkey, mint, limit, period: i64, expires: i64 }
   9  CancelBudget   { id: u8 }
   10 Migrate        { new_vault }
+  11 LetterKey      { key: Pubkey }             // sealed letters (§12); all-zero key revokes
 }
 mint = all-zero key for SOL
 d = SHA256("nox3/msg" || program_id || vault || u8(tree) || u16le(leaf) || borsh(Action))
@@ -123,11 +124,12 @@ used once (bitmaps in `state`). An unexecuted approval can be discarded after 7 
 4. `approve` — rebuilds leaf and root, burns the leaf, records the approval, closes the buffer
 5. `execute_withdraw` · `execute_withdraw_token` · `execute_stake` · `execute_stake_authority`
    · `execute_admin` (Cancel, Ping, CancelSchedule, CancelBudget, Migrate) · `execute_create`
-   (Schedule, Budget) — permissionless once approved
+   (Schedule, Budget) · `execute_letter_key` (LetterKey) — permissionless once approved
 6. Permissionless after that: `execute_pending(_token)`, `run_schedule(_token)`,
    `migrate_sol`, `migrate_token`, `testament_sol`, `testament_token`, `testament_unstake`,
    `testament_collect`, `sweep_inbox`, `sweep_inbox_token`
 7. Session key: `spend_budget(_token)`
+8. Letter key: `write_letter`, `append_letter`, `close_letter` (§12)
 
 ## 6. Invoice addresses
 
@@ -216,3 +218,37 @@ for a small amount while the rest of the vault locks.
 - Off-chain: the bot watches `lockdown_until` and alerts recovery contacts. The lockdown is
   visible on chain; the design caps the loss, it does not hide. The app in duress mode shows the
   duress limit as the balance. SOL only; tokens stay locked. Never needs a tier.
+
+## 12. Sealed letters
+
+Letters for heirs, encrypted client-side with **tlock** to a future **drand quicknet** round
+(chain `52db9ba7…`, 3 s rounds). Nobody can read one before its round; after it, anyone holding
+the ciphertext can (the reader fetches that round's beacon). Nothing on chain checks drand.
+
+- **Letter key.** `Kind::LetterKey { key }` (tag 11, borsh `u8(11) || key`, digest and
+  `action_hash` exactly as every other kind) authorizes an ordinary ed25519 key, like a budget
+  session key. `execute_letter_key` stores it in `PDA(["letterkey", vault])` {vault, key,
+  updated_at}, created on first use (the executor pays its rent); `VaultState` is unchanged.
+  Only a **signer-threshold** approval sets it: duress approvals are refused (`DuressSolOnly`),
+  recovery approvals too, also after the owner's inactivity (`LetterKeySignersOnly`); during a
+  lockdown it is refused like any non-cancel. The approval counts as owner activity like any
+  signer approval. Setting a new key replaces the old one; the all-zero key revokes.
+- **Letters.** `PDA(["letter", vault, u32le(id)])` {vault, id, unlock_round: u64, updated_at,
+  filled: u32, label: bytes ≤ 64 (plaintext hint), content: bytes ≤ 8192 (ciphertext)}. Only the
+  current letter key signs; it also pays the rent:
+  - `write_letter(id, unlock_round, label, len, data)` creates the letter or overwrites it, sized
+    for `len` bytes (realloc; spare rent goes back to the key), with `data` as its first bytes;
+  - `append_letter(id, offset, data)` writes the next chunk, `offset` = bytes filled so far;
+  - `close_letter(id)` deletes it, rent to the key.
+  A letter is complete when `filled = len(content)`. Letter instructions never touch the vault's
+  funds or `last_active`: a leaked letter key can overwrite or delete letters, never move funds or
+  keep the vault "active".
+- **Rolling date (client).** The app seals each letter to round(now + testament_delay + 7 days),
+  or to a chosen distance when the vault has no testament, and re-seals every letter to a later
+  round whenever the owner opens the vault. Re-sealing needs the plaintext, so the app keeps it in
+  the browser, AES-GCM encrypted under HKDF-SHA256(ikm = the signer tree's sk_seed, salt = vault,
+  info = "nox4/letters/local"), together with the letter key. Ciphertext on chain is the binary
+  age file tlock produces (no armor); its plaintext is JSON `{v: 1, t: text}` or, with an extra
+  passphrase for the heir, `{v: 1, pw: {s, i, c}}` (PBKDF2-SHA256 210 000 rounds, AES-GCM).
+- **Limits.** A letter opens at its round even if the owner is alive but did not refresh in time.
+  After the round, anyone with the ciphertext can read it unless it also has a passphrase.

@@ -210,14 +210,15 @@ export type Kind =
   | { kind: "cancelSchedule"; id: number }
   | { kind: "budget"; id: number; session: Key32; mint: Key32; limit: bigint; period: bigint; expires: bigint }
   | { kind: "cancelBudget"; id: number }
-  | { kind: "migrate"; newVault: Key32 };
+  | { kind: "migrate"; newVault: Key32 }
+  | { kind: "letterKey"; key: Key32 }; // sealed letters (docs/SPEC.md §12); all-zero key revokes
 
 /** An action plus the fee the vault pays (lamports) to whoever executes it. */
 export type Action = Kind & { fee: bigint; feePayee: Key32 };
 
 export const KIND_TAGS: Kind["kind"][] = [
   "withdraw", "stake", "unstake", "collectStake", "cancel", "ping",
-  "schedule", "cancelSchedule", "budget", "cancelBudget", "migrate",
+  "schedule", "cancelSchedule", "budget", "cancelBudget", "migrate", "letterKey",
 ];
 
 export function encodeKind(k: Kind): Uint8Array {
@@ -242,6 +243,8 @@ export function encodeKind(k: Kind): Uint8Array {
       return concat(tag, u8(k.id), k.session, k.mint, u64le(k.limit), i64le(k.period), i64le(k.expires));
     case "migrate":
       return concat(tag, k.newVault);
+    case "letterKey":
+      return concat(tag, k.key);
   }
 }
 

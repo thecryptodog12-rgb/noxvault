@@ -14,6 +14,101 @@ export type Noxvault = {
   },
   "instructions": [
     {
+      "name": "appendLetter",
+      "docs": [
+        "Writes the next chunk of a letter's ciphertext, at `offset` == bytes filled so far."
+      ],
+      "discriminator": [
+        139,
+        59,
+        39,
+        30,
+        97,
+        16,
+        198,
+        218
+      ],
+      "accounts": [
+        {
+          "name": "key",
+          "signer": true
+        },
+        {
+          "name": "vault",
+          "relations": [
+            "letterKey",
+            "letter"
+          ]
+        },
+        {
+          "name": "letterKey",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  116,
+                  116,
+                  101,
+                  114,
+                  107,
+                  101,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "letter",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  116,
+                  116,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "arg",
+                "path": "id"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "id",
+          "type": "u32"
+        },
+        {
+          "name": "offset",
+          "type": "u32"
+        },
+        {
+          "name": "data",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
       "name": "applyLinkChange",
       "discriminator": [
         75,
@@ -181,6 +276,94 @@ export type Noxvault = {
         }
       ],
       "args": []
+    },
+    {
+      "name": "closeLetter",
+      "docs": [
+        "Deletes a letter; its rent goes back to the letter key."
+      ],
+      "discriminator": [
+        15,
+        189,
+        215,
+        72,
+        241,
+        80,
+        173,
+        183
+      ],
+      "accounts": [
+        {
+          "name": "key",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "vault",
+          "relations": [
+            "letterKey",
+            "letter"
+          ]
+        },
+        {
+          "name": "letterKey",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  116,
+                  116,
+                  101,
+                  114,
+                  107,
+                  101,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "letter",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  116,
+                  116,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "arg",
+                "path": "id"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "id",
+          "type": "u32"
+        }
+      ]
     },
     {
       "name": "discardApproval",
@@ -732,6 +915,106 @@ export type Noxvault = {
           "type": "u8"
         }
       ]
+    },
+    {
+      "name": "executeLetterKey",
+      "docs": [
+        "LetterKey (docs/SPEC.md §12): only a signer-threshold approval sets the letter key. Duress",
+        "and recovery approvals never do, not even after the owner's inactivity."
+      ],
+      "discriminator": [
+        38,
+        84,
+        127,
+        113,
+        21,
+        106,
+        19,
+        176
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "approval",
+          "writable": true
+        },
+        {
+          "name": "creator",
+          "writable": true,
+          "relations": [
+            "approval"
+          ]
+        },
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "approval",
+            "state"
+          ]
+        },
+        {
+          "name": "letterKey",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  116,
+                  116,
+                  101,
+                  114,
+                  107,
+                  101,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "feePayee",
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
     },
     {
       "name": "executePending",
@@ -3500,6 +3783,118 @@ export type Noxvault = {
       ]
     },
     {
+      "name": "writeLetter",
+      "docs": [
+        "Creates or overwrites letter `id`: sizes it for `len` ciphertext bytes and writes the first",
+        "`data` bytes (the rest follows with `append_letter`). Signed and paid by the letter key;",
+        "never touches the vault's funds or its activity clock."
+      ],
+      "discriminator": [
+        3,
+        237,
+        216,
+        96,
+        81,
+        249,
+        12,
+        7
+      ],
+      "accounts": [
+        {
+          "name": "key",
+          "docs": [
+            "The vault's letter key: signs and pays."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "vault",
+          "relations": [
+            "letterKey"
+          ]
+        },
+        {
+          "name": "letterKey",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  116,
+                  116,
+                  101,
+                  114,
+                  107,
+                  101,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "letter",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  101,
+                  116,
+                  116,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "arg",
+                "path": "id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "id",
+          "type": "u32"
+        },
+        {
+          "name": "unlockRound",
+          "type": "u64"
+        },
+        {
+          "name": "label",
+          "type": "bytes"
+        },
+        {
+          "name": "len",
+          "type": "u32"
+        },
+        {
+          "name": "data",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
       "name": "writeSigs",
       "discriminator": [
         216,
@@ -3590,6 +3985,32 @@ export type Noxvault = {
         28,
         82,
         115
+      ]
+    },
+    {
+      "name": "letter",
+      "discriminator": [
+        209,
+        169,
+        19,
+        117,
+        140,
+        190,
+        145,
+        212
+      ]
+    },
+    {
+      "name": "letterKey",
+      "discriminator": [
+        30,
+        105,
+        15,
+        91,
+        187,
+        160,
+        26,
+        16
       ]
     },
     {
@@ -3838,6 +4259,26 @@ export type Noxvault = {
       "code": 6035,
       "name": "duressSolOnly",
       "msg": "A duress approval can only withdraw SOL"
+    },
+    {
+      "code": 6036,
+      "name": "letterKeySignersOnly",
+      "msg": "Only the vault's signers can set the letter key (not duress or recovery)"
+    },
+    {
+      "code": 6037,
+      "name": "notLetterKey",
+      "msg": "This key is not the vault's letter key"
+    },
+    {
+      "code": 6038,
+      "name": "letterTooBig",
+      "msg": "Letter too big: at most 8192 ciphertext bytes and a 64-byte label"
+    },
+    {
+      "code": 6039,
+      "name": "letterOverflow",
+      "msg": "Letter chunk out of order or past the letter's length"
     }
   ],
   "types": [
@@ -4247,6 +4688,94 @@ export type Noxvault = {
                 "type": "pubkey"
               }
             ]
+          },
+          {
+            "name": "letterKey",
+            "fields": [
+              {
+                "name": "key",
+                "type": "pubkey"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "letter",
+      "docs": [
+        "One sealed letter: tlock ciphertext only, written by the vault's letter key.",
+        "PDA [\"letter\", vault, u32le(id)]."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "id",
+            "type": "u32"
+          },
+          {
+            "name": "unlockRound",
+            "docs": [
+              "drand quicknet round after which the ciphertext can be decrypted."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "updatedAt",
+            "type": "i64"
+          },
+          {
+            "name": "filled",
+            "docs": [
+              "Bytes of `content` written so far; the letter is complete when filled == content.len()."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "label",
+            "docs": [
+              "Short plaintext label / recipient hint (at most MAX_LETTER_LABEL bytes)."
+            ],
+            "type": "bytes"
+          },
+          {
+            "name": "content",
+            "docs": [
+              "Opaque ciphertext (at most MAX_LETTER bytes)."
+            ],
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "letterKey",
+      "docs": [
+        "The key allowed to write a vault's sealed letters (docs/SPEC.md §12). A separate account so",
+        "`VaultState` keeps its layout. PDA [\"letterkey\", vault]."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "key",
+            "docs": [
+              "default = no letter key (revoked)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "updatedAt",
+            "type": "i64"
           }
         ]
       }
