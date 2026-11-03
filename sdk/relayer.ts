@@ -4,8 +4,10 @@ import { Program } from "@coral-xyz/anchor";
 import { Keypair, PublicKey, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
 import type { Noxvault } from "./idl/noxvault";
 import {
+  DURESS_TREE,
   SignedAction,
   SOL_MINT,
+  treeOf,
   TIER_SENTINEL,
   fetchProtocol,
   vaultTier,
@@ -81,7 +83,7 @@ export function decodeRelayRequest(r: RelayRequest): SignedAction {
     } else throw new Error(`unexpected field ${k}`);
   }
   encodeAction(action as Action); // throws if a field is missing
-  if (!Number.isInteger(r.tree) || r.tree < 0 || r.tree > 3) throw new Error("bad tree");
+  if (!Number.isInteger(r.tree) || r.tree < 0 || r.tree > DURESS_TREE) throw new Error("bad tree");
   if (!Number.isInteger(r.leaf) || r.leaf < 0 || r.leaf > 255) throw new Error("bad leaf");
   if (!Array.isArray(r.signature) || r.signature.length !== LEN) throw new Error("bad signature");
   if (!Array.isArray(r.authPath) || r.authPath.length > 8) throw new Error("bad auth path");
@@ -104,7 +106,8 @@ export async function checkRelay(program: Program<Noxvault>, relayer: PublicKey,
   const conn = program.provider.connection;
   const state = await fetchState(program, s.vault);
   if (!state) return "vault not initialized";
-  const { root, height } = state.config.trees[s.tree];
+  if (s.tree < 0 || s.tree > DURESS_TREE) return "wrong tree";
+  const { root, height } = treeOf(state.config, s.tree);
   if (!height || s.authPath.length !== height) return "wrong tree";
   if (leafUsed(state, s.tree, s.leaf)) return "one-time key already used";
   const digest = actionDigest(program.programId, s.vault, s.tree, s.leaf, s.action);
@@ -116,7 +119,8 @@ export async function checkRelay(program: Program<Noxvault>, relayer: PublicKey,
     if (s.action.fee < policy.minFee) return `fee must be at least ${policy.minFee} lamports`;
   }
   const lamports = BigInt(await conn.getBalance(s.vault, "confirmed"));
-  const solOut = s.action.fee + (s.action.kind === "withdraw" && new PublicKey(s.action.mint).equals(SOL_MINT) ? s.action.amount : 0n);
+  // A duress withdrawal is capped on chain, so its amount is not checked here.
+  const solOut = s.action.fee + (s.tree !== DURESS_TREE && s.action.kind === "withdraw" && new PublicKey(s.action.mint).equals(SOL_MINT) ? s.action.amount : 0n);
   if (solOut > lamports) return "vault cannot pay this";
   return null;
 }

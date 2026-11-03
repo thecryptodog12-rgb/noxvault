@@ -8,6 +8,7 @@ import * as wots from "../sdk/wots";
 import { checkRelay, decodeRelayRequest, encodeRelayRequest, relay } from "../sdk/relayer";
 import {
   ActionPlan,
+  DURESS_TREE,
   HASHES_PER_TX,
   RECOVERY_TREE,
   SignedAction,
@@ -31,6 +32,7 @@ import {
   inSlot,
   leafUsed,
   makeConfig,
+  makeDuressSigner,
   makeSigner,
   migrateIxs,
   newMasterSecret,
@@ -70,7 +72,7 @@ const ZERO = new Uint8Array(32);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const now = () => BigInt(Math.floor(Date.now() / 1000));
 
-describe("noxvault v3", () => {
+describe("noxvault v4", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
   const program = anchor.workspace.noxvault as Program<Noxvault>;
@@ -188,7 +190,14 @@ describe("noxvault v3", () => {
     const d2 = d.slice();
     d2[5] ^= 1;
     expect(wots.equal(wots.recoverRoot(primary.seeds.pkSeed, leaf, d2, sig, path), primary.pub.root)).to.eq(false);
-    expect(wots.encodeConfig(makeConfig(primary)).length).to.eq(429);
+    expect(wots.encodeConfig(makeConfig(primary)).length).to.eq(478);
+    // Every vault has a duress tree: a decoy when there is no duress phrase, reproducible by its owner.
+    const c = makeConfig(primary);
+    expect(c.duress.height).to.eq(primary.pub.height);
+    expect(wots.equal(c.duress.root, ZERO)).to.eq(false);
+    expect(wots.equal(makeConfig(primary).duress.root, c.duress.root)).to.eq(true);
+    expect(c.duressLimit).to.eq(SOL(0.5));
+    expect(c.duressLock).to.eq(3n * 86_400n);
     expect(wots.equal(wordsToSecret(secretToWords(master)), master)).to.eq(true);
     const worst = wots.verifyCost(new Uint8Array(32));
     for (const [from, to] of verifyRanges(worst, HASHES_PER_TX)) expect(worst.slice(from, to).reduce((a, b) => a + b, 0)).to.be.at.most(HASHES_PER_TX);
@@ -549,6 +558,129 @@ describe("noxvault v3", () => {
       expect(c.baseline).to.eq(SOL(0.5));
       expect(c.tripped).to.eq(false);
       await expectError(send([await tripCanaryIx(program)]), "NotTriggered");
+    });
+  });
+
+  // ---------- duress mode ----------
+
+  describe("duress mode", () => {
+    const friend = Keypair.generate().publicKey;
+    const stranger = Keypair.generate().publicKey;
+    const attacker = Keypair.generate().publicKey;
+    const LIMIT = SOL(0.2);
+    let owner: Signer;
+    let duress: Signer;
+    let rec: Signer;
+    let v: PublicKey;
+    let held: wots.Action; // a signer withdrawal approved during the lockdown
+
+    before(async () => {
+      owner = makeSigner(newMasterSecret(), 0, 0);
+      duress = makeDuressSigner(newMasterSecret(), 0);
+      rec = makeSigner(newMasterSecret(), 0, RECOVERY_TREE);
+      ({ vault: v } = await newVault(
+        { recoveryRoot: rec.pub.root, recoveryDelaySecs: 3600, whitelist: [friend], slowDelaySecs: 3600, duressRoot: duress.pub.root, duressLimitLamports: LIMIT, duressLockSecs: 2 * 86_400 },
+        owner
+      ));
+      await fund(v, 2);
+      await fund(friend, 0.01);
+    });
+
+    it("refuses a vault without a usable duress tree or with a lockdown under a day", async () => {
+      const s = makeSigner(newMasterSecret(), 0, 0);
+      await expectError(newVault({ duressLockSecs: 3600 }, s), "BadConfig");
+      const noDuress = { ...makeConfig(s), duress: { root: ZERO, height: 0 } };
+      await expectError(send([await initVaultIx(program, payer, noDuress)]), "BadConfig");
+    });
+
+    it("a duress withdrawal pays at most the duress limit at once, to any address, and locks the vault", async () => {
+      // A restricted signer withdrawal is waiting for the slow delay.
+      await act(owner, v, withdraw(stranger, SOL(0.1)));
+      expect((await fetchState(program, v))!.pending?.dest.equals(stranger)).to.eq(true);
+      const before = (await fetchState(program, v))!;
+      const t0 = Number(now());
+      const { plan } = await act(duress, v, withdraw(attacker, SOL(1.5)));
+      expect(plan.willExecute).to.eq(true);
+      expect(await conn.getBalance(attacker)).to.eq(Number(LIMIT));
+      const st = (await fetchState(program, v))!;
+      expect(st.lockdownUntil).to.be.at.least(t0 + 2 * 86_400 - 5);
+      expect(st.lastActive).to.be.at.least(before.lastActive);
+      expect(leafUsed(st, DURESS_TREE, 0)).to.eq(true);
+      // The duress tree is found like any other.
+      expect((await findVaultsFor(program, duress)).map((f) => f.state.vault.toBase58())).to.deep.eq([v.toBase58()]);
+    });
+
+    it("refuses signer withdrawals and pending payouts during the lockdown", async () => {
+      held = withdraw(friend, SOL(0.1));
+      const st = (await fetchState(program, v))!;
+      const { leaf } = pickLeaf(st, owner, await findSignedMessages(program, v, owner));
+      expect((await preflightAction({ program, payer, vault: v, signer: owner, leaf, action: held })).errors.join()).to.contain("lockdown");
+      const plan = await planAction({ program, payer, vault: v, signer: owner, leaf, action: held });
+      expect(plan.willExecute).to.eq(false);
+      await run(plan);
+      await expectError(send([await executeIx(program, payer, v, held, payer)]), "Lockdown");
+      await expectError(send([await executePendingIx(program, payer, v, st)]), "Lockdown");
+    });
+
+    it("still executes Ping, and a second duress withdrawal pays nothing more", async () => {
+      const actions = (await fetchState(program, v))!.actions;
+      await act(owner, v, { kind: "ping", ...fee0 });
+      expect((await fetchState(program, v))!.actions).to.eq(actions + 1);
+      await act(duress, v, withdraw(attacker, SOL(0.1)));
+      expect(await conn.getBalance(attacker)).to.eq(Number(LIMIT));
+    });
+
+    it("never lets a duress approval move tokens, stake, schedule or migrate", async () => {
+      const vAta = await getOrCreateAssociatedTokenAccount(conn, wallet, mint, v, true);
+      await mintTo(conn, wallet, mint, vAta.address, wallet, 1_000);
+      const votes = await conn.getVoteAccounts();
+      const vote = new PublicKey((votes.current[0] ?? votes.delinquent[0]).votePubkey);
+      const { vault: target } = await newVault();
+      const refused: wots.Action[] = [
+        { kind: "withdraw", mint: mint.toBytes(), dest: attacker.toBytes(), amount: 500n, ...fee0 },
+        { kind: "stake", seed: 3, vote: vote.toBytes(), amount: SOL(0.1), ...fee0 },
+        { kind: "schedule", id: 9, mint: ZERO, dest: attacker.toBytes(), amount: SOL(0.01), interval: 60n, count: 1, start: 0n, ...fee0 },
+        { kind: "migrate", newVault: target.toBytes(), ...fee0 },
+      ];
+      for (const [i, action] of refused.entries()) {
+        const leaf = 20 + i; // fresh leaves: these messages may stay half-published
+        expect((await preflightAction({ program, payer, vault: v, signer: duress, leaf, action })).errors.join()).to.contain("only withdraw SOL");
+        await expectError(run(await planAction({ program, payer, vault: v, signer: duress, leaf, action, execute: true })), "DuressSolOnly");
+        if (await conn.getAccountInfo(unlockPda(v, payer, program.programId))) await cancel(v);
+      }
+      expect(await conn.getAccountInfo(stakePda(v, 3, program.programId))).to.eq(null);
+      expect((await fetchState(program, v))!.migrateTo).to.eq(null);
+    });
+
+    it("a recovery Cancel ends the lockdown, then signer withdrawals work again", async () => {
+      await act(rec, v, { kind: "cancel", ...fee0 });
+      const st = (await fetchState(program, v))!;
+      expect(st.lockdownUntil).to.eq(0);
+      expect(st.pending).to.eq(null);
+      const before = await conn.getBalance(friend);
+      await send([await executeIx(program, payer, v, held, payer)]);
+      expect(await conn.getBalance(friend)).to.eq(before + Number(SOL(0.1)));
+      await act(owner, v, withdraw(friend, SOL(0.05)));
+      expect(await conn.getBalance(friend)).to.eq(before + Number(SOL(0.15)));
+    });
+
+    it("never counts the duress tree toward a 2-of-3 threshold", async () => {
+      const p = makeSigner(newMasterSecret(), 0, 0);
+      const c1 = inSlot(makeSigner(newMasterSecret(), 0, 0), 1);
+      const d = makeDuressSigner(newMasterSecret(), 0);
+      const { vault: mv } = await newVault({ coSigners: [c1.pub.root], threshold: 2, duressRoot: d.pub.root }, p, SENTINEL);
+      await fund(mv, 1);
+      const dest = Keypair.generate().publicKey;
+      const action = withdraw(dest, SOL(0.3));
+      await act(p, mv, action);
+      const dp = await planAction({ program, payer, vault: mv, signer: d, leaf: 0, action });
+      expect(dp.willExecute).to.eq(false);
+      await run(dp);
+      expect((await fetchApproval(program, mv, action))!.trees).to.eq(0b10001);
+      await expectError(send([await executeIx(program, payer, mv, action, payer)]), "NotApproved");
+      expect(await conn.getBalance(dest)).to.eq(0);
+      await act(c1, mv, action);
+      expect(await conn.getBalance(dest)).to.eq(Number(SOL(0.3)));
     });
   });
 

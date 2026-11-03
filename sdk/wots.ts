@@ -76,9 +76,12 @@ export interface TreeSeeds {
   pkSeed: Uint8Array;
 }
 
-/** Seed index of a tree (docs/SPEC.md §2): primary = v, recovery = v + 2^31. */
-export function seedIndex(vaultNumber: number, tree: 0 | 1): number {
-  return (vaultNumber + (tree === 1 ? 0x8000_0000 : 0)) >>> 0;
+/**
+ * Seed index of a tree (docs/SPEC.md §2): signer = v, recovery = v + 2^31, duress = v + 2^30.
+ * Vault numbers stay below 2^30, so the three ranges never overlap.
+ */
+export function seedIndex(vaultNumber: number, tree: 0 | 1 | 2): number {
+  return (vaultNumber + (tree === 1 ? 0x8000_0000 : tree === 2 ? 0x4000_0000 : 0)) >>> 0;
 }
 
 export function treeSeeds(master: Uint8Array, vaultNumber: number): TreeSeeds {
@@ -269,6 +272,9 @@ export interface Config {
   instantLimit: bigint; // lamports per 24 h
   heirs: Heir[]; // up to 4, bps sum 10000
   testamentDelay: bigint;
+  duress: TreeCfg; // always filled: a random-looking root when there is no duress phrase
+  duressLimit: bigint; // lamports a duress withdrawal pays out at once
+  duressLock: bigint; // lockdown seconds after a duress withdrawal (>= 1 day)
 }
 
 const pad4 = <T>(xs: T[], empty: T): T[] => {
@@ -286,7 +292,11 @@ export function encodeConfig(c: Config): Uint8Array {
     i64le(c.slowDelay),
     u64le(c.instantLimit),
     ...pad4(c.heirs, { addr: new Uint8Array(32), bps: 0 }).map((h) => concat(h.addr, u16le(h.bps))),
-    i64le(c.testamentDelay)
+    i64le(c.testamentDelay),
+    c.duress.root,
+    u8(c.duress.height),
+    u64le(c.duressLimit),
+    i64le(c.duressLock)
   );
 }
 

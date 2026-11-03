@@ -3828,6 +3828,16 @@ export type Noxvault = {
       "code": 6033,
       "name": "notAdmin",
       "msg": "Only the protocol admin can do this"
+    },
+    {
+      "code": 6034,
+      "name": "lockdown",
+      "msg": "The vault is in lockdown: only Ping and cancels execute until it ends"
+    },
+    {
+      "code": 6035,
+      "name": "duressSolOnly",
+      "msg": "A duress approval can only withdraw SOL"
     }
   ],
   "types": [
@@ -4039,6 +4049,32 @@ export type Noxvault = {
           },
           {
             "name": "testamentDelay",
+            "type": "i64"
+          },
+          {
+            "name": "duress",
+            "docs": [
+              "Duress tree: always filled (a random root when the owner set no duress phrase), so",
+              "every vault looks the same (docs/SPEC.md §11)."
+            ],
+            "type": {
+              "defined": {
+                "name": "tree"
+              }
+            }
+          },
+          {
+            "name": "duressLimit",
+            "docs": [
+              "Lamports a duress withdrawal pays out at once."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "duressLock",
+            "docs": [
+              "Lockdown length after a duress withdrawal (at least one day)."
+            ],
             "type": "i64"
           }
         ]
@@ -4595,7 +4631,7 @@ export type Noxvault = {
           {
             "name": "used",
             "docs": [
-              "Bit l of used[t] set once leaf l of tree t has been used."
+              "Bit l of used[t] set once leaf l of tree t has been used (t = 4: duress tree)."
             ],
             "type": {
               "array": [
@@ -4605,7 +4641,7 @@ export type Noxvault = {
                     32
                   ]
                 },
-                4
+                5
               ]
             }
           },
@@ -4647,6 +4683,13 @@ export type Noxvault = {
             "type": {
               "option": "pubkey"
             }
+          },
+          {
+            "name": "lockdownUntil",
+            "docs": [
+              "Until then only Ping and cancels execute (set by a duress withdrawal, docs/SPEC.md §11)."
+            ],
+            "type": "i64"
           }
         ]
       }

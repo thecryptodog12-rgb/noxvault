@@ -1,6 +1,6 @@
-//! Noxvault v3: vaults whose funds move only with hash-based one-time signatures, with
-//! multi-signer approvals, recovery, testament, spending rules, schedules, session budgets,
-//! migration, invoice addresses and an Escape Hatch for ordinary wallets. See docs/SPEC.md.
+//! Noxvault v4: vaults whose funds move only with hash-based one-time signatures, with
+//! multi-signer approvals, recovery, duress mode, testament, spending rules, schedules, session
+//! budgets, migration, invoice addresses and an Escape Hatch for ordinary wallets. See docs/SPEC.md.
 #![allow(deprecated)] // solana_program::stake re-exports; the replacement crate needs a newer Rust
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::invoke_signed;
@@ -34,6 +34,11 @@ pub mod noxvault {
             require!(if t.used() { (1..=max).contains(&t.height) } else { t.height == 0 }, NoxError::BadConfig);
         }
         require!(!config.has_recovery() || config.recovery_delay > 0, NoxError::BadConfig);
+        // Duress (docs/SPEC.md §11): always filled, never sharing a root with another slot.
+        let d = config.duress;
+        require!(d.used() && (1..=wots::MAX_HEIGHT as u8).contains(&d.height), NoxError::BadConfig);
+        require!(config.trees.iter().all(|t| t.root != d.root), NoxError::BadConfig);
+        require!(config.duress_lock >= MIN_DURESS_LOCK, NoxError::BadConfig);
         require!(config.slow_delay >= 0 && config.testament_delay >= 0, NoxError::BadConfig);
         let bps: u32 = config.heirs.iter().filter(|h| h.addr != Pubkey::default()).map(|h| h.bps as u32).sum();
         let any_heir = config.heirs.iter().any(|h| h.addr != Pubkey::default());
@@ -87,8 +92,7 @@ pub mod noxvault {
         action: Action,
     ) -> Result<()> {
         let st = &ctx.accounts.state;
-        require!(tree <= RECOVERY_TREE, NoxError::BadTree);
-        let t = st.config.trees[tree as usize];
+        let t = tree_of(&st.config, tree).ok_or(NoxError::BadTree)?;
         require!(t.used() && auth_path.len() == t.height as usize, NoxError::BadTree);
         require!((leaf as u32) < (1u32 << t.height), NoxError::BadTree);
         require!(!st.used(tree, leaf), NoxError::KeyUsed);
@@ -164,7 +168,7 @@ pub mod noxvault {
         require_keys_eq!(u.payer, a.rent_receiver.key(), NoxError::WrongPayer);
         require_keys_eq!(u.vault, a.state.vault, NoxError::WrongVault);
         require!(u.verified == ALL_CHAINS, NoxError::NotVerified);
-        let t = a.state.config.trees[u.tree as usize];
+        let t = tree_of(&a.state.config, u.tree).ok_or(NoxError::BadTree)?;
         require!(t.used() && t.height == u.height, NoxError::BadTree);
         let leaf = wots::leaf_hash(&u.pk_seed, u.leaf, &u.ends);
         let root = wots::root_from_path(&u.pk_seed, u.leaf, leaf, &u.auth_path[..t.height as usize]);
@@ -187,6 +191,7 @@ pub mod noxvault {
         let (tree, leaf_index) = (u.tree, u.leaf);
         drop(u);
         a.state.mark_used(tree, leaf_index);
+        // Signer and duress approvals both count as activity: a duress signature looks like any other.
         if tree != RECOVERY_TREE {
             a.state.last_active = now;
         }
@@ -208,7 +213,7 @@ pub mod noxvault {
 
     pub fn execute_withdraw(ctx: Context<ExecuteWithdraw>) -> Result<()> {
         let a = &mut *ctx.accounts;
-        let (action, unrestricted) = authorize(&a.approval, &a.state)?;
+        let (action, mode) = authorize(&a.approval, &a.state)?;
         let Kind::Withdraw { mint, dest, amount } = action.kind.clone() else {
             return err!(NoxError::WrongAction);
         };
@@ -216,6 +221,25 @@ pub mod noxvault {
         require_keys_eq!(dest, a.dest.key(), NoxError::WrongDest);
         let seeds_owned = vault_seeds(&a.state);
         let seeds = seeds_owned.as_slices();
+        if mode == Mode::Duress {
+            // docs/SPEC.md §11: pay at most duress_limit at once (fee included, nothing during a
+            // lockdown already running), ignoring whitelist, instant limit and delay; then lock.
+            let now = Clock::get()?.unix_timestamp;
+            let (limit, lock) = (a.state.config.duress_limit, a.state.config.duress_lock);
+            let above_rent = a.vault.lamports().saturating_sub(Rent::get()?.minimum_balance(0));
+            let mut allowance = if a.state.locked(now) { 0 } else { limit.min(above_rent) };
+            let fee = action.fee.min(allowance);
+            if fee > 0 {
+                require_keys_eq!(action.fee_payee, a.fee_payee.key(), NoxError::WrongFeePayee);
+                sol_out(&a.system_program, &a.vault, &a.fee_payee, &seeds, fee)?;
+            }
+            allowance -= fee;
+            sol_out(&a.system_program, &a.vault, &a.dest, &seeds, amount.min(allowance))?;
+            a.state.lockdown_until = a.state.lockdown_until.max(now.saturating_add(lock));
+            a.state.actions += 1;
+            return check_rent(&a.vault);
+        }
+        let unrestricted = mode == Mode::Unrestricted;
         if gate(&mut a.state, PENDING_WITHDRAW, mint, dest, amount, unrestricted)? {
             require!(amount <= a.vault.lamports(), NoxError::InsufficientFunds);
             sol_out(&a.system_program, &a.vault, &a.dest, &seeds, amount)?;
@@ -227,7 +251,7 @@ pub mod noxvault {
 
     pub fn execute_withdraw_token(ctx: Context<ExecuteWithdrawToken>) -> Result<()> {
         let a = &mut *ctx.accounts;
-        let (action, unrestricted) = authorize(&a.approval, &a.state)?;
+        let (action, unrestricted) = authorize_full(&a.approval, &a.state)?;
         let Kind::Withdraw { mint, dest, amount } = action.kind.clone() else {
             return err!(NoxError::WrongAction);
         };
@@ -246,7 +270,7 @@ pub mod noxvault {
 
     pub fn execute_stake(ctx: Context<ExecuteStake>) -> Result<()> {
         let a = &mut *ctx.accounts;
-        let (action, _) = authorize(&a.approval, &a.state)?;
+        let (action, _) = authorize_full(&a.approval, &a.state)?;
         let Kind::Stake { seed, vote, amount } = action.kind.clone() else {
             return err!(NoxError::WrongAction);
         };
@@ -295,7 +319,7 @@ pub mod noxvault {
     /// Unstake and CollectStake.
     pub fn execute_stake_authority(ctx: Context<ExecuteStakeAuthority>) -> Result<()> {
         let a = &mut *ctx.accounts;
-        let (action, _) = authorize(&a.approval, &a.state)?;
+        let (action, _) = authorize_full(&a.approval, &a.state)?;
         let seed = match action.kind {
             Kind::Unstake { seed } | Kind::CollectStake { seed } => seed,
             _ => return err!(NoxError::WrongAction),
@@ -312,10 +336,17 @@ pub mod noxvault {
     /// Cancel, Ping, CancelSchedule, CancelBudget and Migrate.
     pub fn execute_admin(ctx: Context<ExecuteAdmin>) -> Result<()> {
         let a = &mut *ctx.accounts;
-        let (action, unrestricted) = authorize(&a.approval, &a.state)?;
+        let (action, unrestricted) = authorize_full(&a.approval, &a.state)?;
+        let by_recovery = a.approval.trees & (1 << RECOVERY_TREE) != 0;
         let vault = a.vault.to_account_info();
         match action.kind.clone() {
-            Kind::Cancel => a.state.pending = None,
+            Kind::Cancel => {
+                a.state.pending = None;
+                // The recovery holder, not the coerced owner, decides when a lockdown ends.
+                if by_recovery {
+                    a.state.lockdown_until = 0;
+                }
+            }
             Kind::Ping => {}
             Kind::CancelSchedule { id } => {
                 let s = a.schedule.as_ref().ok_or(NoxError::MissingAccount)?;
@@ -352,7 +383,7 @@ pub mod noxvault {
 
     pub fn execute_create_schedule(ctx: Context<ExecuteCreateSchedule>, id: u8) -> Result<()> {
         let a = &mut *ctx.accounts;
-        let (action, unrestricted) = authorize(&a.approval, &a.state)?;
+        let (action, unrestricted) = authorize_full(&a.approval, &a.state)?;
         let tier = tier_of(&a.protocol.params, &a.vault.key(), &a.nox_account)?;
         require!(tier >= TIER_GUARDIAN, NoxError::TierTooLow);
         let Kind::Schedule { id: sid, mint, dest, amount, interval, count, start } = action.kind.clone() else {
@@ -384,7 +415,7 @@ pub mod noxvault {
 
     pub fn execute_create_budget(ctx: Context<ExecuteCreateBudget>, id: u8) -> Result<()> {
         let a = &mut *ctx.accounts;
-        let (action, _) = authorize(&a.approval, &a.state)?;
+        let (action, _) = authorize_full(&a.approval, &a.state)?;
         let tier = tier_of(&a.protocol.params, &a.vault.key(), &a.nox_account)?;
         require!(tier >= TIER_GUARDIAN, NoxError::TierTooLow);
         let Kind::Budget { id: bid, session, mint, limit, period, expires } = action.kind.clone() else {
@@ -414,6 +445,7 @@ pub mod noxvault {
     /// Pays the pending SOL withdrawal, or starts the pending migration, once due.
     pub fn execute_pending(ctx: Context<ExecutePending>) -> Result<()> {
         let a = &mut *ctx.accounts;
+        not_locked(&a.state)?;
         let p = take_due_pending(&mut a.state)?;
         if p.kind == PENDING_MIGRATE {
             a.state.migrate_to = Some(p.dest);
@@ -429,6 +461,7 @@ pub mod noxvault {
 
     pub fn execute_pending_token(ctx: Context<ExecutePendingToken>) -> Result<()> {
         let a = &mut *ctx.accounts;
+        not_locked(&a.state)?;
         let p = take_due_pending(&mut a.state)?;
         require!(p.kind == PENDING_WITHDRAW, NoxError::WrongAction);
         require_keys_eq!(p.mint, a.mint.key(), NoxError::WrongAction);
@@ -469,6 +502,7 @@ pub mod noxvault {
     /// An ordinary session key spends from its budget (docs/SPEC.md §4).
     pub fn spend_budget(ctx: Context<SpendBudget>, amount: u64) -> Result<()> {
         let a = &mut *ctx.accounts;
+        not_locked(&a.state)?;
         budget_spend(&mut a.budget, &a.state, &a.dest.key(), Pubkey::default(), amount)?;
         require!(amount <= a.vault.lamports(), NoxError::InsufficientFunds);
         let seeds_owned = vault_seeds(&a.state);
@@ -478,6 +512,7 @@ pub mod noxvault {
 
     pub fn spend_budget_token(ctx: Context<SpendBudgetToken>, amount: u64) -> Result<()> {
         let a = &mut *ctx.accounts;
+        not_locked(&a.state)?;
         budget_spend(&mut a.budget, &a.state, &a.dest.key(), a.mint.key(), amount)?;
         require!(amount <= a.vault_ata.amount, NoxError::InsufficientFunds);
         let seeds_owned = vault_seeds(&a.state);
@@ -749,23 +784,55 @@ fn tier_of(p: &ProtocolParams, vault: &Pubkey, nox: &Option<Box<InterfaceAccount
     })
 }
 
-/// Checks an approval against the vault's rules. Returns the action and whether it was
-/// authorized by the recovery tree after inactivity (then destinations are unrestricted).
-fn authorize(ap: &Approval, st: &VaultState) -> Result<(Action, bool)> {
+/// How an approval authorizes its action.
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    /// Signer threshold, or a recovery cancel: the vault's rules apply.
+    Normal,
+    /// Recovery tree after the owner's inactivity: destinations are unrestricted.
+    Unrestricted,
+    /// Duress tree alone: a capped SOL withdrawal, then lockdown (docs/SPEC.md §11).
+    Duress,
+}
+
+const SIGNER_BITS: u8 = (1 << SIGNER_SLOTS) - 1;
+
+/// Checks an approval against the vault's rules (docs/SPEC.md §4, §11). The duress bit never
+/// counts toward the threshold and never adds to recovery powers.
+fn authorize(ap: &Approval, st: &VaultState) -> Result<(Action, Mode)> {
     let action = ap.action()?;
-    let signers = (ap.trees & 0b0111).count_ones() as u8;
+    let now = Clock::get()?.unix_timestamp;
+    let signers = (ap.trees & SIGNER_BITS).count_ones() as u8;
     if signers >= st.config.threshold {
-        return Ok((action, false));
+        require!(!st.locked(now) || action.allowed_in_lockdown(), NoxError::Lockdown);
+        return Ok((action, Mode::Normal));
     }
     if ap.trees & (1 << RECOVERY_TREE) != 0 {
         if action.is_cancel() {
-            return Ok((action, false));
+            return Ok((action, Mode::Normal));
         }
-        let now = Clock::get()?.unix_timestamp;
         require!(st.inactive_for(st.config.recovery_delay, now), NoxError::RecoveryLocked);
-        return Ok((action, true));
+        return Ok((action, Mode::Unrestricted));
+    }
+    if ap.trees == 1 << DURESS_TREE {
+        let sol = matches!(action.kind, Kind::Withdraw { mint, .. } if mint == Pubkey::default());
+        require!(sol, NoxError::DuressSolOnly);
+        return Ok((action, Mode::Duress));
     }
     err!(NoxError::NotApproved)
+}
+
+/// `authorize` for every instruction except execute_withdraw: duress approvals are refused.
+/// Returns whether destinations are unrestricted.
+fn authorize_full(ap: &Approval, st: &VaultState) -> Result<(Action, bool)> {
+    let (action, mode) = authorize(ap, st)?;
+    require!(mode != Mode::Duress, NoxError::DuressSolOnly);
+    Ok((action, mode == Mode::Unrestricted))
+}
+
+fn not_locked(st: &VaultState) -> Result<()> {
+    require!(!st.locked(Clock::get()?.unix_timestamp), NoxError::Lockdown);
+    Ok(())
 }
 
 /// Applies the restriction rules of docs/SPEC.md §3. Returns true to pay now, false if queued.
@@ -1637,4 +1704,8 @@ pub enum NoxError {
     TierTooLow,
     #[msg("Only the protocol admin can do this")]
     NotAdmin,
+    #[msg("The vault is in lockdown: only Ping and cancels execute until it ends")]
+    Lockdown,
+    #[msg("A duress approval can only withdraw SOL")]
+    DuressSolOnly,
 }

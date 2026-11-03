@@ -1,4 +1,4 @@
-// Noxvault v3 client: secrets, vault configs, addresses, action plans, history, preflight and
+// Noxvault v4 client: secrets, vault configs, addresses, action plans, history, preflight and
 // builders for every permissionless instruction. See docs/SPEC.md; every rule a client must
 // follow lives in this file.
 import { BN, BorshInstructionCoder, Program } from "@coral-xyz/anchor";
@@ -31,6 +31,7 @@ import {
 import { entropyToMnemonic, mnemonicToEntropy, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english";
 import { randomBytes } from "@noble/hashes/utils";
+import { sha256 } from "@noble/hashes/sha256";
 import type { Noxvault } from "./idl/noxvault";
 import idl from "./idl/noxvault.json";
 import {
@@ -42,6 +43,7 @@ import {
   PRIMARY_HEIGHT,
   PublicTree,
   RECOVERY_HEIGHT,
+  TreeCfg,
   TreeSeeds,
   actionHash,
   authPath,
@@ -67,6 +69,10 @@ export const VOTE_PROGRAM_ID = new PublicKey("Vote111111111111111111111111111111
 export const CANARY_ADDRESS = new PublicKey("6S396A19NFHWdABtBP17tjfFCZA9LJuuvuPK7hWzj7w9");
 export const SIGNER_SLOTS = 3;
 export const RECOVERY_TREE = 3;
+/** The duress tree (docs/SPEC.md §11): its own phrase, stored in config.duress. */
+export const DURESS_TREE = 4;
+export const DEFAULT_DURESS_LIMIT = 500_000_000n; // 0.5 SOL
+export const DEFAULT_DURESS_LOCK_SECS = 3 * 86_400;
 export const TREE_PRIMARY = 0; // the creating owner's slot
 export const DAY = 86_400;
 
@@ -113,7 +119,7 @@ export function wordsToSecret(words: string): Uint8Array {
 
 // ---------- trees and configs ----------
 
-/** A tree whose secret this client holds. `tree` is its slot in the vault: 0..2 signer, 3 recovery. */
+/** A tree whose secret this client holds. `tree` is its slot in the vault: 0..2 signer, 3 recovery, 4 duress. */
 export interface Signer {
   tree: number;
   seeds: TreeSeeds;
@@ -122,12 +128,38 @@ export interface Signer {
 
 /**
  * Builds a phrase's tree for vault number `vaultNumber` (a few seconds for a signer tree).
- * `slot` is where the tree sits in the vault config; a recovery tree uses its own seed range.
+ * `slot` is where the tree sits in the vault config; recovery and duress trees use their own
+ * seed ranges (docs/SPEC.md §2), so one phrase never yields the same tree in two roles.
  */
 export function makeSigner(master: Uint8Array, vaultNumber: number, slot: number, onLeaf?: (done: number, total: number) => void): Signer {
-  const recovery = slot === RECOVERY_TREE;
-  const seeds = treeSeeds(master, seedIndex(vaultNumber, recovery ? 1 : 0));
-  return { tree: slot, seeds, pub: buildTree(seeds, recovery ? RECOVERY_HEIGHT : PRIMARY_HEIGHT, onLeaf) };
+  const range = slot === RECOVERY_TREE ? 1 : slot === DURESS_TREE ? 2 : 0;
+  const seeds = treeSeeds(master, seedIndex(vaultNumber, range));
+  return { tree: slot, seeds, pub: buildTree(seeds, slot === RECOVERY_TREE ? RECOVERY_HEIGHT : PRIMARY_HEIGHT, onLeaf) };
+}
+
+/**
+ * The duress tree of a duress phrase (its own 24 words, never the owner's main phrase) for
+ * vault number `vaultNumber`. Pass its root as `duressRoot` to `makeConfig`; sign with it like
+ * any other signer: it can only withdraw SOL, capped at the duress limit, and starts a lockdown.
+ */
+export function makeDuressSigner(master: Uint8Array, vaultNumber: number, onLeaf?: (done: number, total: number) => void): Signer {
+  return makeSigner(master, vaultNumber, DURESS_TREE, onLeaf);
+}
+
+/** Tree `idx` of a config: 0..2 signers, 3 recovery, 4 duress. */
+export function treeOf(c: Config, idx: number): TreeCfg {
+  if (idx === DURESS_TREE) return c.duress;
+  if (idx < 0 || idx > RECOVERY_TREE) throw new Error(`no tree ${idx}`);
+  return c.trees[idx];
+}
+
+/**
+ * The duress root of a vault without a duress phrase: derived from the owner's secret seed, so
+ * it is reproducible by the owner (the vault address stays a pure function of phrase + settings)
+ * and indistinguishable from a random root to everyone else. No key exists for it.
+ */
+export function decoyDuressRoot(primary: Signer): Uint8Array {
+  return sha256(new Uint8Array([...enc.encode("nox4/decoy-duress"), ...primary.seeds.skSeed]));
 }
 
 /** Re-labels a signer for another slot (a co-signer's tree is built once, then placed). */
@@ -145,6 +177,9 @@ export interface VaultSettings {
   instantLimitLamports?: bigint; // restricted SOL that may skip the wait per 24 h
   heirs?: { addr: PublicKey; bps: number }[]; // testament; bps sum to 10000
   testamentDelaySecs?: number; // inactivity before the testament runs (default 365 days if heirs)
+  duressRoot?: Uint8Array; // root of a duress phrase's tree (makeDuressSigner); omit for a decoy
+  duressLimitLamports?: bigint; // paid at once by a duress withdrawal (default 0.5 SOL)
+  duressLockSecs?: number; // lockdown after a duress withdrawal (default 3 days, at least 1 day)
 }
 
 export function makeConfig(primary: Signer, s: VaultSettings = {}): Config {
@@ -162,6 +197,10 @@ export function makeConfig(primary: Signer, s: VaultSettings = {}): Config {
     instantLimit: s.instantLimitLamports ?? 0n,
     heirs,
     testamentDelay: BigInt(heirs.length ? s.testamentDelaySecs ?? 365 * DAY : 0),
+    // Always filled, so no vault reveals whether it has a duress phrase (docs/SPEC.md §11).
+    duress: { root: s.duressRoot ?? decoyDuressRoot(primary), height: s.duressRoot ? PRIMARY_HEIGHT : primary.pub.height },
+    duressLimit: s.duressLimitLamports ?? DEFAULT_DURESS_LIMIT,
+    duressLock: BigInt(s.duressLockSecs ?? DEFAULT_DURESS_LOCK_SECS),
   };
 }
 
@@ -179,6 +218,9 @@ export function toAnchorConfig(c: Config) {
     instantLimit: bn(c.instantLimit),
     heirs: pad(c.heirs, { addr: ZERO32, bps: 0 }).map((h) => ({ addr: pk(h.addr), bps: h.bps })),
     testamentDelay: bn(c.testamentDelay),
+    duress: { root: Array.from(c.duress.root), height: c.duress.height },
+    duressLimit: bn(c.duressLimit),
+    duressLock: bn(c.duressLock),
   };
 }
 
@@ -420,6 +462,7 @@ export interface VaultStateView {
   windowStart: number;
   windowSpent: bigint;
   migrateTo: PublicKey | null;
+  lockdownUntil: number; // unix seconds; locked while now < lockdownUntil
 }
 
 export function decodeState(program: Program<Noxvault>, data: Buffer): VaultStateView {
@@ -437,6 +480,9 @@ export function decodeState(program: Program<Noxvault>, data: Buffer): VaultStat
       instantLimit: BigInt(c.instantLimit.toString()),
       heirs: (c.heirs as { addr: PublicKey; bps: number }[]).filter((h) => live(h.addr)).map((h) => ({ addr: h.addr.toBytes(), bps: h.bps })),
       testamentDelay: BigInt(c.testamentDelay.toString()),
+      duress: { root: Uint8Array.from(c.duress.root), height: c.duress.height },
+      duressLimit: BigInt(c.duressLimit.toString()),
+      duressLock: BigInt(c.duressLock.toString()),
     },
     used: (s.used as number[][]).map((u) => Uint8Array.from(u)),
     lastActive: Number(s.lastActive),
@@ -454,7 +500,13 @@ export function decodeState(program: Program<Noxvault>, data: Buffer): VaultStat
     windowStart: Number(s.windowStart),
     windowSpent: BigInt(s.windowSpent.toString()),
     migrateTo: s.migrateTo ?? null,
+    lockdownUntil: Number(s.lockdownUntil),
   };
+}
+
+/** Whether the vault is in lockdown after a duress withdrawal (docs/SPEC.md §11). */
+export function inLockdown(state: VaultStateView, now = Math.floor(Date.now() / 1000)): boolean {
+  return now < state.lockdownUntil;
 }
 
 export async function fetchState(program: Program<Noxvault>, vault: PublicKey): Promise<VaultStateView | null> {
@@ -467,7 +519,7 @@ export function leafUsed(state: VaultStateView, tree: number, leaf: number): boo
 }
 
 export function keysLeft(state: VaultStateView, tree: number): number {
-  const h = state.config.trees[tree].height;
+  const h = treeOf(state.config, tree).height;
   let used = 0;
   for (let l = 0; l < 1 << h; l++) if (leafUsed(state, tree, l)) used++;
   return (1 << h) - used;
@@ -478,12 +530,15 @@ export function isRestricted(c: Config, dest: PublicKey): boolean {
   return c.instantLimit > 0n;
 }
 
-/** Byte offset of config.trees[slot].root inside a VaultState account. */
-export const treeRootOffset = (slot: number) => 8 + 32 + 1 + 32 + slot * 33;
+/** Size of the config fields before `duress` (trees .. testament_delay), as encodeConfig writes them. */
+const CONFIG_V3_LEN = 4 * 33 + 1 + 8 + 4 * 32 + 8 + 8 + 4 * 34 + 8;
+
+/** Byte offset of the root of tree `slot` (0..3 in config.trees, 4 = config.duress) inside a VaultState account. */
+export const treeRootOffset = (slot: number) => 8 + 32 + 1 + 32 + (slot === DURESS_TREE ? CONFIG_V3_LEN : slot * 33);
 
 /** Vaults in which this signer's tree sits in its slot range. Needs an RPC that allows getProgramAccounts. */
 export async function findVaultsFor(program: Program<Noxvault>, signer: Signer): Promise<{ state: VaultStateView; slot: number }[]> {
-  const slots = signer.tree === RECOVERY_TREE ? [RECOVERY_TREE] : [0, 1, 2];
+  const slots = signer.tree === RECOVERY_TREE ? [RECOVERY_TREE] : signer.tree === DURESS_TREE ? [DURESS_TREE] : [0, 1, 2];
   const out: { state: VaultStateView; slot: number }[] = [];
   for (const slot of slots) {
     const accts = await withRetry(() =>
@@ -523,14 +578,17 @@ export async function vaultApprovals(program: Program<Noxvault>, vault: PublicKe
   });
 }
 
-/** Whether an approval set (bitmap) lets the action execute now (docs/SPEC.md §4). */
+const isCancelKind = (a: Action) => a.kind === "cancel" || a.kind === "cancelSchedule" || a.kind === "cancelBudget";
+
+/** Whether an approval set (bitmap) lets the action execute now (docs/SPEC.md §4, §11). */
 export function canExecute(state: VaultStateView, trees: number, action: Action, now = Math.floor(Date.now() / 1000)): boolean {
   const signers = [0, 1, 2].filter((t) => trees & (1 << t)).length;
-  if (signers >= state.config.threshold) return true;
+  if (signers >= state.config.threshold) return !inLockdown(state, now) || isCancelKind(action) || action.kind === "ping";
   if (trees & (1 << RECOVERY_TREE)) {
-    if (action.kind === "cancel" || action.kind === "cancelSchedule" || action.kind === "cancelBudget") return true;
+    if (isCancelKind(action)) return true;
     return now >= state.lastActive + Number(state.config.recoveryDelay);
   }
+  if (trees === 1 << DURESS_TREE) return action.kind === "withdraw" && equal(action.mint, ZERO32);
   return false;
 }
 
@@ -1246,7 +1304,7 @@ export async function preflightAction(p: Omit<ActionParams, "hashesPerTx" | "exe
   const state = await fetchState(program, vault);
   if (!state) return { errors: ["This vault is not initialized yet."], warnings };
   const c = state.config;
-  if (!equal(c.trees[signer.tree].root, signer.pub.root)) errors.push("These words do not belong to this vault (or not to this slot).");
+  if (!equal(treeOf(c, signer.tree).root, signer.pub.root)) errors.push("These words do not belong to this vault (or not to this slot).");
   if (leafUsed(state, signer.tree, leaf)) errors.push(`One-time key #${leaf} is already used.`);
 
   try {
@@ -1259,14 +1317,21 @@ export async function preflightAction(p: Omit<ActionParams, "hashesPerTx" | "exe
     errors.push(`Could not read this vault's history, so it is not safe to sign (${(e as Error).message}).`);
   }
 
-  const isCancel = action.kind === "cancel" || action.kind === "cancelSchedule" || action.kind === "cancelBudget";
+  const isCancel = isCancelKind(action);
+  if (signer.tree === DURESS_TREE) {
+    // Capped and instant on chain (docs/SPEC.md §11); deliberately no hint of it here.
+    if (action.kind !== "withdraw" || !equal(action.mint, ZERO32)) errors.push("This phrase can only withdraw SOL.");
+    return { errors, warnings };
+  }
+  if (signer.tree < SIGNER_SLOTS && inLockdown(state, now) && !isCancel && action.kind !== "ping")
+    errors.push(`This vault is in lockdown until ${new Date(state.lockdownUntil * 1000).toISOString()}: only Ping and cancels execute. The recovery key's Cancel ends it.`);
   let unrestricted = false;
   if (signer.tree === RECOVERY_TREE && !isCancel) {
     const opensAt = state.lastActive + Number(c.recoveryDelay);
     if (now < opensAt) errors.push(`The recovery key can only cancel until ${new Date(opensAt * 1000).toISOString()}.`);
     unrestricted = true;
   }
-  if (signer.tree !== RECOVERY_TREE && c.threshold > 1) {
+  if (signer.tree < SIGNER_SLOTS && c.threshold > 1) {
     const existing = await fetchApproval(program, vault, action);
     const have = [0, 1, 2].filter((t) => ((existing?.trees ?? 0) | (1 << signer.tree)) & (1 << t)).length;
     if (have < c.threshold) warnings.push(`This vault needs ${c.threshold} signers: after you, ${c.threshold - have} more must approve this exact action.`);

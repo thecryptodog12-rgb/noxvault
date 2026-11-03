@@ -11,7 +11,7 @@ gasless relayer are part of the protocol (`docs/SPEC.md`).
 
 | path | what |
 |---|---|
-| `docs/SPEC.md` | the protocol (v2): keys, tree, config, actions, on-chain flow, relayer, client rules. Change this first. |
+| `docs/SPEC.md` | the protocol (v4): keys, tree, config, actions, duress mode, on-chain flow, relayer, client rules. Change this first. |
 | `programs/noxvault` | Anchor program (Rust) |
 | `sdk/wots.ts` | WOTS+ chains, Merkle tree, borsh encodings — pure, runs in a web worker |
 | `sdk/client.ts` | configs, PDAs, `planAction`, `findSignedMessages`, `pickLeaf`, `preflightAction`, `findVaultsFor` |
