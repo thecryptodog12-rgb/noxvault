@@ -41,6 +41,14 @@ pub const APPROVAL_TTL: i64 = 7 * DAY;
 /// 8 KiB keeps a whole letter within one realloc step (10 KiB per instruction).
 pub const MAX_LETTER: usize = 8_192;
 pub const MAX_LETTER_LABEL: usize = 64;
+/// Most lamports any action may pay as its fee (docs/SPEC.md §4, v4.1). Every execution path
+/// refuses a larger fee. 0.01 SOL is ~10x what a relayer needs today (min fee 0.0001 SOL, plus
+/// ~0.0015 SOL rent when the action creates the letter-key account), and bounds what a stolen
+/// signer phrase can move through fees: one fee per one-time key.
+pub const MAX_ACTION_FEE: u64 = 10_000_000;
+/// Longest delay, lock, interval or period a config or action may set (10 years). Keeps every
+/// `now + x` far from i64 overflow (docs/SPEC.md §3, v4.1).
+pub const MAX_DURATION: i64 = 10 * 365 * DAY;
 
 /// The canary: a point on the ed25519 curve found by hashing, so nobody knows its private key
 /// (docs/SPEC.md §7). Derivation: first i with SHA256("noxvault/canary/v1" || u32le(i)) on the
@@ -118,8 +126,22 @@ impl Config {
             self.instant_limit > 0
         }
     }
+    /// True when at least one destination is not restricted (§3), i.e. a session budget can
+    /// ever spend: a whitelist is set, or there is no instant limit.
+    pub fn has_unrestricted(&self) -> bool {
+        self.whitelist_active() || self.instant_limit == 0
+    }
     pub fn testament_active(&self) -> bool {
         self.testament_delay > 0 && self.heirs.iter().any(|h| h.addr != Pubkey::default())
+    }
+    /// Every used root (signer slots, recovery slot, duress tree) differs from every other.
+    pub fn roots_distinct(&self) -> bool {
+        let roots: Vec<&[u8; N]> = self.trees.iter().chain(core::iter::once(&self.duress)).filter(|t| t.used()).map(|t| &t.root).collect();
+        roots.iter().enumerate().all(|(i, a)| roots[i + 1..].iter().all(|b| a != b))
+    }
+    /// Delays and locks are at most MAX_DURATION (negative values are refused separately).
+    pub fn durations_bounded(&self) -> bool {
+        [self.slow_delay, self.recovery_delay, self.testament_delay, self.duress_lock].iter().all(|d| *d <= MAX_DURATION)
     }
 }
 
@@ -154,9 +176,17 @@ impl Action {
     pub fn is_cancel(&self) -> bool {
         matches!(self.kind, Kind::Cancel | Kind::CancelSchedule { .. } | Kind::CancelBudget { .. })
     }
-    /// Actions signer approvals may still execute during a lockdown.
+    /// Actions signer approvals may still execute during a lockdown (with fee 0, v4.1).
     pub fn allowed_in_lockdown(&self) -> bool {
         self.is_cancel() || matches!(self.kind, Kind::Ping)
+    }
+    /// Intervals and periods the action sets are within (0, MAX_DURATION] where it has them.
+    pub fn durations_bounded(&self) -> bool {
+        match self.kind {
+            Kind::Schedule { interval, .. } => interval <= MAX_DURATION,
+            Kind::Budget { period, .. } => period <= MAX_DURATION,
+            _ => true,
+        }
     }
 }
 

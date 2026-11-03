@@ -1,15 +1,19 @@
-# Noxvault v4: invariants
+# Noxvault v4.1: invariants
 
 Every property the program must keep, where it is enforced, and which test covers it.
 
 - File references: `lib.rs`, `state.rs`, `wots.rs` are in `programs/noxvault/src/`.
+- v4.1 fixed G-01..G-05 and G-08 (§9). Rows touched by those fixes cite v4.1 line numbers; the
+  other rows still cite the v4 lines of the audit commit (`6e0213b`), which v4.1 shifted by up to
+  ~30 lines (no logic there changed).
 - Test references:
   - `T:<line>` is a test in `tests/noxvault.ts`, by the line of its `it(`.
   - `P-xx` is in `tests/properties.sdk.ts` (pure, fast-check).
-  - `P-21`..`P-25` and `GAP-xx` are in `tests/properties.chain.ts` (fast-check against the local validator).
+  - `P-21`..`P-25` and `FIX-xx` (formerly `GAP-xx`) are in `tests/properties.chain.ts` (fast-check against the local validator).
   - `R-xx` is in `programs/noxvault/tests/props.rs` (Rust, host).
 - Status:
   - **OK**: enforced and tested.
+  - **FIXED (v4.1)**: was a GAP; now enforced and tested.
   - **Partial**: enforced, only partly tested.
   - **Untested**: enforced, no test.
   - **GAP**: not enforced as the spec or the purpose of the feature requires. See §9.
@@ -38,11 +42,11 @@ Every property the program must keep, where it is enforced, and which test cover
 | C-1 | The vault address commits to the full config; rules never change | lib.rs:48-50 (`config_hash`, wots.rs:72) | T:213 | OK |
 | C-2 | 1 ≤ threshold ≤ number of signer trees; unused slots have height 0 | lib.rs:31-35 | none | Untested |
 | C-3 | Recovery tree implies `recovery_delay > 0` | lib.rs:36 | none | Untested |
-| C-4 | The duress tree is always set (height 1..8) and its root differs from every other slot | lib.rs:39-40 | T:596 | Partial (no test for an equal root) |
-| C-5 | `duress_lock ≥ 1 day`; `slow_delay`, `testament_delay ≥ 0` | lib.rs:41-42 | T:596 | Partial |
+| C-4 | The duress tree is always set (height 1..8) and its root differs from every other slot | lib.rs:39, 42 (`roots_distinct` state.rs:138) | T:596, P-22 (duress = signer root → `DuplicateRoot`), R-11 | OK |
+| C-5 | `duress_lock ≥ 1 day`; `slow_delay`, `testament_delay`, `recovery_delay ≥ 0` | lib.rs:43-44 | T:596 | Partial |
 | C-6 | Heirs: bps sum to 10 000 when any heir is set; a testament needs heirs | lib.rs:43-46 | none | Untested |
-| C-7 | Signer and recovery roots are pairwise distinct | **not enforced** | P-22 shows a duplicate root is accepted | GAP: G-05 |
-| C-8 | Time parameters cannot make an instruction abort on overflow | **not enforced** (`slow_delay`, `interval`, `period` unbounded) | none | GAP: G-08 |
+| C-7 | Signer, recovery and duress roots are pairwise distinct | `init_vault` lib.rs:42; `Config::roots_distinct` state.rs:138-141 | P-22 (three duplicate configs → `DuplicateRoot`), P-28, R-11 | **FIXED (v4.1)**: G-05 |
+| C-8 | Time parameters cannot make an instruction abort on overflow | config ≤ `MAX_DURATION` lib.rs:46 (state.rs:51, 143-145); schedule `interval` lib.rs:115, 408; budget `period` lib.rs:115, 442 (state.rs:184-190); saturating time arithmetic lib.rs:214, 383, 414, 772, 962, 973, 990, 1001 | FIX-08, R-12 | **FIXED (v4.1)**: G-08 |
 | C-9 | Tier rules at creation: >1 signer needs Sentinel, a testament needs Guardian, Free pays `create_fee` to `treasury` | lib.rs:52-71, `tier_of` lib.rs:856 | T:213, T:333, T:489 | OK |
 
 ## 3. Authorization
@@ -52,7 +56,8 @@ Every property the program must keep, where it is enforced, and which test cover
 | A-1 | Only signer approvals count toward the threshold | `authorize` lib.rs:895 (`SIGNER_BITS`) | T:333, T:674, P-16 | OK |
 | A-2 | The recovery tree alone executes only cancels while the owner is active; everything (unrestricted) after `recovery_delay` | lib.rs:900-905 | T:381, T:398, P-16 | OK |
 | A-3 | The duress tree alone authorizes only a SOL withdrawal; it never adds to signer or recovery power | lib.rs:907-911; `authorize_full` lib.rs:917-921 | T:640, T:674, P-16 | OK |
-| A-4 | During a lockdown signer approvals execute only Ping and cancels | lib.rs:897; state.rs:154-160 | T:620, T:632, P-17, R-09 | OK |
+| A-4 | During a lockdown signer approvals execute only Ping and cancels, with fee 0 unless the recovery tree also approved | `authorize` lib.rs:920-924; `open_unlock` lib.rs:116-118; state.rs allowed_in_lockdown | T:620, T:632, P-17, P-26, R-09, FIX-01 | OK (fee part: v4.1) |
+| A-10 | No action pays a fee above `MAX_ACTION_FEE` (0.01 SOL), on any path, duress included | `authorize` lib.rs:915; `pay_fee` lib.rs:1064; `open_unlock` lib.rs:114; state.rs:48 | FIX-01, FIX-01b, P-24, P-26, R-13 | OK (v4.1) |
 | A-5 | Only a signer-threshold approval sets the letter key | `execute_letter_key` lib.rs:447-449 | T:792 | OK |
 | A-6 | Executing an approval closes it (no double execution) | `close = creator` on every `Execute*` account struct (lib.rs:1215, 1237, 1264, 1297, 1324, 1349, 1375, 1400) | T:333 (`fetchApproval` → null) | OK |
 | A-7 | Each execute instruction executes only its own kinds | `let Kind::… else WrongAction` in each handler | T:640 (indirect) | Partial |
@@ -67,11 +72,11 @@ Every property the program must keep, where it is enforced, and which test cover
 | S-2 | Restricted SOL paid at once stays within `instant_limit` per window | lib.rs:934-943 | T:374, P-11, P-23 | OK (fixed window: G-07) |
 | S-3 | Restricted withdrawals over the limit wait `slow_delay` as the single pending one; refused when `slow_delay = 0` | lib.rs:944-948 | T:381, T:391, T:421, P-12, P-13, P-23 | OK |
 | S-4 | Restricted tokens never pay at once | lib.rs:934 (SOL only) | P-11 | Partial (no on-chain token case) |
-| S-5 | Every way value leaves the vault on a signer approval obeys S-1..S-3 | withdrawals: `gate`; schedules: lib.rs:397-400; migrate: lib.rs:364; budgets: none; **fees: none** | GAP-01, GAP-01b, GAP-02, GAP-03, P-19b | **GAP: G-01, G-02, G-03** |
+| S-5 | Every way value leaves the vault on a signer approval obeys S-1..S-3 — fees excepted, which are capped instead | withdrawals: `gate` lib.rs:956; schedules: lib.rs:412-415; migrate: lib.rs:379 (`Config::restricted`); budgets: lib.rs:445, 999; fees: ≤ `MAX_ACTION_FEE` lib.rs:915, none during a lockdown lib.rs:923 | FIX-01, FIX-01b, FIX-02, FIX-03, P-19, P-19b, P-26, P-27 | **FIXED (v4.1)**: G-01, G-02, G-03 (fees: bounded residual, SPEC §4 "The fee") |
 | S-6 | A pending withdrawal pays only when due, not during a lockdown, and only to its destination | lib.rs:536-562, 952-957 | T:381, T:391, T:620 | OK |
-| S-7 | Any `Cancel` (signers, or recovery at any time) stops everything still waiting: the pending withdrawal and a started migration | lib.rs:343-349 clears `pending` only | GAP-02 | **GAP: G-04** |
+| S-7 | Any `Cancel` (signers, or recovery at any time) stops everything still waiting: the pending withdrawal or migration and a started migration | lib.rs:353-362 clears `pending` and `migrate_to`; `migrate_sol`/`migrate_token` then refuse (`WrongDest`) | FIX-02, FIX-04, P-27 | **FIXED (v4.1)**: G-04 |
 | S-8 | A schedule pays `amount` every `interval`, `count` times, never early; first restricted payment ≥ `slow_delay` | lib.rs:384-414, 959-965 | T:431 | Partial (no restricted-schedule test) |
-| S-9 | A budget spends ≤ `limit` per period, before `expires`, only to non-restricted destinations, never during a lockdown | `budget_spend` lib.rs:967-981; lib.rs:595, 605 | T:452, P-19 | **GAP: G-03** (restricted part); fixed window G-07 |
+| S-9 | A budget spends ≤ `limit` per period, before `expires`, only to non-restricted destinations, never during a lockdown | `budget_spend` lib.rs:994-1008 (restricted: 999); creation refused when every destination is restricted lib.rs:445 | T:452, P-19, P-19b, FIX-03, R-13 | **FIXED (v4.1)**: G-03; fixed window G-07 (known limitation, SPEC §13) |
 | S-10 | After any payout the vault holds 0 or ≥ rent minimum lamports | `check_rent` lib.rs:1004, called on SOL-moving paths | T:316 (preflight), P-14 | Partial (`migrate_sol`, `testament_sol` empty the vault, so 0) |
 | S-11 | Destination of a withdrawal / schedule / budget / migration is never the vault itself | lib.rs:102, 106, 394, 973 | none | Untested |
 
@@ -82,9 +87,9 @@ Every property the program must keep, where it is enforced, and which test cover
 | D-1 | A duress withdrawal pays at most `min(amount, duress_limit, lamports − rent)`, fee included | lib.rs:224-237 | T:603, P-14, P-24 | OK |
 | D-2 | During a running lockdown a duress withdrawal pays nothing, and extends the lockdown | lib.rs:230, 238 | T:632, P-14, P-15, P-24 | OK |
 | D-3 | After a duress withdrawal `lockdown_until ≥ now + duress_lock` and never decreases (except a recovery Cancel) | lib.rs:238, 346-348 | T:603, T:662, P-14 | OK |
-| D-4 | Total value out of the vault during one lockdown ≤ `duress_limit` | duress branch only; **not for fees** of Ping/cancel approvals | P-15 (model), GAP-01 (counterexample on chain) | **GAP: G-01** |
+| D-4 | Total value out of the vault during one lockdown ≤ `duress_limit` (unless the recovery holder co-signs a fee) | duress branch lib.rs:234-251; signer fees refused in lockdown lib.rs:923, 117 | P-15, P-15b, FIX-01 | **FIXED (v4.1)**: G-01 |
 | D-5 | A recovery-tree Cancel ends the lockdown; nothing else does before it expires | lib.rs:346-348 | T:662 | OK |
-| D-6 | The duress phrase cannot keep the vault locked or "active" indefinitely | **not enforced**: each duress execution extends the lockdown (lib.rs:238) and each duress approval resets `last_active` (lib.rs:195) | none | GAP: G-06 (spec-intended, but abusable) |
+| D-6 | The duress phrase cannot keep the vault locked or "active" indefinitely | **not enforced**: each duress execution extends the lockdown (lib.rs:248) and each duress approval resets `last_active` (lib.rs:206) | none | Known limitation G-06 (SPEC §13), kept by design |
 
 ## 6. Testament, recovery, migration
 
@@ -93,7 +98,7 @@ Every property the program must keep, where it is enforced, and which test cover
 | T-1 | The testament opens only when active and the owner has been inactive `testament_delay` | `testament_open` lib.rs:983-988 | T:489 | OK |
 | T-2 | Heirs get exactly `bps/10000` of the total (rounded down), the last heir the remainder; sum = total | `split` lib.rs:995-1002 | T:489, P-18 | OK |
 | T-3 | Heirs are paid only to their configured addresses / token accounts they own | lib.rs:649, 666-668 | T:489 | OK |
-| T-4 | Migration moves funds only to `migrate_to`, which only an authorized `Migrate` sets | lib.rs:614, 622, 373, 541 | T:837, GAP-02 | OK (but see G-02, G-04) |
+| T-4 | Migration moves funds only to `migrate_to`, which only an authorized, rule-abiding `Migrate` sets and any `Cancel` clears | lib.rs:379-391, 357; `migrate_sol`/`migrate_token` check `migrate_to` | T:837, FIX-02, FIX-04 | OK (v4.1: G-02, G-04 fixed) |
 | T-5 | Recovery acts unrestricted only after the owner's inactivity, and that ignores a lockdown (spec) | lib.rs:900-905 | T:398 | OK |
 
 ## 7. Sealed letters and the letter key (SPEC §12)
@@ -126,30 +131,45 @@ only by the whitelist, instant limit and delay, and by your recovery key").
 
 | ID | Severity | Finding | Where | Proof |
 |---|---|---|---|---|
-| G-01 | **High** | **The action fee bypasses every rule.** `pay_fee` pays any `fee` to any `fee_payee` named in the action, with no cap, no whitelist, no instant limit, no delay. It runs on every execute path, including Ping and Cancel, which are allowed during a lockdown. A signer phrase therefore drains all SOL at once from a whitelist or delay vault (Ping with `fee = balance`). A coercer drains a locked vault after the duress payout, so D-4 ("the design caps the loss") does not hold. | lib.rs:1027-1040, called at 247, 266, 314, 331, 379, 411, 438, 458; lockdown allow-list state.rs:158 | GAP-01, GAP-01b |
-| G-02 | **High** | **Migrate ignores `instant_limit`.** It is restricted only when the whitelist is active (`whitelist_active() && !whitelisted`). `Config::restricted` (§3) also treats every destination as restricted when the whitelist is empty and `instant_limit > 0`. SPEC §4 says "Restricted unless new_vault is whitelisted". On such a vault a stolen signer phrase migrates to its own vault at once, then `migrate_sol`/`migrate_token` (permissionless) move everything. | lib.rs:364 | GAP-02 |
-| G-03 | **High** | **Session budgets ignore `instant_limit`.** `budget_spend` checks only the whitelist. SPEC §4 says budgets spend "only to non-restricted destinations". With an empty whitelist and `instant_limit > 0`, a stolen signer phrase creates a budget for its own session key (`limit` = everything) and spends it at once. Budget creation has no delay either. | lib.rs:972 (spend), 416-441 (create) | GAP-03, P-19b |
-| G-04 | Medium | **A started migration cannot be cancelled.** `Cancel`, even from the recovery tree, clears `pending` but never `migrate_to`. `migrate_sol`/`migrate_token` run regardless of lockdown or cancel. Combined with G-02, the recovery holder cannot stop the drain. Even on whitelist vaults, a mistaken migration to a whitelisted vault is final. | lib.rs:343-349, 612-636 | GAP-02 |
-| G-06 | Medium | **Duress phrase can keep the vault locked and "active" for months.** Every executed duress withdrawal extends the lockdown (even when it pays 0), and every duress approval resets `last_active`. A holder of the duress phrase can therefore chain lockdowns: up to 2^height leaves × `duress_lock` (≥ 256 days at height 8). That blocks the owner's withdrawals, and it postpones recovery-after-inactivity and the testament. A recovery Cancel ends one lockdown, but the next duress execution starts another. Spec-intended ("still extends the lockdown"; "duress approvals count as activity") but abusable. | lib.rs:195-197, 238 | — (design; P-15 shows the payout cap still holds) |
-| G-05 | Low | **Duplicate roots across slots are accepted.** `init_vault` checks the duress root against the other slots but not signer/recovery roots against each other. One phrase in two signer slots meets a 2-of-2 alone. The same WOTS+ leaf can then sign two different digests (slot 0 and slot 1 burn separately), which breaks one-time use. Self-inflicted; the SDK never builds such configs. | lib.rs:30-40 | P-22 (init succeeds) |
-| G-07 | Low | **Fixed windows, not sliding.** The instant limit and budgets reset at `window_start + DAY` / `+ period`, so up to 2× the limit can leave within any 24 h around a reset. SPEC says "per 24 h". | lib.rs:935, 974 | P-11b |
-| G-08 | Low | **Unbounded i64 arithmetic aborts.** `now + slow_delay` (lib.rs:369, 399, 946), `s.next_at += s.interval` (963) and `b.window_start + b.period` (974) overflow and panic (`overflow-checks = true`) for huge values the config or the signed action allows. The vault rules then block restricted withdrawals or a schedule/budget for good. No funds move. Self-inflicted, but `init_vault` should bound delays. | lib.rs:42 (only `≥ 0`), 946, 963, 974 | — |
+| G-01 | **High** — **FIXED v4.1** | **The action fee bypasses every rule.** `pay_fee` pays any `fee` to any `fee_payee` named in the action, with no cap, no whitelist, no instant limit, no delay. It runs on every execute path, including Ping and Cancel, which are allowed during a lockdown. A signer phrase therefore drains all SOL at once from a whitelist or delay vault (Ping with `fee = balance`). A coercer drains a locked vault after the duress payout, so D-4 ("the design caps the loss") does not hold. | v4 lib.rs:1027-1040 | GAP-01, GAP-01b → FIX-01, FIX-01b |
+| G-02 | **High** — **FIXED v4.1** | **Migrate ignores `instant_limit`.** It is restricted only when the whitelist is active (`whitelist_active() && !whitelisted`). `Config::restricted` (§3) also treats every destination as restricted when the whitelist is empty and `instant_limit > 0`. SPEC §4 says "Restricted unless new_vault is whitelisted". On such a vault a stolen signer phrase migrates to its own vault at once, then `migrate_sol`/`migrate_token` (permissionless) move everything. | v4 lib.rs:364 | GAP-02 → FIX-02 |
+| G-03 | **High** — **FIXED v4.1** | **Session budgets ignore `instant_limit`.** `budget_spend` checks only the whitelist. SPEC §4 says budgets spend "only to non-restricted destinations". With an empty whitelist and `instant_limit > 0`, a stolen signer phrase creates a budget for its own session key (`limit` = everything) and spends it at once. Budget creation has no delay either. | v4 lib.rs:972, 416-441 | GAP-03 → FIX-03, P-19b |
+| G-04 | Medium — **FIXED v4.1** | **A started migration cannot be cancelled.** `Cancel`, even from the recovery tree, clears `pending` but never `migrate_to`. `migrate_sol`/`migrate_token` run regardless of lockdown or cancel. Combined with G-02, the recovery holder cannot stop the drain. Even on whitelist vaults, a mistaken migration to a whitelisted vault is final. | v4 lib.rs:343-349 | FIX-04 |
+| G-06 | Medium — known limitation (SPEC §13) | **Duress phrase can keep the vault locked and "active" for months.** Every executed duress withdrawal extends the lockdown (even when it pays 0), and every duress approval resets `last_active`. A holder of the duress phrase can therefore chain lockdowns: up to 2^height leaves × `duress_lock` (≥ 256 days at height 8). That blocks the owner's withdrawals, and it postpones recovery-after-inactivity and the testament. A recovery Cancel ends one lockdown, but the next duress execution starts another. Spec-intended ("still extends the lockdown"; "duress approvals count as activity") but abusable. | lib.rs:195-197, 238 | — (design; P-15 shows the payout cap still holds) |
+| G-05 | Low — **FIXED v4.1** | **Duplicate roots across slots are accepted.** `init_vault` checks the duress root against the other slots but not signer/recovery roots against each other. One phrase in two signer slots meets a 2-of-2 alone. The same WOTS+ leaf can then sign two different digests (slot 0 and slot 1 burn separately), which breaks one-time use. Self-inflicted; the SDK never builds such configs. | v4 lib.rs:30-40 | P-22 (now `DuplicateRoot`), P-28, R-11 |
+| G-07 | Low — known limitation (SPEC §13) | **Fixed windows, not sliding.** The instant limit and budgets reset at `window_start + DAY` / `+ period`, so up to 2× the limit can leave within any 24 h around a reset. SPEC says "per 24 h". | lib.rs:935, 974 | P-11b |
+| G-08 | Low — **FIXED v4.1** | **Unbounded i64 arithmetic aborts.** `now + slow_delay` (lib.rs:369, 399, 946), `s.next_at += s.interval` (963) and `b.window_start + b.period` (974) overflow and panic (`overflow-checks = true`) for huge values the config or the signed action allows. The vault rules then block restricted withdrawals or a schedule/budget for good. No funds move. Self-inflicted, but `init_vault` should bound delays. | v4 lib.rs:42, 946, 963, 974 | FIX-08, R-12 |
 | G-09 | Info | **Approvals never expire for execution.** A partial approval (e.g. 1 of 2) stays executable until someone discards it (allowed after 7 days). An old, forgotten approval can be completed much later. | lib.rs:201-206, `authorize` 892 | — |
 | G-10 | Info | **Signature bytes published before approval leave the leaf usable.** `write_sigs` + `cancel_unlock` publish a signature without burning the leaf. A second message on the same leaf then enables forgery. Prevention is the client rule (`findSignedMessages`, SPEC §9). | lib.rs:128-138, 208 | T:291 (client side) |
 | G-11 | Info | Tier checks read a balance at one moment (borrowable). `PROTOCOL_ADMIN` is a hard-coded devnet key. The upgrade authority is one key today. | lib.rs:856-875; state.rs:22 | see `UPGRADE.md` |
 
-Suggested fixes (for the team; not applied, the program is unchanged in this review):
+### Fixes applied in v4.1
 
-- G-01: cap `fee` (e.g. a protocol-wide maximum, or ≤ the remaining instant allowance) and refuse
-  fees above it on restricted paths. During a lockdown allow only `fee = 0`, or a fee counted
-  against the duress allowance.
-- G-02: use `Config::restricted(&new_vault)` in `execute_admin`.
-- G-03: in `budget_spend`, refuse `restricted(dest)`. Alternatively, delay a budget's first spend
-  by `slow_delay` the way schedules do.
-- G-04: let `Cancel` clear `migrate_to`, and give a set `migrate_to` its own short delay.
-- G-06: do not extend a running lockdown, or cap the extensions. Consider not resetting
-  `last_active` from duress approvals (weigh this against indistinguishability).
-- G-05: require distinct non-zero roots across all five slots.
-- G-07: document it as a fixed window, or switch to a two-bucket sliding window.
-- G-08: bound `slow_delay`, `recovery_delay`, `testament_delay`, `duress_lock`, schedule
-  `interval` and budget `period` (e.g. ≤ 10 years), or use `saturating_add` everywhere.
+Constants: `MAX_ACTION_FEE = 10_000_000` lamports (state.rs:48), `MAX_DURATION = 10 years`
+(state.rs:51). New errors, appended to `NoxError`: `FeeTooHigh` 6040, `FeeInLockdown` 6041,
+`DuplicateRoot` 6042, `BudgetDestRestricted` 6043, `DurationTooLong` 6044. No account layout or
+size changed.
+
+- **G-01** — `authorize` refuses `fee > MAX_ACTION_FEE` for every execute path, the duress path
+  included (lib.rs:915), and during a lockdown refuses any fee on a signer-threshold approval that
+  the recovery tree did not also sign (lib.rs:920-924). `pay_fee` repeats the cap
+  (lib.rs:1064). `open_unlock` refuses both before a key is burned (lib.rs:114, 116-118). The fee
+  does not count toward the instant window (SPEC §4 "The fee"): a stolen signer phrase can still
+  move at most 0.01 SOL per one-time key through fees, never during a lockdown.
+  Tests: FIX-01, FIX-01b, P-24 (duress fees within the cap), P-26, P-15b.
+- **G-02** — `Migrate` uses `Config::restricted(&new_vault)` (lib.rs:379), so it queues for
+  `slow_delay` (or is refused in strict mode) like a restricted withdrawal. Tests: FIX-02, P-27.
+- **G-03** — `budget_spend` refuses `restricted(dest)` (lib.rs:999); `execute_create_budget`
+  refuses a budget when every destination is restricted (`Config::has_unrestricted`,
+  lib.rs:445, state.rs:131). `limit` needs no bound: a budget pays only destinations a signer
+  could pay at once anyway. Tests: FIX-03, P-19, P-19b, R-13.
+- **G-04** — `Cancel` clears `migrate_to` as well as `pending` (lib.rs:353-362). Defined in SPEC §4
+  "Cancel". Tests: FIX-02, FIX-04, P-27.
+- **G-05** — `init_vault` requires `Config::roots_distinct` across the five slots (lib.rs:42,
+  state.rs:138-141). Tests: P-22, P-28, R-11.
+- **G-08** — `init_vault` bounds all four delays to `MAX_DURATION` (lib.rs:46) and refuses a
+  negative `recovery_delay` (lib.rs:44); schedule `interval` and budget `period` are bounded at
+  `open_unlock` (lib.rs:115) and at creation (lib.rs:408, 442). Time additions saturate
+  (lib.rs:214, 383, 414, 772, 962, 973, 990, 1001). Tests: FIX-08, R-12.
+- **G-06, G-07** — unchanged by design; documented in SPEC §13 "Known limitations".
+- **G-09..G-11** — unchanged (informational).

@@ -127,7 +127,9 @@ export async function sendIxs(conn: Connection, payer: PublicKey, send: SendFn, 
 
 export interface RelayerInfo {
   relayer: string;
-  minFee: string; // lamports
+  minFee: string; // lamports, never above maxFee
+  maxFee?: string; // lamports: the program's MAX_ACTION_FEE
+  lockdownFree?: boolean; // signer Ping / cancels during a lockdown are relayed with fee 0
   sentinelFree: boolean; // Sentinel-tier vaults relay with fee 0
 }
 

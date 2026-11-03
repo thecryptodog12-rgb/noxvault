@@ -15,7 +15,9 @@ import {
   actionDigest,
   buildSteps,
   completesApproval,
+  explainError,
   fetchState,
+  inLockdown,
   findSignedMessages,
   keysLeft,
   leafUsed,
@@ -133,6 +135,10 @@ export default function ActionPanel({
   const isRecovery = tree === RECOVERY_TREE;
   const recoveryOpen = Math.floor(Date.now() / 1000) >= state.lastActive + Number(state.config.recoveryDelay);
   const isDuress = tree === DURESS_TREE;
+  // v4.1 (docs/SPEC.md §11): during a lockdown the signers' Ping and cancels carry fee 0, and the
+  // relayer sends them for free.
+  const lockdownFree = (a: { kind: KindName }) =>
+    tree < RECOVERY_TREE && inLockdown(state) && ["ping", "cancel", "cancelSchedule", "cancelBudget"].includes(a.kind);
   const kinds = isDuress
     ? KINDS.filter((x) => x.k === "withdraw")
     : isRecovery && !recoveryOpen
@@ -358,11 +364,12 @@ export default function ActionPanel({
     }
   };
 
-  const feeFor = (m: Mode): { fee: bigint; feePayee: Uint8Array } => {
+  const feeFor = (m: Mode, k: KindName): { fee: bigint; feePayee: Uint8Array } => {
     if (m === "relayer") {
       if (!relayer) throw new Error(relayerErr || "Relayer info not loaded yet");
-      // Sentinel vaults relay for free: fee 0, the relayer is still named as payee.
-      return { fee: sentinelFree ? 0n : BigInt(relayer.minFee), feePayee: new PublicKey(relayer.relayer).toBytes() };
+      // Sentinel vaults relay for free, and so do the signers' Ping and cancels in a lockdown
+      // (the program refuses any fee there): fee 0, the relayer is still named as payee.
+      return { fee: sentinelFree || lockdownFree({ kind: k }) ? 0n : BigInt(relayer.minFee), feePayee: new PublicKey(relayer.relayer).toBytes() };
     }
     if (!wallet.publicKey) throw new Error("Connect a wallet: it pays the network fees");
     return { fee: 0n, feePayee: wallet.publicKey.toBytes() };
@@ -381,10 +388,10 @@ export default function ActionPanel({
         // Co-signing: the action (including its fee) is fixed by whoever opened the approval.
         action = preset;
         if (action.kind === "withdraw" && !isSol(action.mint)) tokenProgram = await mintTokenProgram(connection, new PublicKey(action.mint));
-        useMode = relayer && equal(action.feePayee, new PublicKey(relayer.relayer).toBytes()) && (action.fee > 0n || sentinelFree) ? "relayer" : "wallet";
+        useMode = relayer && equal(action.feePayee, new PublicKey(relayer.relayer).toBytes()) && (action.fee > 0n || sentinelFree || lockdownFree(action)) ? "relayer" : "wallet";
       } else {
         const b = await buildKind();
-        action = { ...b.kind, ...feeFor(mode) } as Action;
+        action = { ...b.kind, ...feeFor(mode, b.kind.kind) } as Action;
         tokenProgram = b.tokenProgram;
       }
       const payer = payerFor(useMode) ?? wallet.publicKey;
@@ -516,7 +523,7 @@ export default function ActionPanel({
       if (m === "relayer") await sendRelayer(frozen);
       else await sendWallet(frozen);
     } catch (e) {
-      setSendErr(errMsg(e));
+      setSendErr(explainError(e));
     } finally {
       setRunning(false);
     }
@@ -527,8 +534,9 @@ export default function ActionPanel({
       !!frozen &&
       !!relayer &&
       equal(frozen.action.feePayee, new PublicKey(relayer.relayer).toBytes()) &&
-      (frozen.action.fee >= BigInt(relayer.minFee) || sentinelFree),
-    [frozen, relayer, sentinelFree]
+      (frozen.action.fee >= BigInt(relayer.minFee) || sentinelFree || lockdownFree(frozen.action)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [frozen, relayer, sentinelFree, state.lockdownUntil]
   );
 
   // ---- max for SOL: everything minus the fee leaves exactly 0 (allowed) ----
@@ -842,7 +850,13 @@ export default function ActionPanel({
             </div>
           )}
           {kind === "ping" && <p className="text-[12.5px] text-mute">Proves the owner is active: resets the recovery and testament clocks. Uses one key.</p>}
-          {kind === "cancel" && <p className="text-[12.5px] text-mute">{state.pending ? "Drops the pending withdrawal / migration before it executes." : "Nothing is pending right now."}</p>}
+          {kind === "cancel" && (
+            <p className="text-[12.5px] text-mute">
+              {state.pending || state.migrateTo
+                ? "Drops the pending withdrawal or migration, and stops a started migration from moving what is still in the vault."
+                : "Nothing is pending right now."}
+            </p>
+          )}
 
           <div className="flex flex-col gap-2">
             <Label>who pays the network fees</Label>
@@ -850,7 +864,17 @@ export default function ActionPanel({
               {(
                 [
                   ["wallet", "My wallet pays", "fee 0 · your wallet signs the transactions"],
-                  ["relayer", "Gasless via relayer", relayer ? (sentinelFree ? "free for Sentinel vaults" : `vault pays ${sol(BigInt(relayer.minFee), 6)} SOL to the relayer`) : "no wallet needed"],
+                  [
+                    "relayer",
+                    "Gasless via relayer",
+                    relayer
+                      ? sentinelFree
+                        ? "free for Sentinel vaults"
+                        : lockdownFree({ kind })
+                          ? "free during a lockdown (no fee allowed)"
+                          : `vault pays ${sol(BigInt(relayer.minFee), 6)} SOL to the relayer`
+                      : "no wallet needed",
+                  ],
                 ] as const
               ).map(([m, t, d]) => (
                 <button key={m} onClick={() => setMode(m)} className={`rounded-md border px-3 py-2.5 text-left ${mode === m ? "border-teal bg-teal/[0.06]" : "border-line-2"}`}>

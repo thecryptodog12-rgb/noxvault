@@ -258,7 +258,7 @@ describe("properties (pure SDK)", () => {
       );
     });
 
-    it("P-11b the fixed window really can pay 2x instant_limit within 24 h (documents G-07)", () => {
+    it("P-11b the fixed window can pay 2x instant_limit within 24 h (known limitation G-07, SPEC §3: kept by design)", () => {
       const c: M.RuleConfig = { whitelist: [], slowDelay: 60n, instantLimit: 100n, threshold: 1, recoveryDelay: 60n, duressLimit: 0n, duressLock: DAY };
       const { out } = runGate(c, [
         { dt: M.DAY - 1n, dest: K(5), amount: 100n, sol: true },
@@ -425,7 +425,8 @@ describe("properties (pure SDK)", () => {
               }
             }
             if (spends.some((s) => s.now >= 1_000_000n + 5n * 86_400n)) return false;
-            if (spends.some((s) => M.whitelistActive(c) && !c.whitelist.includes(s.dest))) return false;
+            // v4.1 (G-03): only non-restricted destinations, instant limit included.
+            if (spends.some((s) => M.restricted(c, s.dest))) return false;
             // Per window (fixed, like the instant limit): at most `limit`.
             const perWindow = new Map<bigint, bigint>();
             for (const s of spends) perWindow.set(s.window, (perWindow.get(s.window) ?? 0n) + s.amount);
@@ -436,15 +437,142 @@ describe("properties (pure SDK)", () => {
       );
     });
 
-    it("P-19b documents G-03: with no whitelist, a budget pays restricted destinations at once", () => {
+    it("P-19b G-03 fixed: with no whitelist and an instant limit, a budget pays nobody (and cannot be created)", () => {
       // Spec §4: a budget spends "only to non-restricted destinations". With an empty whitelist and
-      // instant_limit > 0 every destination is restricted (§3), yet budget_spend only checks the
-      // whitelist (lib.rs:972). This test pins the current behaviour; invert it with the fix.
+      // instant_limit > 0 every destination is restricted (§3): budget_spend refuses each one, and
+      // execute_create_budget refuses the budget (Config::has_unrestricted).
       const c: M.RuleConfig = { whitelist: [], slowDelay: 3600n, instantLimit: 100n, threshold: 1, recoveryDelay: 60n, duressLimit: 0n, duressLock: DAY };
       expect(M.restricted(c, K(5))).to.eq(true);
+      expect(M.hasUnrestricted(c)).to.eq(false);
       const b: M.BudgetState = { limit: 10_000n, period: 60n, expires: 2_000_000n, windowStart: 1_000_000n, spent: 0n };
-      M.budgetSpend(b, c, K(5), 10_000n, 1_000_001n);
-      expect(b.spent).to.eq(10_000n); // 100x the instant limit, no delay
+      expect(() => M.budgetSpend(b, c, K(5), 50n, 1_000_001n)).to.throw("BudgetDestRestricted");
+      expect(b.spent).to.eq(0n);
+      // Whitelisted destinations still spend; others are refused even within the limit.
+      const w: M.RuleConfig = { ...c, whitelist: [K(1)] };
+      M.budgetSpend(b, w, K(1), 10_000n, 1_000_001n);
+      expect(b.spent).to.eq(10_000n);
+      expect(() => M.budgetSpend(b, w, K(2), 1n, 1_000_100n)).to.throw("BudgetDestRestricted");
+    });
+
+    it("P-26 G-01 fixed: no fee above MAX_ACTION_FEE executes, and signer-only approvals pay no fee during a lockdown", () => {
+      const kinds: M.KindName[] = ["withdraw", "stake", "unstake", "collectStake", "cancel", "ping", "schedule", "cancelSchedule", "budget", "cancelBudget", "migrate", "letterKey"];
+      fc.assert(
+        fc.property(
+          cfgArb,
+          fc.integer({ min: 0, max: 31 }),
+          fc.constantFrom(...kinds),
+          fc.boolean(),
+          fc.bigInt({ min: 0n, max: 3n * M.MAX_ACTION_FEE }),
+          (c, trees, kind, locked, fee) => {
+            const st = fresh();
+            const now = st.lastActive + 10n;
+            if (locked) st.lockdownUntil = now + 100n;
+            let mode: string;
+            try {
+              mode = M.authorize(trees, c, st, kind, true, now, fee);
+            } catch (e) {
+              mode = (e as M.RuleError).code;
+            }
+            if (fee > M.MAX_ACTION_FEE) return mode === "FeeTooHigh";
+            let signers = 0;
+            for (let t = 0; t < M.SIGNER_SLOTS; t++) if (trees & (1 << t)) signers++;
+            const signerOnlyInLockdown = locked && signers >= c.threshold && !(trees & (1 << M.RECOVERY_TREE));
+            const lockdownKind = ["ping", "cancel", "cancelSchedule", "cancelBudget"].includes(kind);
+            if (signerOnlyInLockdown && lockdownKind) return fee === 0n ? mode === "Normal" : mode === "FeeInLockdown";
+            if (signerOnlyInLockdown) return mode === "Lockdown";
+            // Everywhere else the fee rule never decides: the same outcome as with fee 0.
+            let mode0: string;
+            try {
+              mode0 = M.authorize(trees, c, st, kind, true, now, 0n);
+            } catch (e) {
+              mode0 = (e as M.RuleError).code;
+            }
+            return mode === mode0;
+          }
+        ),
+        runs(800)
+      );
+    });
+
+    it("P-15b with v4.1 fees: everything out of the vault during one lockdown (duress payouts + Ping/cancel fees) stays within duress_limit", () => {
+      // A coercer holds both the duress phrase and a signer phrase; recovery stays silent.
+      const op = fc.oneof(
+        fc.record({ op: fc.constant("duress" as const), dt: fc.bigInt({ min: 0n, max: 86_400n }), amount: lamports, fee: fc.bigInt({ min: 0n, max: M.MAX_ACTION_FEE }) }),
+        fc.record({ op: fc.constantFrom("ping" as const, "cancel" as const), dt: fc.bigInt({ min: 0n, max: 86_400n }), fee: fc.bigInt({ min: 0n, max: 2n * M.MAX_ACTION_FEE }) })
+      );
+      fc.assert(
+        fc.property(cfgArb, fc.array(op, { minLength: 1, maxLength: 12 }), (c0, ops) => {
+          const c = { ...c0, threshold: 1 };
+          const st = fresh();
+          let now = 2_000_000n;
+          let vault = 50_000_000_000n;
+          let periodOut = 0n;
+          for (const o of ops) {
+            now += o.dt;
+            if (now >= st.lockdownUntil) periodOut = 0n;
+            if (o.op === "duress") {
+              try {
+                M.authorize(1 << M.DURESS_TREE, c, st, "withdraw", true, now, o.fee);
+              } catch {
+                continue;
+              }
+              const r = M.duressPayout(st, c, vault, 890_880n, o.amount, o.fee, now);
+              vault = r.vaultAfter;
+              periodOut += r.fee + r.paid;
+            } else {
+              const locked = now < st.lockdownUntil;
+              try {
+                M.authorize(0b001, c, st, o.op, false, now, o.fee);
+              } catch {
+                continue;
+              }
+              if (!M.feeAllowed(o.fee, vault, locked, 0b001)) return false; // authorize and pay_fee agree
+              vault -= o.fee;
+              if (locked) periodOut += o.fee;
+            }
+            if (now < st.lockdownUntil && periodOut > c.duressLimit) return false;
+          }
+          return true;
+        }),
+        runs(400)
+      );
+    });
+
+    it("P-27 G-02 fixed: Migrate follows the withdrawal restriction rule (instant limit included) and Cancel stops it", () => {
+      fc.assert(
+        fc.property(cfgArb, DEST, fc.boolean(), fc.boolean(), (c, target, unrestricted, byRecovery) => {
+          const st = fresh();
+          const now = st.windowStart + 5n;
+          let r: string;
+          try {
+            r = M.migrate(st, c, target, unrestricted, now);
+          } catch (e) {
+            r = (e as M.RuleError).code;
+          }
+          const restricted = !unrestricted && M.restricted(c, target);
+          if (!restricted && r !== "started") return false;
+          if (restricted && c.slowDelay === 0n && r !== "NotWhitelisted") return false;
+          if (restricted && c.slowDelay > 0n && (r !== "queued" || st.migrateTo || st.pending?.executableAt !== now + c.slowDelay)) return false;
+          // Any Cancel (signer or recovery) clears both the queued and the started migration.
+          M.cancel(st, byRecovery);
+          return st.pending === null && !st.migrateTo;
+        }),
+        runs(400)
+      );
+    });
+
+    it("P-28 G-05 fixed: a config is valid only if no used root appears in two slots", () => {
+      const root = fc.constantFrom("00", "aa", "bb", "cc", "dd", "ee");
+      fc.assert(
+        fc.property(fc.array(root, { minLength: 5, maxLength: 5 }), (roots) => {
+          const used = roots.filter((r) => r !== "00");
+          return M.rootsDistinct(roots) === (new Set(used).size === used.length);
+        }),
+        runs(200)
+      );
+      expect(M.rootsDistinct(["aa", "aa", "00", "00", "bb"])).to.eq(false);
+      expect(M.rootsDistinct(["aa", "00", "00", "bb", "aa"])).to.eq(false);
+      expect(M.rootsDistinct(["aa", "00", "00", "00", "bb"])).to.eq(true);
     });
 
     it("P-20 the leaf bitmap marks exactly one bit: no leaf or tree aliases another", () => {

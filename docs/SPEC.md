@@ -1,4 +1,4 @@
-# Noxvault — protocol spec v4
+# Noxvault — protocol spec v4.1
 
 A vault on Solana whose funds move only with **hash-based one-time signatures** (WOTS+), arranged
 in Merkle trees so one fixed vault address serves many actions. On top of that: multi-signer
@@ -10,6 +10,33 @@ SPL / Token-2022 tokens.
 This file is the single source of truth for the program, the SDK, the web app and the keeper.
 v3, v2 and v1 are in git history. v4 adds duress mode (§11) and sealed letters (§12) and changes the `Config` and
 `VaultState` layouts, so v3 devnet vaults are not readable by the v4 program (domains unchanged).
+
+### Changes in v4.1 (audit fixes; layouts, domains and existing error codes unchanged)
+
+v4.1 closes the findings of the internal audit (`docs/audit/INVARIANTS.md` §9). Every account
+layout and size is the same as v4, so v4 vaults keep working; only new checks and constants.
+
+1. **Fee cap (G-01).** `MAX_ACTION_FEE = 10 000 000` lamports (0.01 SOL). Every execution path
+   refuses a larger `fee` (`FeeTooHigh`), the duress path included; `open_unlock` refuses it
+   before a key is burned (§4).
+2. **No fee in a lockdown (G-01).** During a lockdown a `Ping` or cancel approved by the signers
+   alone carries `fee = 0` (`FeeInLockdown`); if the recovery tree also approved, the capped fee
+   is allowed (§11).
+3. **Migrate obeys the instant limit (G-02).** A `Migrate` is restricted exactly like a withdrawal
+   destination (§3), so it waits `slow_delay` (or is refused) unless `new_vault` is whitelisted
+   or the vault has no rules (§4).
+4. **Budgets obey the instant limit (G-03).** `spend_budget(_token)` refuses every restricted
+   destination (`BudgetDestRestricted`), and a budget cannot be created on a vault where every
+   destination is restricted (no whitelist and `instant_limit > 0`) (§4).
+5. **Cancel stops a started migration (G-04).** `Cancel` clears `pending` and `migrate_to` (§4).
+6. **Distinct roots (G-05).** `init_vault` refuses a used root in two slots, across the three
+   signer slots, the recovery slot and the duress tree (`DuplicateRoot`) (§3).
+7. **Bounded durations (G-08).** `slow_delay`, `recovery_delay`, `testament_delay` and
+   `duress_lock` are at most `MAX_DURATION` = 10 years (`recovery_delay` also ≥ 0); a schedule's
+   `interval` and a budget's `period` too (`DurationTooLong`). Time arithmetic saturates (§3).
+8. New errors, appended after the v4 ones: `FeeTooHigh` (6040), `FeeInLockdown` (6041),
+   `DuplicateRoot` (6042), `BudgetDestRestricted` (6043), `DurationTooLong` (6044).
+9. Known limitations, unchanged by design: §13.
 
 ## 1. Parameters
 
@@ -51,6 +78,8 @@ Config {
   duress_limit:    u64,           // lamports a duress withdrawal pays out at once
   duress_lock:     i64,           // lockdown after a duress withdrawal, >= 86400
 }
+// v4.1: slow_delay, recovery_delay, testament_delay >= 0; all four delays <= MAX_DURATION
+// (10 years = 315 360 000 s); every used root (trees[0..4], duress) differs from every other.
 config_hash = SHA256("nox3/config" || borsh(Config))
 vault       = PDA(["vault", config_hash])     // system-owned: holds SOL, owns token & stake accounts
 state       = PDA(["state", vault])           // created by `init_vault(config)`, permissionless
@@ -60,18 +89,21 @@ A destination is **restricted** if the whitelist is set and it is not on it, or 
 is empty but `instant_limit > 0`. Restricted SOL withdrawals within the 24 h `instant_limit`
 execute at once; anything else restricted becomes the **pending** withdrawal after `slow_delay`
 (refused when `slow_delay = 0`). Tokens to restricted destinations always wait (or are refused).
+The same rule decides `Migrate` (which never uses the instant allowance) and which destinations a
+session budget may pay (§4). The 24 h window is fixed, not sliding (§13).
 
 ## 4. Actions
 
 ```
-Action { kind: Kind, fee: u64, fee_payee: Pubkey }        // fee: lamports from the vault on execution
+Action { kind: Kind, fee: u64, fee_payee: Pubkey }        // fee: lamports from the vault on execution,
+                                                          // at most MAX_ACTION_FEE = 10 000 000 (v4.1)
 
 enum Kind {
   0  Withdraw       { mint, dest, amount }
   1  Stake          { seed: u8, vote, amount }
   2  Unstake        { seed: u8 }
   3  CollectStake   { seed: u8 }
-  4  Cancel                                     // drop the pending withdrawal / migration
+  4  Cancel                                     // drop the pending withdrawal / migration, stop a started one
   5  Ping                                       // owner is alive
   6  Schedule       { id: u8, mint, dest, amount, interval: i64, count: u16, start: i64 }
   7  CancelSchedule { id: u8 }
@@ -101,17 +133,43 @@ The duress approval never counts toward `threshold` and adds nothing to recovery
 Signer and duress approvals set `last_active = now`. Executing closes the approval. Each leaf of each tree is
 used once (bitmaps in `state`). An unexecuted approval can be discarded after 7 days.
 
+### The fee (v4.1)
+
+`fee` lamports go from the vault to `fee_payee` when the action executes (the relayer's repayment,
+§8). It is not a destination under the rules of §3, so it is bounded instead:
+
+- `fee ≤ MAX_ACTION_FEE` (0.01 SOL) on every path; `open_unlock` and every `execute_*` refuse more
+  (`FeeTooHigh`). A duress withdrawal also takes its fee from the duress allowance (§11).
+- During a lockdown, an approval without the recovery-tree bit pays `fee = 0` (`FeeInLockdown`).
+- The fee is not counted in the instant-limit window: relayed actions would otherwise eat the
+  owner's allowance, or be refused on whitelist vaults. The cost: a stolen signer phrase can move
+  at most `MAX_ACTION_FEE` per one-time key through fees (≤ 2.56 SOL over the life of a height-8
+  tree), never during a lockdown (§13).
+
+Relayers never ask more than `MAX_ACTION_FEE`, and relay a signer `Ping` or cancel during a
+lockdown for free.
+
 ### Rules per action
 
 - **Withdraw**: restriction rules of §3; recovery withdrawals after inactivity are unrestricted.
+- **Cancel**: clears `pending` (a waiting withdrawal or migration) and `migrate_to` (a started
+  migration: whatever `migrate_sol` / `migrate_token` have not moved yet stays in the vault). From
+  the recovery tree it also ends a lockdown (§11). It never touches schedules or budgets
+  (`CancelSchedule`, `CancelBudget`) or funds already moved.
 - **Schedule**: pays `amount` every `interval`, `count` times from `start`; anyone runs due
   payments. A restricted destination's first payment is at least `slow_delay` away (refused if
-  `slow_delay = 0`). `PDA(["schedule", vault, id])`.
+  `slow_delay = 0`). `0 < interval ≤ MAX_DURATION`. `PDA(["schedule", vault, id])`.
 - **Budget**: an ordinary (ed25519) **session key** may spend up to `limit` per `period` until
-  `expires`, only to non-restricted destinations. Losing the session key loses at most the budget.
+  `expires`, only to non-restricted destinations (§3, instant limit included: `spend_budget`
+  refuses a restricted one with `BudgetDestRestricted`). A budget cannot be created on a vault
+  whose every destination is restricted (no whitelist and `instant_limit > 0`).
+  `0 < period ≤ MAX_DURATION`. `limit` is not bounded further: a budget only pays destinations a
+  signer could pay at once anyway. Losing the session key loses at most the budget.
   `PDA(["budget", vault, id])`.
-- **Migrate**: sets `migrate_to` (a Noxvault vault). Restricted unless `new_vault` is whitelisted.
-  Then anyone moves all SOL and any token to it.
+- **Migrate**: sets `migrate_to` (a Noxvault vault). Restricted like a withdrawal destination
+  (§3): unless `new_vault` is whitelisted, or the vault has no rules, or recovery acts after
+  inactivity, it becomes the pending migration after `slow_delay` (refused when `slow_delay = 0`).
+  Then anyone moves all SOL and any token to it, until a `Cancel` clears `migrate_to`.
 - **Testament**: when `testament_delay > 0` and `now ≥ last_active + testament_delay`, anyone
   can distribute all SOL / any token to the heirs by `bps`, and deactivate / collect stakes first.
 - After any payout the vault holds 0 or ≥ rent-minimum lamports.
@@ -205,12 +263,13 @@ for a small amount while the rest of the vault locks.
   (`SHA256("nox4/decoy-duress" || sk_seed)`, no key exists for it) at the primary tree's height,
   `duress_limit` 0.5 SOL and `duress_lock` 3 days by default. No vault reveals whether it has one.
 - A duress approval authorizes only `Withdraw` of SOL. Executing it pays
-  `min(amount, duress_limit, vault lamports − rent minimum)` to `dest` at once (the fee is paid
-  from the same allowance), ignoring whitelist, instant limit and slow delay, then sets
+  `min(amount, duress_limit, vault lamports − rent minimum)` to `dest` at once (the fee, at most
+  `MAX_ACTION_FEE`, is paid from the same allowance), ignoring whitelist, instant limit and slow delay, then sets
   `lockdown_until = max(lockdown_until, now + duress_lock)`. During a lockdown already running it
   pays nothing more (it still extends the lockdown). Every other `execute_*` refuses it.
 - **Lockdown** (`now < lockdown_until`): signer approvals execute only `Ping`, `Cancel`,
-  `CancelSchedule`, `CancelBudget`; `execute_pending(_token)` and `spend_budget(_token)` are
+  `CancelSchedule`, `CancelBudget`, and only with `fee = 0` (v4.1; an approval the recovery tree
+  also signed may pay the capped fee); `execute_pending(_token)` and `spend_budget(_token)` are
   refused. Running schedules, the testament, inbox sweeps and an already-started migration
   continue. Recovery after inactivity is unaffected (duress approvals count as activity).
 - A **recovery-tree `Cancel`** also ends the lockdown: the recovery holder, not the coerced owner,
@@ -252,3 +311,23 @@ the ciphertext can (the reader fetches that round's beacon). Nothing on chain ch
   passphrase for the heir, `{v: 1, pw: {s, i, c}}` (PBKDF2-SHA256 210 000 rounds, AES-GCM).
 - **Limits.** A letter opens at its round even if the owner is alive but did not refresh in time.
   After the round, anyone with the ciphertext can read it unless it also has a passphrase.
+
+## 13. Known limitations
+
+Design trade-offs the audit found (`docs/audit/INVARIANTS.md` §9) and v4.1 keeps on purpose.
+
+- **G-06: the duress phrase can prolong the lockdown and the owner's "activity".** Every executed
+  duress withdrawal extends the lockdown (even when it pays nothing), and every duress approval
+  sets `last_active`. Whoever holds the duress phrase can therefore chain lockdowns, up to
+  2^height × `duress_lock` (≥ 256 days at height 8), which blocks the owner's withdrawals and
+  postpones recovery-after-inactivity and the testament. Kept because a duress signature must look
+  like any other (indistinguishability) and the lockdown must hold while the coercer is present.
+  Remedy: the recovery holder's `Cancel` ends each lockdown. Nothing beyond `duress_limit` per
+  lockdown leaves the vault (the v4.1 fee rule included).
+- **G-07: the instant limit and budget periods are fixed windows, not sliding ones.** The window
+  restarts at `window_start + 24 h` (budgets: `+ period`), so up to 2 × `instant_limit` (or
+  2 × `limit`) can leave within any 24 h (or `period`) around a restart. Kept because a sliding
+  window needs more state than `VaultState` and `Budget` hold, and their layouts are fixed. Choose
+  limits with the 2× worst case in mind.
+- **Fees outside the instant limit.** See "The fee" in §4: at most `MAX_ACTION_FEE` per one-time
+  key, never during a lockdown.

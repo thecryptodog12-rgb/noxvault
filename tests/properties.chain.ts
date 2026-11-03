@@ -1,7 +1,7 @@
 // On-chain property tests: random inputs (fast-check) run against the local validator and are
 // compared with the reference model in tests/model.ts. IDs refer to docs/audit/INVARIANTS.md.
-// "GAP-xx" tests pin behaviour that breaks an intended invariant: they pass today to prove the
-// finding, and must be inverted when the program is fixed.
+// "FIX-xx" tests were the audit's "GAP-xx" tests: they proved each finding of
+// docs/audit/INVARIANTS.md §9 and now assert the fixed (v4.1) behaviour.
 // Runs inside `anchor test` after tests/noxvault.ts (it reuses the protocol account if present).
 // Run counts are small on purpose (each run signs and sends several transactions); raise them
 // with FC_CHAIN_RUNS=<n>. Seed a failing run with FC_SEED=<seed>.
@@ -17,6 +17,10 @@ import * as M from "./model";
 import {
   Signer,
   buildSteps,
+  executeIx,
+  executePendingIx,
+  fetchApproval,
+  MAX_ACTION_FEE,
   fetchLetterKey,
   fetchProtocol,
   fetchState,
@@ -55,7 +59,7 @@ const withdraw = (dest: PublicKey, amount: bigint, fee = 0n, feePayee: PublicKey
   feePayee: feePayee.toBytes(),
 });
 
-const CODES = ["KeyUsed", "BadTree", "BadSignature", "NotWhitelisted", "PendingExists", "Lockdown", "DuressSolOnly", "NotApproved", "NotLetterKey", "RentDust", "InsufficientFunds", "ZeroAmount", "DestIsVault"];
+const CODES = ["FeeTooHigh", "FeeInLockdown", "DuplicateRoot", "BudgetDestRestricted", "DurationTooLong", "WrongDest", "NotYet", "KeyUsed", "BadTree", "BadSignature", "NotWhitelisted", "PendingExists", "Lockdown", "DuressSolOnly", "NotApproved", "NotLetterKey", "RentDust", "InsufficientFunds", "ZeroAmount", "DestIsVault"];
 
 describe("properties (on chain)", function () {
   this.timeout(600_000);
@@ -167,28 +171,43 @@ describe("properties (on chain)", function () {
     );
   });
 
-  it("P-22 a signature made for one vault (or one tree slot) never approves in another", async () => {
-    // Two vaults holding the same tree (against client rule §9, on purpose): the digest names the
-    // vault, so A's signature is useless in B. Same for slot 0 vs slot 1 of one vault.
+  it("P-22 a signature made for one vault (or one tree slot) never approves in another; one root never fills two slots", async () => {
+    // G-05 fixed: init_vault refuses the same root in two slots (signer, recovery or duress).
     const p = await fetchProtocol(program);
     const sentinel = p && !p.noxMint.equals(PublicKey.default) ? p.sentinel : 0n;
+    const dupes = [
+      makeConfig(owner, { coSigners: [owner.pub.root], threshold: 2, duressLimitLamports: SOL(0.5) + (unique += 1n) }),
+      makeConfig(owner, { recoveryRoot: owner.pub.root, recoveryDelaySecs: 3600, duressLimitLamports: SOL(0.5) + (unique += 1n) }),
+      makeConfig(owner, { duressRoot: owner.pub.root, duressLimitLamports: SOL(0.5) + (unique += 1n) }),
+    ];
+    for (const [i, cfg] of dupes.entries()) {
+      await giveNox(vaultOf(cfg, program.programId), sentinel);
+      let code = "ok";
+      try {
+        await send([await initVaultIx(program, payer, cfg)]);
+      } catch (e) {
+        code = codeOf(e);
+      }
+      if (code !== "DuplicateRoot") throw new Error(`duplicate-root config #${i}: ${code}`);
+    }
+    // vB holds another signer in slot 0 and the owner's tree in slot 1. A signature by the owner's
+    // tree made for (vA, slot 1) or for (vB, slot 0) never approves as (vB, slot 1): the digest
+    // names the vault and the slot.
     unique += 1n;
-    const cfgB = makeConfig(owner, { coSigners: [owner.pub.root], threshold: 2, duressLimitLamports: SOL(0.5) + unique });
+    const other = makeSigner(newMasterSecret(), 0, 0);
+    const cfgB = makeConfig(other, { coSigners: [owner.pub.root], threshold: 2, duressLimitLamports: SOL(0.5) + unique });
     const vB = vaultOf(cfgB, program.programId);
     await giveNox(vB, sentinel);
-    // G-05: init_vault accepts the same root in two signer slots (one phrase meets a 2-of-2).
     await send([await initVaultIx(program, payer, cfgB)]);
     const { vault: vA } = await newVault({});
     await fc.assert(
       fc.asyncProperty(fc.bigInt({ min: 1n, max: SOL(1) }), fc.constantFrom("vault", "slot"), async (amount, how) => {
         const action = withdraw(Keypair.generate().publicKey, amount);
-        const leaf = nextLeaf(vB, 0);
-        nextLeaf(vB, 1);
-        // Signed for (vA, slot 0) or (vB, slot 0); submitted as (vB, slot 1) or (vB, slot 0).
-        const [sv, st, tree] = how === "vault" ? [vA, 0, 0] : [vB, 0, 1];
+        const leaf = nextLeaf(vB, 1);
+        const [sv, st] = how === "vault" ? [vA, 1] : [vB, 0];
         const d = wots.messageDigest(program.programId.toBytes(), sv.toBytes(), st, leaf, wots.encodeAction(action));
         const signature = wots.sign(owner.seeds, leaf, d);
-        const steps = await buildSteps(program, payer, { vault: vB, tree, leaf, pkSeed: owner.seeds.pkSeed, authPath: wots.authPath(owner.pub, leaf), signature, action }, { execute: false });
+        const steps = await buildSteps(program, payer, { vault: vB, tree: 1, leaf, pkSeed: owner.seeds.pkSeed, authPath: wots.authPath(owner.pub, leaf), signature, action }, { execute: false });
         let code = "ok";
         try {
           for (const t of packSteps(payer, steps)) await send(t.instructions);
@@ -197,7 +216,7 @@ describe("properties (on chain)", function () {
         }
         await send([await program.methods.cancelUnlock().accountsPartial({ payer, unlock: unlockPda(vB, payer, program.programId) }).instruction()]);
         const state = (await fetchState(program, vB))!;
-        const burned = (state.used[tree][leaf >> 3] & (1 << (leaf & 7))) !== 0;
+        const burned = (state.used[1][leaf >> 3] & (1 << (leaf & 7))) !== 0;
         return code === "BadSignature" && !burned;
       }),
       chainRuns(2)
@@ -260,7 +279,7 @@ describe("properties (on chain)", function () {
       limit: fc.integer({ min: 1, max: 100 }).map((c) => SOL(c / 100)),
       funded: fc.integer({ min: 1, max: 150 }).map((c) => SOL(c / 100)),
       amount: fc.integer({ min: 1, max: 200 }).map((c) => SOL(c / 100)),
-      fee: fc.constantFrom(0n, SOL(0.01), SOL(0.3)),
+      fee: fc.constantFrom(0n, SOL(0.005), MAX_ACTION_FEE), // v4.1: fees above MAX_ACTION_FEE never sign
     });
     await fc.assert(
       fc.asyncProperty(scenario, async (s) => {
@@ -338,79 +357,164 @@ describe("properties (on chain)", function () {
     );
   });
 
-  // ---------- known gaps (see docs/audit/INVARIANTS.md) ----------
+  // ---------- audit findings, fixed in v4.1 (docs/audit/INVARIANTS.md §9) ----------
 
-  describe("known gaps: these pass today to prove each finding; invert them with the fix", () => {
-    it("GAP-01 the action fee is ungated: during a duress lockdown a signer Ping moves SOL past the duress cap", async () => {
+  describe("audit findings G-01..G-05, G-08: fixed in v4.1", () => {
+    const codeOfSend = async (p: Promise<unknown>) => {
+      try {
+        await p;
+        return "ok";
+      } catch (e) {
+        return codeOf(e);
+      }
+    };
+
+    it("FIX-01 (G-01) during a duress lockdown a signer Ping or Cancel pays no fee; a recovery Cancel may pay the capped fee", async () => {
       const attacker = Keypair.generate().publicKey;
+      const relayer = Keypair.generate().publicKey;
       const limit = SOL(0.05);
-      const { vault: v } = await newVault({ duressRoot: duress.pub.root, duressLimitLamports: limit, whitelist: [Keypair.generate().publicKey], slowDelaySecs: 0 });
+      const { vault: v } = await newVault({
+        duressRoot: duress.pub.root,
+        duressLimitLamports: limit,
+        whitelist: [Keypair.generate().publicKey],
+        slowDelaySecs: 0,
+        recoveryRoot: rec.pub.root,
+        recoveryDelaySecs: 86_400,
+      });
       await fund(v, SOL(1));
       await fund(attacker, SOL(0.01));
+      await fund(relayer, SOL(0.01));
+      // A Ping with a fee, approved (not executed) before the lockdown.
+      const early: wots.Action = { kind: "ping", fee: MAX_ACTION_FEE, feePayee: attacker.toBytes() };
+      expect(await act(owner, v, early, false)).to.eq("ok");
+      expect(await fetchApproval(program, v, early)).to.not.eq(null);
       expect(await act(duress, v, withdraw(attacker, SOL(1)))).to.eq("ok");
       const st = (await fetchState(program, v))!;
       expect(st.lockdownUntil).to.be.greaterThan(Math.floor(Date.now() / 1000));
-      // Lockdown: a signer withdrawal is refused...
+      const vaultAfterDuress = await balance(v);
+      // A signer withdrawal is refused; a signer Ping or Cancel with a fee never even opens...
       expect(await act(owner, v, withdraw(attacker, SOL(0.1)), true)).to.eq("Lockdown");
-      // ...but a Ping whose fee goes to the attacker executes (Ping is allowed in lockdown,
-      // pay_fee has no cap, no whitelist and no delay: lib.rs:337-381, 1027-1040).
-      const before = await balance(attacker);
-      expect(await act(owner, v, { kind: "ping", fee: SOL(0.5), feePayee: attacker.toBytes() })).to.eq("ok");
-      expect((await balance(attacker)) - before).to.eq(SOL(0.5));
-      // Total out of the vault in this lockdown: 0.55 SOL, 11x the duress limit.
+      expect(await act(owner, v, { kind: "ping", fee: SOL(0.5), feePayee: attacker.toBytes() })).to.eq("FeeTooHigh");
+      expect(await act(owner, v, { kind: "ping", fee: 1n, feePayee: attacker.toBytes() })).to.eq("FeeInLockdown");
+      expect(await act(owner, v, { kind: "cancel", fee: MAX_ACTION_FEE, feePayee: attacker.toBytes() })).to.eq("FeeInLockdown");
+      // ...and the approval made before the lockdown does not execute during it (authorize).
+      expect(await codeOfSend(send([await executeIx(program, payer, v, early, payer)]))).to.eq("FeeInLockdown");
+      // With fee 0 they work, and nothing leaves the vault.
+      expect(await act(owner, v, { kind: "ping", ...fee0 })).to.eq("ok");
+      expect(await balance(v)).to.eq(vaultAfterDuress);
+      // The recovery holder's Cancel may pay a (capped) relayer fee, and ends the lockdown.
+      const r0 = await balance(relayer);
+      expect(await act(rec, v, { kind: "cancel", fee: MAX_ACTION_FEE, feePayee: relayer.toBytes() })).to.eq("ok");
+      expect((await balance(relayer)) - r0).to.eq(MAX_ACTION_FEE);
+      expect((await fetchState(program, v))!.lockdownUntil).to.eq(0);
     });
 
-    it("GAP-02 an executed Migrate is instant on an instant-limit vault and a recovery Cancel cannot undo it", async () => {
-      const { vault: v } = await newVault({ instantLimitLamports: SOL(0.1), slowDelaySecs: 86_400, recoveryRoot: rec.pub.root, recoveryDelaySecs: 86_400 });
-      await fund(v, SOL(1));
-      const stranger = Keypair.generate().publicKey;
-      // The rules hold for a plain withdrawal: over the limit it waits a day.
-      expect(await act(owner, v, withdraw(stranger, SOL(0.5)))).to.eq("ok");
-      expect((await fetchState(program, v))!.pending).to.not.eq(null);
-      expect(await act(rec, v, { kind: "cancel", ...fee0 })).to.eq("ok");
-      // A stolen signer key migrates to its own vault instead: whitelist empty -> not restricted
-      // (lib.rs:364 checks whitelist_active only, while Config::restricted also counts instant_limit).
-      const thief = makeSigner(newMasterSecret(), 0, 0);
-      const { vault: theirs } = await newVault({}, thief);
-      expect(await act(owner, v, { kind: "migrate", newVault: theirs.toBytes(), ...fee0 })).to.eq("ok");
-      let st = (await fetchState(program, v))!;
-      expect(st.migrateTo?.equals(theirs)).to.eq(true);
-      expect(st.pending).to.eq(null);
-      // The recovery holder's Cancel clears `pending` only, never `migrate_to` (lib.rs:343-349).
-      expect(await act(rec, v, { kind: "cancel", ...fee0 })).to.eq("ok");
-      st = (await fetchState(program, v))!;
-      expect(st.migrateTo?.equals(theirs)).to.eq(true);
-      const all = await balance(v);
-      await send(await migrateIxs(program, payer, v, st, []));
-      expect(await balance(v)).to.eq(0n);
-      expect((await balance(theirs)) >= all).to.eq(true);
-    });
-
-    it("GAP-03 a session budget on an instant-limit vault pays any destination at once, past the limit", async () => {
-      const p = await fetchProtocol(program);
-      const guardian = p && !p.noxMint.equals(PublicKey.default) ? p.guardian : 0n;
-      const { vault: v } = await newVault({ instantLimitLamports: SOL(0.1), slowDelaySecs: 86_400 });
-      await giveNox(v, guardian);
-      await fund(v, SOL(1));
-      const session = Keypair.generate();
-      await fund(session.publicKey, SOL(0.05));
-      const expires = BigInt(Math.floor(Date.now() / 1000) + 3600);
-      expect(await act(owner, v, { kind: "budget", id: 0, session: session.publicKey.toBytes(), mint: ZERO, limit: SOL(10), period: 86_400n, expires, ...fee0 })).to.eq("ok");
-      const [b] = await vaultBudgets(program, v);
-      const stranger = Keypair.generate().publicKey;
-      await send([await spendBudgetIx(program, v, b, stranger, SOL(0.8))], [session]);
-      expect(await balance(stranger)).to.eq(SOL(0.8)); // 8x the instant limit, no delay (lib.rs:972)
-    });
-
-    it("GAP-01b the fee also bypasses a strict whitelist (slow_delay = 0)", async () => {
+    it("FIX-01b (G-01) a fee above MAX_ACTION_FEE never signs, on any vault; within the cap it pays exactly the fee", async () => {
       const stranger = Keypair.generate().publicKey;
       const { vault: v } = await newVault({ whitelist: [Keypair.generate().publicKey], slowDelaySecs: 0 });
       await fund(v, SOL(1));
       await fund(stranger, SOL(0.01));
       expect(await act(owner, v, withdraw(stranger, SOL(0.1)))).to.eq("NotWhitelisted");
+      await fc.assert(
+        fc.asyncProperty(fc.bigInt({ min: MAX_ACTION_FEE + 1n, max: SOL(0.9) }), fc.constantFrom("ping" as const, "cancel" as const), async (fee, kind) => {
+          const before = await balance(v);
+          const code = await act(owner, v, { kind, fee, feePayee: stranger.toBytes() });
+          return code === "FeeTooHigh" && (await balance(v)) === before;
+        }),
+        chainRuns(3)
+      );
       const before = await balance(stranger);
-      expect(await act(owner, v, { kind: "ping", fee: SOL(0.9), feePayee: stranger.toBytes() })).to.eq("ok");
-      expect((await balance(stranger)) - before).to.eq(SOL(0.9));
+      expect(await act(owner, v, { kind: "ping", fee: MAX_ACTION_FEE, feePayee: stranger.toBytes() })).to.eq("ok");
+      expect((await balance(stranger)) - before).to.eq(MAX_ACTION_FEE);
+    });
+
+    it("FIX-02 (G-02) Migrate obeys the instant limit (waits slow_delay, cancellable); in strict mode it is refused", async () => {
+      const { vault: v } = await newVault({ instantLimitLamports: SOL(0.1), slowDelaySecs: 86_400, recoveryRoot: rec.pub.root, recoveryDelaySecs: 86_400 });
+      await fund(v, SOL(1));
+      const thief = makeSigner(newMasterSecret(), 0, 0);
+      const { vault: theirs } = await newVault({}, thief);
+      expect(await act(owner, v, { kind: "migrate", newVault: theirs.toBytes(), ...fee0 })).to.eq("ok");
+      let st = (await fetchState(program, v))!;
+      expect(st.migrateTo).to.eq(null);
+      expect(st.pending?.kind).to.eq("migrate");
+      expect(st.pending?.dest.equals(theirs)).to.eq(true);
+      expect(Number(st.pending!.executableAt)).to.be.greaterThan(Math.floor(Date.now() / 1000) + 86_000);
+      expect(await codeOfSend(send([await executePendingIx(program, payer, v, st)]))).to.eq("NotYet");
+      // The recovery holder cancels it within the delay.
+      expect(await act(rec, v, { kind: "cancel", ...fee0 })).to.eq("ok");
+      st = (await fetchState(program, v))!;
+      expect(st.pending).to.eq(null);
+      expect(st.migrateTo).to.eq(null);
+      expect(await balance(v)).to.eq(SOL(1));
+      // Strict whitelist: a migration to a non-whitelisted vault is refused outright.
+      const { vault: strict } = await newVault({ whitelist: [Keypair.generate().publicKey], slowDelaySecs: 0 });
+      await fund(strict, SOL(0.1));
+      expect(await act(owner, strict, { kind: "migrate", newVault: theirs.toBytes(), ...fee0 })).to.eq("NotWhitelisted");
+      expect((await fetchState(program, strict))!.migrateTo).to.eq(null);
+    });
+
+    it("FIX-03 (G-03) budgets: refused on an instant-limit vault without whitelist, and spend only to the whitelist", async () => {
+      const p = await fetchProtocol(program);
+      const guardian = p && !p.noxMint.equals(PublicKey.default) ? p.guardian : 0n;
+      const session = Keypair.generate();
+      await fund(session.publicKey, SOL(0.05));
+      const expires = BigInt(Math.floor(Date.now() / 1000) + 3600);
+      const budget = (id: number): wots.Action => ({ kind: "budget", id, session: session.publicKey.toBytes(), mint: ZERO, limit: SOL(10), period: 86_400n, expires, ...fee0 });
+      // No whitelist + instant limit: every destination is restricted, so no budget.
+      const { vault: v } = await newVault({ instantLimitLamports: SOL(0.1), slowDelaySecs: 86_400 });
+      await giveNox(v, guardian);
+      await fund(v, SOL(1));
+      expect(await act(owner, v, budget(0))).to.eq("BudgetDestRestricted");
+      expect(await vaultBudgets(program, v)).to.have.length(0);
+      // Whitelist vault: the session key pays the whitelist only.
+      const friend = Keypair.generate().publicKey;
+      await fund(friend, SOL(0.01));
+      const { vault: w } = await newVault({ whitelist: [friend], instantLimitLamports: SOL(0.1), slowDelaySecs: 86_400 });
+      await giveNox(w, guardian);
+      await fund(w, SOL(1));
+      expect(await act(owner, w, budget(1))).to.eq("ok");
+      const [b] = await vaultBudgets(program, w);
+      const stranger = Keypair.generate().publicKey;
+      expect(await codeOfSend(send([await spendBudgetIx(program, w, b, stranger, SOL(0.05))], [session]))).to.eq("BudgetDestRestricted");
+      expect(await balance(stranger)).to.eq(0n);
+      await send([await spendBudgetIx(program, w, b, friend, SOL(0.5))], [session]);
+      expect(await balance(friend)).to.eq(SOL(0.51));
+    });
+
+    it("FIX-04 (G-04) a Cancel from the signers or from the recovery tree stops a started migration", async () => {
+      const { vault: target } = await newVault({});
+      const { vault: v } = await newVault({ whitelist: [target], slowDelaySecs: 3600, recoveryRoot: rec.pub.root, recoveryDelaySecs: 86_400 });
+      await fund(v, SOL(0.5));
+      for (const who of [owner, rec]) {
+        expect(await act(owner, v, { kind: "migrate", newVault: target.toBytes(), ...fee0 })).to.eq("ok");
+        let st = (await fetchState(program, v))!;
+        expect(st.migrateTo?.equals(target)).to.eq(true);
+        expect(await act(who, v, { kind: "cancel", ...fee0 })).to.eq("ok");
+        st = (await fetchState(program, v))!;
+        expect(st.migrateTo).to.eq(null);
+        // The sweep is refused from now on.
+        expect(await codeOfSend(send(await migrateIxs(program, payer, v, { ...st, migrateTo: target }, [])))).to.eq("WrongDest");
+      }
+      expect(await balance(v)).to.eq(SOL(0.5));
+    });
+
+    it("FIX-08 (G-08) delays above 10 years are refused at init; intervals and periods above 10 years never sign", async () => {
+      const TOO_LONG = 10 * 365 * 86_400 + 1;
+      const settings = [{ slowDelaySecs: TOO_LONG }, { duressLockSecs: TOO_LONG }, { recoveryRoot: rec.pub.root, recoveryDelaySecs: TOO_LONG }];
+      for (const s of settings) {
+        unique += 1n;
+        const cfg = makeConfig(owner, { ...s, duressLimitLamports: SOL(0.5) + unique });
+        expect(await codeOfSend(send([await initVaultIx(program, payer, cfg)]))).to.eq("DurationTooLong");
+      }
+      // i64::MAX used to make `now + slow_delay` abort; now it is refused up front.
+      unique += 1n;
+      const huge = { ...makeConfig(owner, { duressLimitLamports: SOL(0.5) + unique }), slowDelay: (1n << 63n) - 1n };
+      expect(await codeOfSend(send([await initVaultIx(program, payer, huge)]))).to.eq("DurationTooLong");
+      const { vault: v } = await newVault({});
+      await fund(v, SOL(0.1));
+      const dest = Keypair.generate().publicKey.toBytes();
+      expect(await act(owner, v, { kind: "schedule", id: 0, mint: ZERO, dest, amount: 1n, interval: (1n << 63n) - 1n, count: 2, start: 0n, ...fee0 })).to.eq("DurationTooLong");
+      expect(await act(owner, v, { kind: "budget", id: 0, session: dest, mint: ZERO, limit: 1n, period: BigInt(TOO_LONG), expires: 1n << 62n, ...fee0 })).to.eq("DurationTooLong");
     });
   });
 });

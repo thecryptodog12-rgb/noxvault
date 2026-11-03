@@ -15,7 +15,10 @@ import {
   completesApproval,
   buildSteps,
   fetchState,
+  inLockdown,
   leafUsed,
+  MAX_ACTION_FEE,
+  SIGNER_SLOTS,
   letterKeyPda,
   mintTokenProgram,
   packSteps,
@@ -35,10 +38,25 @@ export interface RelayRequest {
 }
 
 export interface RelayPolicy {
-  /** Lowest fee accepted, in lamports. Covers a few transaction fees with a margin. */
+  /** Lowest fee accepted, in lamports. Covers a few transaction fees with a margin. Never asked
+   * above MAX_ACTION_FEE (the program refuses larger fees): see `relayFee`. */
   minFee: bigint;
   /** Relay Sentinel-tier vaults ($NOX held in the vault) for free. Default true. */
   sentinelFree?: boolean;
+}
+
+/**
+ * The fee the relayer asks for an action, in lamports: the policy's minimum, plus `extra` (rent the
+ * relayer pays for an account the action creates), never above the program's MAX_ACTION_FEE.
+ */
+export function relayFee(policy: RelayPolicy, extra = 0n): bigint {
+  const want = policy.minFee + extra;
+  return want > MAX_ACTION_FEE ? MAX_ACTION_FEE : want;
+}
+
+/** Signer Ping and cancels during a lockdown must carry fee 0 (docs/SPEC.md §11): relayed free. */
+export function freeLockdownAction(tree: number, kind: Action["kind"], locked: boolean): boolean {
+  return locked && tree < SIGNER_SLOTS && ["ping", "cancel", "cancelSchedule", "cancelBudget"].includes(kind);
 }
 
 const fromHex = (h: string, len?: number) => {
@@ -114,13 +132,17 @@ export async function checkRelay(program: Program<Noxvault>, relayer: PublicKey,
   const digest = actionDigest(program.programId, s.vault, s.tree, s.leaf, s.action);
   if (!equal(recoverRoot(s.pkSeed, s.leaf, digest, s.signature, s.authPath), root)) return "signature does not match this vault";
 
-  const free = await relaysFree(program, s.vault, policy);
+  // v4.1: the program refuses fees above MAX_ACTION_FEE, and any signer fee during a lockdown.
+  if (s.action.fee > MAX_ACTION_FEE) return `fee is above the protocol maximum of ${MAX_ACTION_FEE} lamports (0.01 SOL)`;
+  const locked = inLockdown(state);
+  if (locked && s.tree < SIGNER_SLOTS && s.action.fee > 0n) return "the vault is in lockdown: its signers can only Ping or cancel, with fee 0";
+  const free = freeLockdownAction(s.tree, s.action.kind, locked) || (await relaysFree(program, s.vault, policy));
   if (!free) {
     if (!equal(s.action.feePayee, relayer.toBytes())) return `fee must be paid to ${relayer.toBase58()}`;
-    if (s.action.fee < policy.minFee) return `fee must be at least ${policy.minFee} lamports`;
+    if (s.action.fee < relayFee(policy)) return `fee must be at least ${relayFee(policy)} lamports`;
     // Setting the first letter key creates an account the relayer pays rent for.
     if (s.action.kind === "letterKey" && !(await conn.getAccountInfo(letterKeyPda(s.vault, program.programId), "confirmed"))) {
-      const min = policy.minFee + BigInt(await conn.getMinimumBalanceForRentExemption(8 + 72));
+      const min = relayFee(policy, BigInt(await conn.getMinimumBalanceForRentExemption(8 + 72)));
       if (s.action.fee < min) return `fee must be at least ${min} lamports (it creates the letter key account)`;
     }
   }

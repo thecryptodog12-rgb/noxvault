@@ -3,7 +3,7 @@
 import "server-only";
 import { AnchorProvider, Program } from "@coral-xyz/anchor";
 import { Connection, Keypair, PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
-import { idl, type Noxvault } from "@nox/sdk/client";
+import { idl, MAX_ACTION_FEE, type Noxvault } from "@nox/sdk/client";
 import type { RelayPolicy } from "@nox/sdk/relayer";
 import { RPC_URL } from "@/lib/config";
 
@@ -44,7 +44,9 @@ export function relayerContext(): { relayer: Keypair; program: Program<Noxvault>
   }
   const conn = new Connection(process.env.RELAYER_RPC_URL || RPC_URL, "confirmed");
   const program = new Program<Noxvault>(idl as unknown as Noxvault, new AnchorProvider(conn, keypairWallet(relayer), { commitment: "confirmed", preflightCommitment: "confirmed" }));
-  const minFee = BigInt(process.env.RELAY_MIN_FEE_LAMPORTS || "100000");
+  // Never above the program's per-action fee cap (docs/SPEC.md §4, v4.1): a larger fee is refused on chain.
+  const wanted = BigInt(process.env.RELAY_MIN_FEE_LAMPORTS || "100000");
+  const minFee = wanted > MAX_ACTION_FEE ? MAX_ACTION_FEE : wanted;
   // Sentinel-tier vaults ($NOX held in the vault) relay for free; RELAY_SENTINEL_FREE=false turns that off.
   const sentinelFree = process.env.RELAY_SENTINEL_FREE !== "false";
   cached = { relayer, program, policy: { minFee, sentinelFree } };

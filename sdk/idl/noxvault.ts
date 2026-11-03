@@ -4279,6 +4279,31 @@ export type Noxvault = {
       "code": 6039,
       "name": "letterOverflow",
       "msg": "Letter chunk out of order or past the letter's length"
+    },
+    {
+      "code": 6040,
+      "name": "feeTooHigh",
+      "msg": "The fee is above the protocol maximum of 0.01 SOL per action"
+    },
+    {
+      "code": 6041,
+      "name": "feeInLockdown",
+      "msg": "During a lockdown the vault's signers can only Ping or cancel with fee 0"
+    },
+    {
+      "code": 6042,
+      "name": "duplicateRoot",
+      "msg": "Two tree slots share a root: signer, recovery and duress trees must all differ"
+    },
+    {
+      "code": 6043,
+      "name": "budgetDestRestricted",
+      "msg": "Session budgets only pay non-restricted destinations (whitelisted, or no instant limit)"
+    },
+    {
+      "code": 6044,
+      "name": "durationTooLong",
+      "msg": "A delay, lock, interval or period is longer than 10 years"
     }
   ],
   "types": [

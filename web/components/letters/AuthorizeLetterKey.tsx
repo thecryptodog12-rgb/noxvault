@@ -13,6 +13,7 @@ import {
   findSignedMessages,
   leafUsed,
   letterKeyPda,
+  MAX_ACTION_FEE,
   packSteps,
   pickLeaf,
   preflightAction,
@@ -84,6 +85,7 @@ export default function AuthorizeLetterKey({ vault, signer, letterKey, onDone }:
       fee = BigInt(relayer.minFee);
       // The first letter key creates an account; the relayer pays its rent, so the fee covers it.
       if (!(await connection.getAccountInfo(letterKeyPda(vault, program.programId), "confirmed"))) fee += BigInt(await connection.getMinimumBalanceForRentExemption(8 + 72));
+      if (fee > MAX_ACTION_FEE) fee = MAX_ACTION_FEE; // the program refuses more (docs/SPEC.md §4)
       feePayee = new PublicKey(relayer.relayer).toBytes();
     }
     return { leaf: pick.leaf, action: { kind: "letterKey", key: letterKey.toBytes(), fee, feePayee }, mode };

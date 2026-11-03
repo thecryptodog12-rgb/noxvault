@@ -7,6 +7,10 @@ Line references are to `programs/noxvault/src/lib.rs` unless another file is nam
 
 Status: **not audited**. Devnet only. The program is upgradeable (see `UPGRADE.md`).
 
+v4.1 fixed the gaps G-01..G-05 and G-08 (`INVARIANTS.md` §9, SPEC "Changes in v4.1"); G-06 and
+G-07 are documented known limitations (SPEC §13). The risk notes below are from the v4 review:
+those naming G-01..G-05 or G-08 are closed, and the line numbers are v4 lines.
+
 ## 1. Assets
 
 | # | Asset | Where it lives | What protects it |

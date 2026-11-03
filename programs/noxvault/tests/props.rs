@@ -312,3 +312,63 @@ fn r10_letter_space_is_exactly_its_serialized_size() {
         assert_eq!(buf.len(), Letter::space(label_len, content_len));
     }
 }
+
+// ---------- v4.1 fixes (docs/audit/INVARIANTS.md §9) ----------
+
+#[test]
+fn r11_roots_distinct_rejects_any_shared_used_root() {
+    // G-05: a used root may fill one slot only (signers, recovery, duress); unused slots are zero.
+    let mut r = Rng::new();
+    let pool: Vec<[u8; 32]> = (0..3).map(|_| r.bytes32()).collect();
+    for _ in 0..runs(5_000) {
+        let pick = |r: &mut Rng| if r.below(3) == 0 { Tree::default() } else { tree(pool[r.below(3) as usize], 8) };
+        let mut c = config(&mut r);
+        c.trees = [tree(pool[r.below(3) as usize], 8), pick(&mut r), pick(&mut r), pick(&mut r)];
+        c.duress = tree(pool[r.below(3) as usize], 8);
+        let used: Vec<[u8; 32]> = c.trees.iter().chain(std::iter::once(&c.duress)).filter(|t| t.used()).map(|t| t.root).collect();
+        let unique: std::collections::HashSet<[u8; 32]> = used.iter().copied().collect();
+        assert_eq!(c.roots_distinct(), unique.len() == used.len());
+    }
+}
+
+#[test]
+fn r12_durations_are_bounded_and_far_from_overflow() {
+    // G-08: every bounded duration added to any realistic clock stays far below i64::MAX.
+    assert!(MAX_DURATION == 10 * 365 * DAY);
+    assert!(i64::MAX - MAX_DURATION > 1i64 << 62);
+    let mut r = Rng::new();
+    let k = Pubkey::new_unique();
+    for _ in 0..runs(2_000) {
+        let mut c = config(&mut r);
+        let d = [0, 1, MAX_DURATION, MAX_DURATION + 1, i64::MAX][r.below(5) as usize];
+        match r.below(4) {
+            0 => c.slow_delay = d,
+            1 => c.recovery_delay = d,
+            2 => c.testament_delay = d,
+            _ => c.duress_lock = d,
+        }
+        assert_eq!(c.durations_bounded(), d <= MAX_DURATION);
+        let s = Action { kind: Kind::Schedule { id: 0, mint: k, dest: k, amount: 1, interval: d, count: 1, start: 0 }, fee: 0, fee_payee: k };
+        let b = Action { kind: Kind::Budget { id: 0, session: k, mint: k, limit: 1, period: d, expires: 1 }, fee: 0, fee_payee: k };
+        assert_eq!(s.durations_bounded(), d <= MAX_DURATION);
+        assert_eq!(b.durations_bounded(), d <= MAX_DURATION);
+        assert!(Action { kind: Kind::Ping, fee: 0, fee_payee: k }.durations_bounded());
+    }
+}
+
+#[test]
+fn r13_budgets_need_some_unrestricted_destination() {
+    // G-03: has_unrestricted is exactly "some destination is not restricted".
+    let mut r = Rng::new();
+    for _ in 0..runs(5_000) {
+        let c = config(&mut r);
+        let listed = c.whitelist.iter().find(|k| **k != Pubkey::default()).copied();
+        let some_free = match listed {
+            Some(w) => !c.restricted(&w),
+            None => !c.restricted(&r.key()),
+        };
+        assert_eq!(c.has_unrestricted(), some_free);
+    }
+    // The fee cap: 0.01 SOL.
+    assert_eq!(MAX_ACTION_FEE, 10_000_000);
+}

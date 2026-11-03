@@ -1,3 +1,4 @@
+import { explainError } from "@nox/sdk/client";
 import { decodeRelayRequest, relay, type RelayRequest } from "@nox/sdk/relayer";
 import { HttpError, errorResponse, rateLimit, relayerContext } from "@/lib/server/relayer";
 
@@ -22,7 +23,13 @@ export async function POST(req: Request) {
       throw new HttpError(400, `Bad relay request: ${(e as Error).message}`);
     }
     // relay() verifies signature, Merkle path, unused leaf, fee and vault balance before spending.
-    const signatures = await relay(program, relayer, signed, policy);
+    let signatures: string[];
+    try {
+      signatures = await relay(program, relayer, signed, policy);
+    } catch (e) {
+      // Program errors (fee cap, lockdown fee, restricted migration or budget, …) as sentences.
+      throw new HttpError(422, explainError(e));
+    }
     return Response.json({ signatures });
   } catch (e) {
     return errorResponse(e);

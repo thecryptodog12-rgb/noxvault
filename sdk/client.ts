@@ -76,6 +76,10 @@ export const DEFAULT_DURESS_LIMIT = 500_000_000n; // 0.5 SOL
 export const DEFAULT_DURESS_LOCK_SECS = 3 * 86_400;
 export const TREE_PRIMARY = 0; // the creating owner's slot
 export const DAY = 86_400;
+/** Most lamports any action may pay as its fee (docs/SPEC.md §4, v4.1; MAX_ACTION_FEE in state.rs). */
+export const MAX_ACTION_FEE = 10_000_000n; // 0.01 SOL
+/** Longest delay, lock, schedule interval or budget period the program accepts (10 years). */
+export const MAX_DURATION_SECS = 10 * 365 * DAY;
 
 /** Hash calls one transaction may spend. Measured ~180 CU each; 6500 stays well under 1.4M CU. */
 export const HASHES_PER_TX = 6500;
@@ -535,6 +539,48 @@ export function isRestricted(c: Config, dest: PublicKey): boolean {
   return c.instantLimit > 0n;
 }
 
+/** Config::has_unrestricted: some destination is not restricted, so a session budget can spend. */
+export function hasUnrestricted(c: Config): boolean {
+  return c.whitelist.length > 0 || c.instantLimit === 0n;
+}
+
+/** Friendly text for the program's own errors (docs/SPEC.md), by error name. */
+export const PROGRAM_ERROR_TEXT: Record<string, string> = {
+  FeeTooHigh: "The fee is above the protocol maximum of 0.01 SOL per action.",
+  FeeInLockdown: "The vault is in lockdown: its signers can only Ping or cancel, and only with fee 0. Send it with your own wallet.",
+  DuplicateRoot: "Two tree slots use the same phrase: every signer, recovery and duress phrase must be different.",
+  BudgetDestRestricted:
+    "Session budgets only pay non-restricted destinations: a whitelisted address, or any address on a vault without an instant limit.",
+  DurationTooLong: "A delay, interval or period is longer than 10 years.",
+  NotWhitelisted: "The vault's rules do not allow this destination.",
+  Lockdown: "The vault is in lockdown: only Ping and cancels execute until it ends (the recovery key's Cancel ends it).",
+  PendingExists: "Something is already pending. Wait for it or cancel it first.",
+  RecoveryLocked: "The recovery key can only cancel until the owner has been inactive long enough.",
+  KeyUsed: "This one-time key has already been used.",
+  InsufficientFunds: "The vault holds less than this needs.",
+  RentDust: "This would leave the vault with less SOL than the rent minimum.",
+};
+
+/**
+ * Turns an error from a transaction (Anchor error, simulation logs or a relayer message) into a
+ * sentence for people. Unknown errors come back unchanged.
+ */
+export function explainError(e: unknown): string {
+  const raw = e instanceof Error ? e.message : typeof e === "string" ? e : JSON.stringify(e);
+  const logs = (e as { logs?: string[] } | null)?.logs ?? [];
+  const text = `${raw} ${logs.join(" ")}`;
+  const named = text.match(/Error Code: (\w+)/)?.[1];
+  if (named && PROGRAM_ERROR_TEXT[named]) return PROGRAM_ERROR_TEXT[named];
+  const hexCode = text.match(/custom program error: 0x([0-9a-f]+)/i)?.[1];
+  if (hexCode) {
+    const code = parseInt(hexCode, 16);
+    const err = (idl as { errors?: { code: number; name: string; msg?: string }[] }).errors?.find((x) => x.code === code);
+    if (err) return PROGRAM_ERROR_TEXT[err.name] ?? err.msg ?? err.name;
+  }
+  for (const [name, msg] of Object.entries(PROGRAM_ERROR_TEXT)) if (new RegExp(`\\b${name}\\b`).test(text)) return msg;
+  return raw;
+}
+
 /** Size of the config fields before `duress` (trees .. testament_delay), as encodeConfig writes them. */
 const CONFIG_V3_LEN = 4 * 33 + 1 + 8 + 4 * 32 + 8 + 8 + 4 * 34 + 8;
 
@@ -588,7 +634,9 @@ const isCancelKind = (a: Action) => a.kind === "cancel" || a.kind === "cancelSch
 /** Whether an approval set (bitmap) lets the action execute now (docs/SPEC.md §4, §11). */
 export function canExecute(state: VaultStateView, trees: number, action: Action, now = Math.floor(Date.now() / 1000)): boolean {
   const signers = [0, 1, 2].filter((t) => trees & (1 << t)).length;
-  if (signers >= state.config.threshold) return !inLockdown(state, now) || isCancelKind(action) || action.kind === "ping";
+  if (action.fee > MAX_ACTION_FEE) return false;
+  if (signers >= state.config.threshold)
+    return !inLockdown(state, now) || ((isCancelKind(action) || action.kind === "ping") && (action.fee === 0n || (trees & (1 << RECOVERY_TREE)) !== 0));
   if (action.kind === "letterKey") return false; // signers only (docs/SPEC.md §12)
   if (trees & (1 << RECOVERY_TREE)) {
     if (isCancelKind(action)) return true;
@@ -1443,6 +1491,9 @@ export async function preflightAction(p: Omit<ActionParams, "hashesPerTx" | "exe
   }
 
   const isCancel = isCancelKind(action);
+  // v4.1 (docs/SPEC.md §4): one cap for every tree, duress included.
+  if (action.fee > MAX_ACTION_FEE)
+    errors.push(`The fee is ${Number(action.fee) / 1e9} SOL; the program allows at most ${Number(MAX_ACTION_FEE) / 1e9} SOL per action.`);
   if (signer.tree === DURESS_TREE) {
     // Capped and instant on chain (docs/SPEC.md §11); deliberately no hint of it here.
     if (action.kind !== "withdraw" || !equal(action.mint, ZERO32)) errors.push("This phrase can only withdraw SOL.");
@@ -1450,6 +1501,8 @@ export async function preflightAction(p: Omit<ActionParams, "hashesPerTx" | "exe
   }
   if (signer.tree < SIGNER_SLOTS && inLockdown(state, now) && !isCancel && action.kind !== "ping")
     errors.push(`This vault is in lockdown until ${new Date(state.lockdownUntil * 1000).toISOString()}: only Ping and cancels execute. The recovery key's Cancel ends it.`);
+  else if (signer.tree < SIGNER_SLOTS && inLockdown(state, now) && action.fee > 0n)
+    errors.push("During a lockdown the vault's signers cannot pay a fee: send this Ping or cancel with fee 0 (with your own wallet, or the relayer, which sends them for free).");
   if (signer.tree === RECOVERY_TREE && action.kind === "letterKey") errors.push("The recovery key can never set the letter key; only the vault's signers can.");
   let unrestricted = false;
   if (signer.tree === RECOVERY_TREE && !isCancel) {
@@ -1462,8 +1515,10 @@ export async function preflightAction(p: Omit<ActionParams, "hashesPerTx" | "exe
     const have = [0, 1, 2].filter((t) => ((existing?.trees ?? 0) | (1 << signer.tree)) & (1 << t)).length;
     if (have < c.threshold) warnings.push(`This vault needs ${c.threshold} signers: after you, ${c.threshold - have} more must approve this exact action.`);
   }
-  if (action.kind === "cancel" && !state.pending) warnings.push("Nothing is pending; this only uses up a one-time key.");
-  if (state.migrateTo && action.kind !== "ping") warnings.push("This vault is migrating; funds can be moved to the new vault by anyone.");
+  if (action.kind === "cancel" && !state.pending && !state.migrateTo && !(signer.tree === RECOVERY_TREE && inLockdown(state, now)))
+    warnings.push("Nothing is pending; this only uses up a one-time key.");
+  if (state.migrateTo && action.kind !== "ping" && action.kind !== "cancel")
+    warnings.push("This vault is migrating; funds can be moved to the new vault by anyone. A Cancel stops what has not moved yet.");
 
   const [vaultInfo, rentMin] = await Promise.all([withRetry(() => conn.getAccountInfo(vault, "confirmed")), withRetry(() => conn.getMinimumBalanceForRentExemption(0))]);
   const lamports = BigInt(vaultInfo?.lamports ?? 0);
@@ -1523,6 +1578,7 @@ export async function preflightAction(p: Omit<ActionParams, "hashesPerTx" | "exe
       const exists = await withRetry(() => conn.getAccountInfo(schedulePda(vault, action.id, programId), "confirmed"));
       if (exists) errors.push(`Schedule slot #${action.id} is in use.`);
       if (action.amount <= 0n || action.interval <= 0n || action.count <= 0) errors.push("Amount, interval and count must be positive.");
+      if (action.interval > BigInt(MAX_DURATION_SECS)) errors.push("The interval is longer than 10 years.");
       if (!unrestricted && isRestricted(c, pk(action.dest))) {
         if (c.slowDelay === 0n) errors.push("The vault's rules do not allow this destination.");
         else warnings.push(`Restricted destination: the first payment starts after ${Number(c.slowDelay) / 3600} h at the earliest.`);
@@ -1535,6 +1591,14 @@ export async function preflightAction(p: Omit<ActionParams, "hashesPerTx" | "exe
       const exists = await withRetry(() => conn.getAccountInfo(budgetPda(vault, action.id, programId), "confirmed"));
       if (exists) errors.push(`Budget slot #${action.id} is in use.`);
       if (action.expires <= BigInt(now)) errors.push("The budget must expire in the future.");
+      if (action.period <= 0n || action.limit <= 0n) errors.push("The limit and period must be positive.");
+      if (action.period > BigInt(MAX_DURATION_SECS)) errors.push("The period is longer than 10 years.");
+      // v4.1 (G-03): budgets only pay non-restricted destinations (docs/SPEC.md §3, §4).
+      if (!hasUnrestricted(c))
+        errors.push(
+          "This vault restricts every destination (an instant limit and no whitelist), so a session budget could never spend. Budgets only pay non-restricted destinations."
+        );
+      else if (c.whitelist.length) warnings.push("The session key can only pay the vault's whitelisted addresses.");
       warnings.push("The session key is an ordinary wallet key: whoever holds it can spend up to the budget per period. Keep the limit small.");
       break;
     }
@@ -1554,9 +1618,13 @@ export async function preflightAction(p: Omit<ActionParams, "hashesPerTx" | "exe
     case "migrate": {
       const target = await fetchState(program, pk(action.newVault));
       if (!target) errors.push("The new vault is not an initialized Noxvault.");
-      if (!unrestricted && c.whitelist.length && !c.whitelist.some((k) => equal(k, action.newVault))) {
-        if (c.slowDelay === 0n) errors.push("The vault's rules do not allow migrating to a vault outside the whitelist.");
-        else warnings.push(`The new vault is not whitelisted: the migration waits ${Number(c.slowDelay) / 3600} h and can be cancelled.`);
+      // v4.1 (G-02): the same restriction rule as withdrawals, instant limit included.
+      if (!unrestricted && isRestricted(c, pk(action.newVault))) {
+        if (c.slowDelay === 0n) errors.push("The vault's rules do not allow migrating to this vault: it is restricted (not whitelisted).");
+        else {
+          if (state.pending) errors.push("Something is already pending. Wait for it or cancel it first.");
+          warnings.push(`The new vault is a restricted destination: the migration waits ${Number(c.slowDelay) / 3600} h and can be cancelled meanwhile.`);
+        }
       }
       break;
     }

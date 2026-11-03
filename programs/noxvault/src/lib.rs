@@ -37,9 +37,13 @@ pub mod noxvault {
         // Duress (docs/SPEC.md §11): always filled, never sharing a root with another slot.
         let d = config.duress;
         require!(d.used() && (1..=wots::MAX_HEIGHT as u8).contains(&d.height), NoxError::BadConfig);
-        require!(config.trees.iter().all(|t| t.root != d.root), NoxError::BadConfig);
+        // v4.1 (G-05): no root in two slots, so one phrase never counts twice and one leaf never
+        // signs two digests (one per slot).
+        require!(config.roots_distinct(), NoxError::DuplicateRoot);
         require!(config.duress_lock >= MIN_DURESS_LOCK, NoxError::BadConfig);
-        require!(config.slow_delay >= 0 && config.testament_delay >= 0, NoxError::BadConfig);
+        require!(config.slow_delay >= 0 && config.testament_delay >= 0 && config.recovery_delay >= 0, NoxError::BadConfig);
+        // v4.1 (G-08): every delay at most 10 years, so `now + delay` can never overflow.
+        require!(config.durations_bounded(), NoxError::DurationTooLong);
         let bps: u32 = config.heirs.iter().filter(|h| h.addr != Pubkey::default()).map(|h| h.bps as u32).sum();
         let any_heir = config.heirs.iter().any(|h| h.addr != Pubkey::default());
         require!(!any_heir || bps == 10_000, NoxError::BadConfig);
@@ -105,6 +109,12 @@ pub mod noxvault {
             Kind::Stake { amount, .. } => require!(*amount > 0, NoxError::ZeroAmount),
             Kind::Migrate { new_vault } => require_keys_neq!(*new_vault, vault, NoxError::DestIsVault),
             _ => {}
+        }
+        // v4.1: refuse here what can never execute, before a one-time key is burned on it.
+        require!(action.fee <= MAX_ACTION_FEE, NoxError::FeeTooHigh);
+        require!(action.durations_bounded(), NoxError::DurationTooLong);
+        if tree < RECOVERY_TREE && action.fee > 0 {
+            require!(!st.locked(Clock::get()?.unix_timestamp), NoxError::FeeInLockdown);
         }
         let bytes = action.try_to_vec()?;
         require!(bytes.len() <= MAX_ACTION, NoxError::BadAction);
@@ -201,7 +211,7 @@ pub mod noxvault {
     /// Closes an approval that never reached its threshold, after 7 days.
     pub fn discard_approval(ctx: Context<DiscardApproval>) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
-        require!(now >= ctx.accounts.approval.created_at + APPROVAL_TTL, NoxError::NotYet);
+        require!(now >= ctx.accounts.approval.created_at.saturating_add(APPROVAL_TTL), NoxError::NotYet);
         Ok(())
     }
 
@@ -341,7 +351,10 @@ pub mod noxvault {
         let vault = a.vault.to_account_info();
         match action.kind.clone() {
             Kind::Cancel => {
+                // v4.1 (G-04): Cancel stops everything still waiting: the pending withdrawal or
+                // migration, and a started migration (`migrate_to`) whatever it has not swept yet.
                 a.state.pending = None;
+                a.state.migrate_to = None;
                 // The recovery holder, not the coerced owner, decides when a lockdown ends.
                 if by_recovery {
                     a.state.lockdown_until = 0;
@@ -361,12 +374,13 @@ pub mod noxvault {
             Kind::Migrate { new_vault } => {
                 let ns = a.new_state.as_ref().ok_or(NoxError::MissingAccount)?;
                 require_keys_eq!(ns.vault, new_vault, NoxError::WrongDest);
-                let restricted = !unrestricted && a.state.config.whitelist_active() && !a.state.config.whitelisted(&new_vault);
-                if restricted {
+                // v4.1 (G-02): the same rule as withdrawals (§3), instant limit included. A
+                // migration moves everything, so it never uses the instant allowance.
+                if !unrestricted && a.state.config.restricted(&new_vault) {
                     let c = &a.state.config;
                     require!(c.slow_delay > 0, NoxError::NotWhitelisted);
                     require!(a.state.pending.is_none(), NoxError::PendingExists);
-                    let executable_at = Clock::get()?.unix_timestamp + c.slow_delay;
+                    let executable_at = Clock::get()?.unix_timestamp.saturating_add(c.slow_delay);
                     a.state.pending =
                         Some(Pending { kind: PENDING_MIGRATE, mint: Pubkey::default(), dest: new_vault, amount: 0, executable_at });
                 } else {
@@ -391,12 +405,13 @@ pub mod noxvault {
         };
         require!(sid == id, NoxError::WrongAction);
         require!(amount > 0 && interval > 0 && count > 0, NoxError::BadAction);
+        require!(interval <= MAX_DURATION, NoxError::DurationTooLong);
         require_keys_neq!(dest, a.vault.key(), NoxError::DestIsVault);
         let now = Clock::get()?.unix_timestamp;
         let mut first = start.max(now);
         if !unrestricted && a.state.config.restricted(&dest) {
             require!(a.state.config.slow_delay > 0, NoxError::NotWhitelisted);
-            first = first.max(now + a.state.config.slow_delay);
+            first = first.max(now.saturating_add(a.state.config.slow_delay));
         }
         let s = &mut a.schedule;
         s.vault = a.vault.key();
@@ -424,6 +439,10 @@ pub mod noxvault {
         require!(bid == id, NoxError::WrongAction);
         let now = Clock::get()?.unix_timestamp;
         require!(session != Pubkey::default() && limit > 0 && period > 0 && expires > now, NoxError::BadAction);
+        require!(period <= MAX_DURATION, NoxError::DurationTooLong);
+        // v4.1 (G-03): a budget only ever pays non-restricted destinations; refuse one that could
+        // never spend (every destination restricted: no whitelist and an instant limit).
+        require!(a.state.config.has_unrestricted(), NoxError::BudgetDestRestricted);
         let b = &mut a.budget;
         b.vault = a.vault.key();
         b.id = id;
@@ -750,7 +769,7 @@ pub mod noxvault {
 
     pub fn request_link_change(ctx: Context<RequestLinkChange>) -> Result<()> {
         require!(!ctx.accounts.canary.tripped, NoxError::CanaryTripped);
-        let at = Clock::get()?.unix_timestamp + LINK_CHANGE_DELAY;
+        let at = Clock::get()?.unix_timestamp.saturating_add(LINK_CHANGE_DELAY);
         ctx.accounts.link.change = Some(LinkChange { vault: ctx.accounts.new_vault.key(), at });
         Ok(())
     }
@@ -891,10 +910,18 @@ const SIGNER_BITS: u8 = (1 << SIGNER_SLOTS) - 1;
 /// counts toward the threshold and never adds to recovery powers.
 fn authorize(ap: &Approval, st: &VaultState) -> Result<(Action, Mode)> {
     let action = ap.action()?;
+    // v4.1 (G-01): no execution path pays a fee above the protocol maximum (the duress path
+    // also takes its fee from the duress allowance).
+    require!(action.fee <= MAX_ACTION_FEE, NoxError::FeeTooHigh);
     let now = Clock::get()?.unix_timestamp;
     let signers = (ap.trees & SIGNER_BITS).count_ones() as u8;
     if signers >= st.config.threshold {
-        require!(!st.locked(now) || action.allowed_in_lockdown(), NoxError::Lockdown);
+        if st.locked(now) {
+            require!(action.allowed_in_lockdown(), NoxError::Lockdown);
+            // v4.1 (G-01): a coercer holding a signer phrase moves nothing during a lockdown, not
+            // even through the fee. Only an action the recovery tree also approved may pay one.
+            require!(action.fee == 0 || ap.trees & (1 << RECOVERY_TREE) != 0, NoxError::FeeInLockdown);
+        }
         return Ok((action, Mode::Normal));
     }
     if ap.trees & (1 << RECOVERY_TREE) != 0 {
@@ -932,18 +959,18 @@ fn gate(st: &mut VaultState, kind: u8, mint: Pubkey, dest: Pubkey, amount: u64, 
     }
     let now = Clock::get()?.unix_timestamp;
     if mint == Pubkey::default() && st.config.instant_limit > 0 {
-        if now >= st.window_start + DAY {
+        if now >= st.window_start.saturating_add(DAY) {
             st.window_start = now;
             st.window_spent = 0;
         }
         if st.window_spent.saturating_add(amount) <= st.config.instant_limit {
-            st.window_spent += amount;
+            st.window_spent = st.window_spent.saturating_add(amount);
             return Ok(true);
         }
     }
     require!(st.config.slow_delay > 0, NoxError::NotWhitelisted);
     require!(st.pending.is_none(), NoxError::PendingExists);
-    let executable_at = now + st.config.slow_delay;
+    let executable_at = now.saturating_add(st.config.slow_delay);
     st.pending = Some(Pending { kind, mint, dest, amount, executable_at });
     msg!("queued until {}", executable_at);
     Ok(false)
@@ -960,7 +987,7 @@ fn schedule_due(s: &mut Schedule) -> Result<u64> {
     require!(s.remaining > 0, NoxError::NoPending);
     require!(Clock::get()?.unix_timestamp >= s.next_at, NoxError::NotYet);
     s.remaining -= 1;
-    s.next_at += s.interval;
+    s.next_at = s.next_at.saturating_add(s.interval);
     Ok(s.amount)
 }
 
@@ -968,15 +995,15 @@ fn budget_spend(b: &mut Budget, st: &VaultState, dest: &Pubkey, mint: Pubkey, am
     let now = Clock::get()?.unix_timestamp;
     require!(now < b.expires, NoxError::BudgetExpired);
     require_keys_eq!(b.mint, mint, NoxError::WrongAction);
-    let c = &st.config;
-    require!(c.whitelisted(dest) || !c.whitelist_active(), NoxError::NotWhitelisted);
+    // v4.1 (G-03): only non-restricted destinations (§3), instant limit included.
+    require!(!st.config.restricted(dest), NoxError::BudgetDestRestricted);
     require_keys_neq!(*dest, st.vault, NoxError::DestIsVault);
-    if now >= b.window_start + b.period {
+    if now >= b.window_start.saturating_add(b.period) {
         b.window_start = now;
         b.spent = 0;
     }
     require!(b.spent.saturating_add(amount) <= b.limit, NoxError::OverBudget);
-    b.spent += amount;
+    b.spent = b.spent.saturating_add(amount);
     Ok(())
 }
 
@@ -1034,6 +1061,7 @@ fn pay_fee<'info>(
     if action.fee == 0 {
         return Ok(());
     }
+    require!(action.fee <= MAX_ACTION_FEE, NoxError::FeeTooHigh);
     require_keys_eq!(action.fee_payee, fee_payee.key(), NoxError::WrongFeePayee);
     require!(action.fee <= vault.lamports(), NoxError::InsufficientFunds);
     sol_out(system_program, vault, fee_payee, seeds, action.fee)
@@ -1885,4 +1913,15 @@ pub enum NoxError {
     LetterTooBig,
     #[msg("Letter chunk out of order or past the letter's length")]
     LetterOverflow,
+    // ---- v4.1 (append only) ----
+    #[msg("The fee is above the protocol maximum of 0.01 SOL per action")]
+    FeeTooHigh,
+    #[msg("During a lockdown the vault's signers can only Ping or cancel with fee 0")]
+    FeeInLockdown,
+    #[msg("Two tree slots share a root: signer, recovery and duress trees must all differ")]
+    DuplicateRoot,
+    #[msg("Session budgets only pay non-restricted destinations (whitelisted, or no instant limit)")]
+    BudgetDestRestricted,
+    #[msg("A delay, lock, interval or period is longer than 10 years")]
+    DurationTooLong,
 }

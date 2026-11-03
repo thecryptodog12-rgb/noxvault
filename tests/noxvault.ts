@@ -5,7 +5,7 @@ import { createMint, getAccount, getAssociatedTokenAddressSync, getOrCreateAssoc
 import { expect } from "chai";
 import { Noxvault } from "../target/types/noxvault";
 import * as wots from "../sdk/wots";
-import { checkRelay, decodeRelayRequest, encodeRelayRequest, relay } from "../sdk/relayer";
+import { checkRelay, decodeRelayRequest, encodeRelayRequest, relay, relayFee } from "../sdk/relayer";
 import {
   ActionPlan,
   DURESS_TREE,
@@ -58,6 +58,8 @@ import {
   vaultSchedules,
   verifyRanges,
   wordsToSecret,
+  explainError,
+  MAX_ACTION_FEE,
   CANARY_ADDRESS,
   TIER_FREE,
   TIER_GUARDIAN,
@@ -362,11 +364,14 @@ describe("noxvault v4", () => {
     let p2: Signer;
     let rec: Signer;
     let v2: PublicKey;
+    const RECOVERY_DELAY = 40;
 
     before(async () => {
       p2 = makeSigner(master, 1, 0);
       rec = makeSigner(newMasterSecret(), 0, RECOVERY_TREE);
-      ({ vault: v2 } = await newVault({ recoveryRoot: rec.pub.root, recoveryDelaySecs: 8, whitelist: [friend], slowDelaySecs: 3, instantLimitLamports: SOL(0.3) }, p2));
+      // RECOVERY_DELAY leaves the "recovery may only cancel" phase enough slack to sign, verify and
+      // fail on a slow machine before the owner counts as inactive.
+      ({ vault: v2 } = await newVault({ recoveryRoot: rec.pub.root, recoveryDelaySecs: RECOVERY_DELAY, whitelist: [friend], slowDelaySecs: 3, instantLimitLamports: SOL(0.3) }, p2));
       await fund(v2, 3);
       for (const k of [friend, stranger, heir]) await fund(k, 0.01);
     });
@@ -396,12 +401,16 @@ describe("noxvault v4", () => {
     });
 
     it("keeps the recovery key to cancelling while the owner is active, then hands it the vault", async () => {
+      // The owner acts right before, so the full RECOVERY_DELAY lies ahead of the checks below.
+      await act(p2, v2, { kind: "ping", ...fee0 });
       const early = withdraw(heir, SOL(0.1));
       const st = (await fetchState(program, v2))!;
       const { leaf } = pickLeaf(st, rec, await findSignedMessages(program, v2, rec));
       expect((await preflightAction({ program, payer, vault: v2, signer: rec, leaf, action: early })).errors.join()).to.contain("can only cancel");
       await expectError(run(await planAction({ program, payer, vault: v2, signer: rec, leaf, action: early, execute: true })), "RecoveryLocked");
-      await sleep(9000);
+      // Wait on the validator's clock (not the wall clock) until the owner counts as inactive.
+      const opensAt = st.lastActive + RECOVERY_DELAY;
+      while (((await conn.getBlockTime(await conn.getSlot("confirmed"))) ?? 0) < opensAt + 1) await sleep(1000);
       // That key published part of a signature for `early`: it can only ever complete that.
       const approval = await fetchApproval(program, v2, early);
       if (approval) await send([await executeIx(program, payer, v2, early, approval.creator)]);
@@ -416,6 +425,18 @@ describe("noxvault v4", () => {
       await act(rec, v2, withdraw(heir, rest));
       expect(await conn.getBalance(v2)).to.eq(0);
       expect(await conn.getBalance(heir)).to.eq(Number(rest + SOL(0.11)));
+    });
+
+    it("v4.1: preflight refuses restricted migrations and budgets that could never spend", async () => {
+      const { signer: p4, vault: v4 } = await newVault({ instantLimitLamports: SOL(0.1), slowDelaySecs: 0 });
+      await fund(v4, 0.2);
+      const { vault: target } = await newVault();
+      const pre = async (action: wots.Action) => (await preflightAction({ program, payer, vault: v4, signer: p4, leaf: 0, action })).errors.join(" ");
+      expect(await pre({ kind: "migrate", newVault: target.toBytes(), ...fee0 })).to.contain("do not allow migrating");
+      const session = Keypair.generate().publicKey.toBytes();
+      expect(await pre({ kind: "budget", id: 0, session, mint: ZERO, limit: SOL(0.1), period: 3600n, expires: now() + 3600n, ...fee0 })).to.contain("could never spend");
+      expect(await pre({ kind: "ping", fee: MAX_ACTION_FEE + 1n, feePayee: payer.toBytes() })).to.contain("at most 0.01 SOL");
+      await expectError(run(await planAction({ program, payer, vault: v4, signer: p4, leaf: 0, action: { kind: "migrate", newVault: target.toBytes(), ...fee0 } })), "NotWhitelisted");
     });
 
     it("refuses withdrawals outside a strict whitelist", async () => {
@@ -657,6 +678,36 @@ describe("noxvault v4", () => {
       }
       expect(await conn.getAccountInfo(stakePda(v, 3, program.programId))).to.eq(null);
       expect((await fetchState(program, v))!.migrateTo).to.eq(null);
+    });
+
+    it("v4.1: explains the fee rules before signing, relays a lockdown Ping for free and refuses lockdown fees", async () => {
+      const st = (await fetchState(program, v))!;
+      const { leaf } = pickLeaf(st, owner, await findSignedMessages(program, v, owner));
+      const pre = async (action: wots.Action) => (await preflightAction({ program, payer, vault: v, signer: owner, leaf, action })).errors.join(" ");
+      expect(await pre({ kind: "ping", fee: 1n, feePayee: payer.toBytes() })).to.contain("cannot pay a fee");
+      expect(await pre({ kind: "cancel", fee: MAX_ACTION_FEE + 1n, feePayee: payer.toBytes() })).to.contain("at most 0.01 SOL");
+      expect(await pre({ kind: "ping", ...fee0 })).to.eq("");
+      // The relayer: never asks above the cap, refuses signer fees in a lockdown, relays Ping free.
+      expect(relayFee({ minFee: SOL(1) })).to.eq(MAX_ACTION_FEE);
+      expect(relayFee({ minFee: SOL(0.001) }, SOL(0.002))).to.eq(SOL(0.003));
+      const relayer = Keypair.generate();
+      await fund(relayer.publicKey, 0.1);
+      const rp = new Program<Noxvault>(program.idl, new anchor.AnchorProvider(conn, new anchor.Wallet(relayer), { commitment: "confirmed" }));
+      const policy = { minFee: SOL(0.001) };
+      const sign = (action: wots.Action): SignedAction => {
+        const d = wots.messageDigest(program.programId.toBytes(), v.toBytes(), 0, leaf, wots.encodeAction(action));
+        return { vault: v, tree: 0, leaf, pkSeed: owner.seeds.pkSeed, authPath: wots.authPath(owner.pub, leaf), signature: wots.sign(owner.seeds, leaf, d), action };
+      };
+      const ping = (fee: bigint): wots.Action => ({ kind: "ping", fee, feePayee: relayer.publicKey.toBytes() });
+      expect(await checkRelay(rp, relayer.publicKey, sign(ping(SOL(0.001))), policy)).to.contain("lockdown");
+      expect(await checkRelay(rp, relayer.publicKey, sign(ping(SOL(0.02))), policy)).to.contain("protocol maximum");
+      expect(await checkRelay(rp, relayer.publicKey, sign(ping(0n)), policy)).to.eq(null);
+      const actions = st.actions;
+      await relay(rp, relayer, sign(ping(0n)), policy);
+      expect((await fetchState(program, v))!.actions).to.eq(actions + 1);
+      // Program errors read as sentences.
+      expect(explainError(new Error("AnchorError ... Error Code: FeeInLockdown. Error Number: 6041."))).to.contain("lockdown");
+      expect(explainError(new Error("failed: custom program error: 0x1798"))).to.contain("0.01 SOL"); // 6040 FeeTooHigh
     });
 
     it("a recovery Cancel ends the lockdown, then signer withdrawals work again", async () => {
