@@ -2,11 +2,16 @@
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
 
-/** Shows one QR per part with prev/next and an optional auto-cycle for scanning. */
-export default function QrParts({ parts }: { parts: string[] }) {
+/**
+ * Shows one QR per part with prev/next and an auto-cycle for scanning. With `animate` the cycle
+ * starts on its own: the receiving scanner takes frames in any order and skips repeats, so it
+ * only has to watch until every part has gone by once.
+ */
+export default function QrParts({ parts, animate = false }: { parts: string[]; animate?: boolean }) {
   const [svgs, setSvgs] = useState<string[]>([]);
   const [i, setI] = useState(0);
-  const [auto, setAuto] = useState(false);
+  const [auto, setAuto] = useState(animate);
+  const [ms, setMs] = useState(animate ? 700 : 1400);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -26,9 +31,9 @@ export default function QrParts({ parts }: { parts: string[] }) {
 
   useEffect(() => {
     if (!auto || parts.length < 2) return;
-    const t = setInterval(() => setI((x) => (x + 1) % parts.length), 1400);
+    const t = setInterval(() => setI((x) => (x + 1) % parts.length), ms);
     return () => clearInterval(t);
-  }, [auto, parts.length]);
+  }, [auto, parts.length, ms]);
 
   if (err) return <div className="text-[12px] text-bad">✕ QR failed: {err}. Pick a smaller part size.</div>;
   if (!svgs.length) return <div className="py-10 text-center text-[12px] text-dim">rendering QR…</div>;
@@ -52,10 +57,19 @@ export default function QrParts({ parts }: { parts: string[] }) {
         </button>
       </div>
       {n > 1 && (
-        <label className="flex cursor-pointer items-center gap-2 text-[11px] text-dim">
-          <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} className="accent-[#2ee6d6]" />
-          cycle automatically (point the scanner at the screen)
-        </label>
+        <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[11px] text-dim">
+          <label className="flex cursor-pointer items-center gap-2">
+            <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} className="accent-[#2ee6d6]" />
+            cycle automatically (point the scanner at the screen)
+          </label>
+          {auto && (
+            <select className="field !w-auto !py-0.5 text-[11px]" value={ms} onChange={(e) => setMs(Number(e.target.value))} aria-label="frame speed">
+              <option value={400}>fast</option>
+              <option value={700}>normal</option>
+              <option value={1400}>slow</option>
+            </select>
+          )}
+        </div>
       )}
     </div>
   );
