@@ -8,6 +8,7 @@ import TierBadge from "@/components/vault/TierBadge";
 import { NETWORK, NOX_CA, NOX_CA_LABEL, explorerUrl, FAUCET_AMOUNT, NOX_TOKEN, PUMP_URL, CHART_URL, SOLSCAN_TOKEN_URL, TREASURY, BURN_SHARE } from "@/lib/config";
 import { Countdown, launchClock } from "@/components/Launch";
 import MarketStats from "@/components/Market";
+import Burns from "./Burns";
 import { noxAmount, useProtocol, useVaultTier } from "@/lib/nox";
 import { errMsg, sol } from "@/lib/format";
 
@@ -169,6 +170,8 @@ export default function Token() {
           </span>
         </div>
       </Panel>
+
+      <Burns />
 
       <div className="grid gap-6 xl:grid-cols-[1.3fr_1fr] [&>*]:min-w-0">
         <Panel title={`tiers // live from the protocol account${protocol === null ? " (not set on this network)" : ""}`}>

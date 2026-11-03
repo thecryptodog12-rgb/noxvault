@@ -24,3 +24,26 @@ export async function tiersFor(conn: Connection, vaults: PublicKey[], p: Protoco
   }
   return out;
 }
+
+/** $NOX (base units) a vault needs for tier `need`; 0 for Free. */
+export function tierTarget(need: number, p: Pick<ProtocolView, "guardian" | "sentinel">): bigint {
+  return need === TIER_SENTINEL ? p.sentinel : need === TIER_GUARDIAN ? p.guardian : 0n;
+}
+
+/** How much more $NOX (base units) the vault needs to reach `target`; 0 when it is there. */
+export function tierGap(held: bigint, target: bigint): bigint {
+  return target > held ? target - held : 0n;
+}
+
+/**
+ * Position on a two-step tier bar, 0–100: the first half runs 0 → Guardian, the second
+ * Guardian → Sentinel. Piecewise, so the Guardian step stays visible even when Sentinel is 10×.
+ */
+export function tierProgress(held: bigint, p: Pick<ProtocolView, "guardian" | "sentinel">): number {
+  const { guardian: g, sentinel: s } = p;
+  if (held >= s) return 100;
+  if (g > 0n && held < g) return Number((held * 5000n) / g) / 100;
+  const span = s - g;
+  if (span <= 0n) return 100;
+  return 50 + Number(((held - g) * 5000n) / span) / 100;
+}

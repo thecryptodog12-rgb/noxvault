@@ -147,3 +147,34 @@ export async function loadTreasury(conn: Connection, vault: PublicKey): Promise<
 }
 
 export const isSolMint = (m: string) => m === SOL;
+
+export interface RuleTag {
+  t: string;
+  /** "good": a protection; "warn": a caveat a holder should see */
+  tone: "good" | "warn";
+}
+
+/**
+ * Short labels for the leaderboard, from the same on-chain config rulesOf reads. `schedules` is
+ * the number of schedule (vesting) accounts of the vault.
+ */
+export function ruleTags(s: VaultStateView, schedules = 0): RuleTag[] {
+  const c = s.config;
+  const signers = [0, 1, 2].filter((t) => c.trees[t].height > 0).length;
+  const tags: RuleTag[] = [];
+  if (signers > 1) tags.push({ t: `${c.threshold} of ${signers}`, tone: c.threshold > 1 ? "good" : "warn" });
+  const gated = c.whitelist.length > 0 || c.instantLimit > 0n;
+  if (gated) tags.push(c.slowDelay > 0n ? { t: `delay ${duration(Number(c.slowDelay))}`, tone: "good" } : { t: "allowlist only", tone: "good" });
+  if (c.trees[RECOVERY_TREE].height > 0) tags.push({ t: "recovery", tone: "good" });
+  if (c.heirs.length > 0) tags.push({ t: "testament", tone: "good" });
+  if (schedules > 0) tags.push({ t: `vesting ×${schedules}`, tone: "good" });
+  if (s.migrateTo) tags.push({ t: "migrating", tone: "warn" });
+  return tags;
+}
+
+/** The payout delay in words: a duration, "refused" (allowlist only) or "none". */
+export function delayOf(s: VaultStateView): string {
+  const c = s.config;
+  if (!(c.whitelist.length > 0 || c.instantLimit > 0n)) return "none";
+  return c.slowDelay > 0n ? duration(Number(c.slowDelay)) : "refused";
+}

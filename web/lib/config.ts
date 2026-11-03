@@ -20,6 +20,19 @@ export const CHART_URL = NOX_TOKEN ? `https://dexscreener.com/solana/${NOX_TOKEN
 export const SOLSCAN_TOKEN_URL = NOX_TOKEN ? `https://solscan.io/token/${NOX_TOKEN}` : "";
 /** Wallet that receives the creator and protocol fees and sends the buyback-and-burn transactions. */
 export const TREASURY = process.env.NEXT_PUBLIC_TREASURY || "";
+/**
+ * Wallet whose $NOX burns /token counts (the buyback-and-burn wallet). Falls back to TREASURY,
+ * which the flywheel names as the sender of the burns. Empty until launch: the UI then shows a
+ * placeholder instead of a counter. Never hardcode an address here.
+ */
+export const NOX_BURN_WALLET = process.env.NEXT_PUBLIC_NOX_BURN_WALLET || TREASURY;
+/**
+ * Mainnet RPC for reading $NOX burns (the token lives on mainnet even while vaults run on devnet).
+ * Server-side override: NOX_BURN_RPC_URL (keeps a keyed RPC URL out of the browser bundle).
+ */
+export const NOX_MAINNET_RPC_URL = process.env.NEXT_PUBLIC_NOX_MAINNET_RPC_URL || "https://api.mainnet-beta.solana.com";
+/** Optional: $NOX supply at launch in whole tokens, to show the supply decrease from all burns. */
+export const NOX_INITIAL_SUPPLY = process.env.NEXT_PUBLIC_NOX_INITIAL_SUPPLY || "";
 /** Share of fees that buys back and burns $NOX (docs/WHITEPAPER.md, The flywheel). */
 export const BURN_SHARE = 50;
 /** Test $NOX the devnet faucet sends per request (whole tokens). */
