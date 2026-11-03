@@ -18,7 +18,9 @@ treasury pages with a badge and JSON API for token projects.
 | `sdk/wots.ts` | WOTS+ chains, Merkle tree, borsh encodings — pure, runs in a web worker |
 | `sdk/client.ts` | configs, PDAs, `planAction`, `findSignedMessages`, `pickLeaf`, `preflightAction`, `findVaultsFor` |
 | `sdk/relayer.ts` | relay request encoding, off-chain checks, `relay()` |
-| `tests/` | end-to-end tests on a local validator (short epochs for the stake test) |
+| `tests/` | end-to-end tests on a local validator (short epochs for the stake test), plus property tests (`properties.*.ts`, fast-check) against a rules model (`model.ts`) |
+| `docs/audit/` | threat model, invariants (with enforcement and test coverage), audit scope, upgrade-authority plan |
+| `scripts/transfer-upgrade-authority.ts` | moves the upgrade authority to a Squads vault (dry run unless `--execute`; see `docs/audit/UPGRADE.md`) |
 | `scripts/devnet-smoke.ts` | create, fund and use a vault on a live cluster, incl. via the relayer |
 | `web/` | Next.js app + API routes (`/api/relay`, `/api/init`, `/api/relayer-info`) |
 | `bot/` | Telegram alerts for watched vaults |
@@ -28,7 +30,9 @@ treasury pages with a badge and JSON API for token projects.
 ```bash
 pnpm install
 anchor build && pnpm sync-idl   # copy the IDL into sdk/idl after program changes
-anchor test                     # local validator, all tests (~2 min)
+anchor test                     # local validator: e2e + property tests (~6 min)
+pnpm test:props                 # pure property tests only, no validator (seconds)
+pnpm test:rust                  # Rust host property tests (programs/noxvault/tests/props.rs)
 cd web && pnpm install && pnpm dev --port 3100
 ```
 
