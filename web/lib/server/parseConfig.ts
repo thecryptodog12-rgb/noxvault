@@ -24,7 +24,7 @@ function key(v: unknown, what: string): Uint8Array {
   }
 }
 
-/** Validates a v3 config sent by a browser (docs/SPEC.md §3). The program re-checks everything. */
+/** Validates a v4 config sent by a browser (docs/SPEC.md §3). The program re-checks everything. */
 export function parseConfig(j: ConfigJson): Config {
   if (!j || typeof j !== "object") throw bad("Body must be a config object");
   if (!Array.isArray(j.trees) || j.trees.length !== 4) throw bad("trees must have exactly 4 slots");
@@ -47,6 +47,12 @@ export function parseConfig(j: ConfigJson): Config {
     return { addr: key(h.addr, `heirs[${i}].addr`), bps };
   });
   if (heirs.length && heirs.reduce((s, h) => s + h.bps, 0) !== 10000) throw bad("heir shares must add up to 100%");
+  const duressRoot = bytes32(j.duress?.root, "duress.root");
+  if (duressRoot.every((b) => b === 0)) throw bad("duress.root must be set (a decoy root when unused)");
+  if (j.duress.height !== PRIMARY_HEIGHT) throw bad(`duress.height must be ${PRIMARY_HEIGHT}`);
+  if (trees.some((t) => t.root.every((b, i) => b === duressRoot[i]))) throw bad("duress.root must differ from every other tree");
+  const duressLock = uint(j.duressLock, "duressLock");
+  if (duressLock < 86400n) throw bad("duressLock must be at least one day");
   return {
     trees,
     threshold,
@@ -56,5 +62,8 @@ export function parseConfig(j: ConfigJson): Config {
     instantLimit: uint(j.instantLimit, "instantLimit", 19),
     heirs,
     testamentDelay: uint(j.testamentDelay, "testamentDelay"),
+    duress: { root: duressRoot, height: PRIMARY_HEIGHT },
+    duressLimit: uint(j.duressLimit, "duressLimit", 19),
+    duressLock,
   };
 }

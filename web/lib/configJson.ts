@@ -1,4 +1,4 @@
-// Vault config (v3) as JSON for /api/init: roots hex, keys base58, numbers as decimal strings.
+// Vault config (v4) as JSON for /api/init: roots hex, keys base58, numbers as decimal strings.
 import { PublicKey } from "@solana/web3.js";
 import type { Config } from "@nox/sdk/wots";
 import { hex } from "./format";
@@ -12,6 +12,10 @@ export interface ConfigJson {
   instantLimit: string;
   heirs: { addr: string; bps: number }[];
   testamentDelay: string;
+  /** v4: always present; a decoy root when the owner set no duress phrase. */
+  duress: { root: string; height: number };
+  duressLimit: string;
+  duressLock: string;
 }
 
 export function configToJson(c: Config): ConfigJson {
@@ -24,6 +28,9 @@ export function configToJson(c: Config): ConfigJson {
     instantLimit: c.instantLimit.toString(),
     heirs: c.heirs.map((h) => ({ addr: new PublicKey(h.addr).toBase58(), bps: h.bps })),
     testamentDelay: c.testamentDelay.toString(),
+    duress: { root: hex(c.duress.root), height: c.duress.height },
+    duressLimit: c.duressLimit.toString(),
+    duressLock: c.duressLock.toString(),
   };
 }
 
@@ -40,6 +47,9 @@ export function configFromJson(j: ConfigJson): Config {
     instantLimit: BigInt(j.instantLimit),
     heirs: j.heirs.map((h) => ({ addr: new PublicKey(h.addr).toBytes(), bps: h.bps })),
     testamentDelay: BigInt(j.testamentDelay),
+    duress: { root: fromHex(j.duress.root), height: j.duress.height },
+    duressLimit: BigInt(j.duressLimit),
+    duressLock: BigInt(j.duressLock),
   };
 }
 
@@ -51,6 +61,7 @@ export function savedConfigsFor(rootHex: string): { vault: PublicKey; config: Co
       const k = localStorage.key(i);
       if (!k?.startsWith("nox3.config.")) continue;
       const j = JSON.parse(localStorage.getItem(k) ?? "null") as ConfigJson | null;
+      if (!j?.duress) continue; // saved by the v3 app; not a v4 vault
       if (j?.trees?.[0]?.root === rootHex) out.push({ vault: new PublicKey(k.slice("nox3.config.".length)), config: configFromJson(j) });
     }
   } catch {}
