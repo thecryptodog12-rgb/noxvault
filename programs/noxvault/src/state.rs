@@ -25,6 +25,11 @@ pub const TIER_SENTINEL: u8 = 2;
 
 pub const SIGNER_SLOTS: usize = 3;
 pub const RECOVERY_TREE: u8 = 3;
+/// The duress tree (docs/SPEC.md §11): its own phrase, stored in `Config::duress`.
+pub const DURESS_TREE: u8 = 4;
+pub const TREE_COUNT: usize = 5;
+/// Shortest lockdown a duress withdrawal may start.
+pub const MIN_DURESS_LOCK: i64 = DAY;
 pub const MAX_ACTION: usize = 160;
 pub const MAX_ESCAPE_TX: usize = 1232;
 pub const DAY: i64 = 86_400;
@@ -68,6 +73,22 @@ pub struct Config {
     pub instant_limit: u64,
     pub heirs: [Heir; 4],
     pub testament_delay: i64,
+    /// Duress tree: always filled (a random root when the owner set no duress phrase), so
+    /// every vault looks the same (docs/SPEC.md §11).
+    pub duress: Tree,
+    /// Lamports a duress withdrawal pays out at once.
+    pub duress_limit: u64,
+    /// Lockdown length after a duress withdrawal (at least one day).
+    pub duress_lock: i64,
+}
+
+/// Tree `idx` of a config: 0..2 signers, 3 recovery, 4 duress.
+pub fn tree_of(config: &Config, idx: u8) -> Option<Tree> {
+    match idx {
+        i if i <= RECOVERY_TREE => Some(config.trees[i as usize]),
+        DURESS_TREE => Some(config.duress),
+        _ => None,
+    }
 }
 
 impl Config {
@@ -124,6 +145,10 @@ impl Action {
     pub fn is_cancel(&self) -> bool {
         matches!(self.kind, Kind::Cancel | Kind::CancelSchedule { .. } | Kind::CancelBudget { .. })
     }
+    /// Actions signer approvals may still execute during a lockdown.
+    pub fn allowed_in_lockdown(&self) -> bool {
+        self.is_cancel() || matches!(self.kind, Kind::Ping)
+    }
 }
 
 pub const PENDING_WITHDRAW: u8 = 0;
@@ -145,8 +170,8 @@ pub struct VaultState {
     pub vault_bump: u8,
     pub config_hash: [u8; N],
     pub config: Config,
-    /// Bit l of used[t] set once leaf l of tree t has been used.
-    pub used: [[u8; 32]; 4],
+    /// Bit l of used[t] set once leaf l of tree t has been used (t = 4: duress tree).
+    pub used: [[u8; 32]; TREE_COUNT],
     pub last_active: i64,
     pub created_at: i64,
     pub actions: u32,
@@ -155,9 +180,14 @@ pub struct VaultState {
     pub window_start: i64,
     pub window_spent: u64,
     pub migrate_to: Option<Pubkey>,
+    /// Until then only Ping and cancels execute (set by a duress withdrawal, docs/SPEC.md §11).
+    pub lockdown_until: i64,
 }
 
 impl VaultState {
+    pub fn locked(&self, now: i64) -> bool {
+        now < self.lockdown_until
+    }
     pub fn used(&self, tree: u8, leaf: u16) -> bool {
         self.used[tree as usize][(leaf / 8) as usize] & (1 << (leaf % 8)) != 0
     }

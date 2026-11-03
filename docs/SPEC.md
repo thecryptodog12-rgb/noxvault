@@ -1,14 +1,15 @@
-# Noxvault — protocol spec v3
+# Noxvault — protocol spec v4
 
 A vault on Solana whose funds move only with **hash-based one-time signatures** (WOTS+), arranged
 in Merkle trees so one fixed vault address serves many actions. On top of that: multi-signer
-vaults, a recovery key, an on-chain testament, spending rules, schedules and session budgets,
+vaults, a recovery key, a duress phrase, an on-chain testament, spending rules, schedules and session budgets,
 migration, invoice addresses, and an **Escape Hatch** that also protects a user's ordinary
 ed25519 wallet, triggered by an on-chain **quantum canary**. Everything works for SOL and for
 SPL / Token-2022 tokens.
 
 This file is the single source of truth for the program, the SDK, the web app and the keeper.
-v2 and v1 are in git history; v3 is not compatible with them (new domains, new accounts).
+v3, v2 and v1 are in git history. v4 adds duress mode (§11) and changes the `Config` and
+`VaultState` layouts, so v3 devnet vaults are not readable by the v4 program (domains unchanged).
 
 ## 1. Parameters
 
@@ -17,7 +18,7 @@ v2 and v1 are in git history; v3 is not compatible with them (new domains, new a
 | `N` | 32 bytes (SHA-256) |
 | `W` | 256 (one digit = one byte), `LEN` = 34 chains (32 + 2 checksum) |
 | tree height | 8 for signer trees (256 keys), 4 for the recovery tree (16 keys) |
-| signer slots | 3 (`trees[0..3]`), recovery slot `trees[3]` |
+| signer slots | 3 (`trees[0..3]`), recovery slot `trees[3]`, duress tree index 4 (`config.duress`) |
 
 Little-endian integers, ASCII domain strings, `||` concatenation, borsh for structs.
 
@@ -25,7 +26,7 @@ Little-endian integers, ASCII domain strings, `||` concatenation, borsh for stru
 
 ```
 sk_seed = SHA256("nox2/sk" || S || u32le(i))       pk_seed = SHA256("nox2/pk" || S || u32le(i))
-i = vault number v for a signer tree, v + 2^31 for a recovery tree
+i = vault number v for a signer tree, v + 2^31 for a recovery tree, v + 2^30 for a duress tree
 x(l, j)          = SHA256("nox2/chain" || sk_seed || u16le(l) || u8(j))
 F(l, j, k, v)    = SHA256(pk_seed || u16le(l) || u8(j) || u8(k) || v)
 leaf(l)          = SHA256("nox2/leaf" || pk_seed || u16le(l) || end(l,0..33))
@@ -46,6 +47,9 @@ Config {
   instant_limit:   u64,           // lamports per 24 h a restricted SOL withdrawal may skip the wait
   heirs:           [Heir; 4],     // bps sum to 10000 when any heir is set
   testament_delay: i64,           // owner inactivity before the testament may run; 0 = off
+  duress:          Tree,          // tree 4 (§11); always used, height 1..=8
+  duress_limit:    u64,           // lamports a duress withdrawal pays out at once
+  duress_lock:     i64,           // lockdown after a duress withdrawal, >= 86400
 }
 config_hash = SHA256("nox3/config" || borsh(Config))
 vault       = PDA(["vault", config_hash])     // system-owned: holds SOL, owns token & stake accounts
@@ -89,9 +93,11 @@ An action executes (permissionless, `execute_*`) when:
 
 - signer approvals ≥ `threshold`, or
 - the recovery tree approved it and it is `Cancel`, `CancelSchedule` or `CancelBudget`, or
-- the recovery tree approved it and `now ≥ last_active + recovery_delay`.
+- the recovery tree approved it and `now ≥ last_active + recovery_delay`, or
+- only the duress tree approved it (§11).
 
-Signer approvals set `last_active = now`. Executing closes the approval. Each leaf of each tree is
+The duress approval never counts toward `threshold` and adds nothing to recovery powers.
+Signer and duress approvals set `last_active = now`. Executing closes the approval. Each leaf of each tree is
 used once (bitmaps in `state`). An unexecuted approval can be discarded after 7 days.
 
 ### Rules per action
@@ -182,7 +188,31 @@ Protocol = PDA(["protocol"]) { admin, params: { nox_mint, guardian, sentinel, cr
   - `init_vault`: more than one signer tree → Sentinel; a testament → Guardian; a Free vault pays
     `create_fee` lamports from the payer to `treasury`.
   - `execute_create_schedule`, `execute_create_budget` → Guardian.
-- Never gated: recovery, whitelist, delays, instant limit, the Escape Hatch, withdrawals, staking,
+- Never gated: recovery, duress mode, whitelist, delays, instant limit, the Escape Hatch, withdrawals, staking,
   migration, and anything already created (heirs and co-signers are never locked out).
 - Off-chain, by convention: relayers serve Sentinel vaults free; keepers evacuate linked wallets
   in order of their vault's tier, then $NOX held.
+
+## 11. Duress mode
+
+Against physical coercion: the owner gives an attacker a **duress phrase**, which works at once
+for a small amount while the rest of the vault locks.
+
+- **Tree 4** (`config.duress`), signed like any other tree, leaf bitmap `used[4]`. Clients fill it
+  for *every* vault: with no duress phrase, a root derived from the owner's secret
+  (`SHA256("nox4/decoy-duress" || sk_seed)`, no key exists for it) at the primary tree's height,
+  `duress_limit` 0.5 SOL and `duress_lock` 3 days by default. No vault reveals whether it has one.
+- A duress approval authorizes only `Withdraw` of SOL. Executing it pays
+  `min(amount, duress_limit, vault lamports − rent minimum)` to `dest` at once (the fee is paid
+  from the same allowance), ignoring whitelist, instant limit and slow delay, then sets
+  `lockdown_until = max(lockdown_until, now + duress_lock)`. During a lockdown already running it
+  pays nothing more (it still extends the lockdown). Every other `execute_*` refuses it.
+- **Lockdown** (`now < lockdown_until`): signer approvals execute only `Ping`, `Cancel`,
+  `CancelSchedule`, `CancelBudget`; `execute_pending(_token)` and `spend_budget(_token)` are
+  refused. Running schedules, the testament, inbox sweeps and an already-started migration
+  continue. Recovery after inactivity is unaffected (duress approvals count as activity).
+- A **recovery-tree `Cancel`** also ends the lockdown: the recovery holder, not the coerced owner,
+  decides when it is safe.
+- Off-chain: the bot watches `lockdown_until` and alerts recovery contacts. The lockdown is
+  visible on chain; the design caps the loss, it does not hide. The app in duress mode shows the
+  duress limit as the balance. SOL only; tokens stay locked. Never needs a tier.
