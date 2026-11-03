@@ -304,6 +304,10 @@ export function summarize(vault: string, tree: number, leaf: number, a: Action, 
       headline = "Ping: mark the owner as active (resets the recovery and testament timers)";
       rows.push({ k: "action", v: "ping", strong: true });
       break;
+    case "letterKey":
+      headline = equal(a.key, SOL_MINT.toBytes()) ? "Revoke the sealed-letter key" : `Let wallet ${b58(a.key)} write this vault's sealed letters (never funds)`;
+      rows.push({ k: "action", v: "set letter key", strong: true }, { k: "letter key", v: b58(a.key), strong: true });
+      break;
   }
   rows.push({
     k: "fee",

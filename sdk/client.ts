@@ -56,6 +56,7 @@ import {
   seedIndex,
   sign,
   treeSeeds,
+  u32le,
   verifyCost,
 } from "./wots";
 
@@ -249,6 +250,8 @@ export function toAnchorAction(a: Action) {
         return { cancelBudget: { id: a.id } };
       case "migrate":
         return { migrate: { newVault: pk(a.newVault) } };
+      case "letterKey":
+        return { letterKey: { key: pk(a.key) } };
     }
   })();
   return { kind, fee: bn(a.fee), feePayee: pk(a.feePayee) };
@@ -279,6 +282,8 @@ export function actionFromAnchor(a: { kind: Record<string, Record<string, any>>;
       return { kind, id: f.id, session: k(f.session), mint: k(f.mint), limit: n(f.limit), period: n(f.period), expires: n(f.expires), ...fee };
     case "migrate":
       return { kind, newVault: k(f.newVault ?? f.new_vault), ...fee };
+    case "letterKey":
+      return { kind, key: k(f.key), ...fee };
   }
   throw new Error(`unknown action ${kind}`);
 }
@@ -584,6 +589,7 @@ const isCancelKind = (a: Action) => a.kind === "cancel" || a.kind === "cancelSch
 export function canExecute(state: VaultStateView, trees: number, action: Action, now = Math.floor(Date.now() / 1000)): boolean {
   const signers = [0, 1, 2].filter((t) => trees & (1 << t)).length;
   if (signers >= state.config.threshold) return !inLockdown(state, now) || isCancelKind(action) || action.kind === "ping";
+  if (action.kind === "letterKey") return false; // signers only (docs/SPEC.md §12)
   if (trees & (1 << RECOVERY_TREE)) {
     if (isCancelKind(action)) return true;
     return now >= state.lastActive + Number(state.config.recoveryDelay);
@@ -810,6 +816,8 @@ export async function executeIx(
           newState: action.kind === "migrate" ? statePda(pk(action.newVault), programId) : null,
         })
         .instruction();
+    case "letterKey":
+      return m.executeLetterKey().accountsPartial({ ...base, payer, letterKey: letterKeyPda(vault, programId) }).instruction();
   }
 }
 
@@ -994,6 +1002,123 @@ export async function remainingSteps(program: Program<Noxvault>, payer: PublicKe
     if (st.kind === "verify") return !all(buf.verified, st.chains!);
     return true;
   });
+}
+
+// ---------- sealed letters (docs/SPEC.md §12) ----------
+
+export const MAX_LETTER = 8192;
+export const MAX_LETTER_LABEL = 64;
+/** Ciphertext bytes per transaction: first chunk (write_letter) and the rest (append_letter). */
+export const LETTER_FIRST_CHUNK = 640;
+export const LETTER_CHUNK = 880;
+
+export function letterKeyPda(vault: PublicKey, programId = PROGRAM_ID): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("letterkey"), vault.toBytes()], programId)[0];
+}
+export function letterPda(vault: PublicKey, id: number, programId = PROGRAM_ID): PublicKey {
+  return PublicKey.findProgramAddressSync([seed("letter"), vault.toBytes(), u32le(id)], programId)[0];
+}
+
+export interface LetterKeyView {
+  vault: PublicKey;
+  /** PublicKey.default = revoked. */
+  key: PublicKey;
+  updatedAt: number;
+}
+
+export async function fetchLetterKey(program: Program<Noxvault>, vault: PublicKey): Promise<LetterKeyView | null> {
+  const k = await withRetry(() => program.account.letterKey.fetchNullable(letterKeyPda(vault, program.programId), "confirmed"));
+  return k ? { vault: k.vault, key: k.key, updatedAt: Number(k.updatedAt) } : null;
+}
+
+export interface LetterView {
+  address: PublicKey;
+  vault: PublicKey;
+  id: number;
+  unlockRound: bigint;
+  updatedAt: number;
+  /** Plaintext label / recipient hint. */
+  label: string;
+  /** The ciphertext written so far (all of it when `complete`). */
+  ciphertext: Uint8Array;
+  complete: boolean;
+}
+
+function letterView(address: PublicKey, l: { vault: PublicKey; id: number; unlockRound: BN; updatedAt: BN; filled: number; label: Buffer | number[]; content: Buffer | number[] }): LetterView {
+  const content = Uint8Array.from(l.content);
+  return {
+    address,
+    vault: l.vault,
+    id: l.id,
+    unlockRound: BigInt(l.unlockRound.toString()),
+    updatedAt: Number(l.updatedAt),
+    label: new TextDecoder().decode(Uint8Array.from(l.label)),
+    ciphertext: content.slice(0, l.filled),
+    complete: l.filled === content.length,
+  };
+}
+
+export async function fetchLetter(program: Program<Noxvault>, vault: PublicKey, id: number): Promise<LetterView | null> {
+  const address = letterPda(vault, id, program.programId);
+  const l = await withRetry(() => program.account.letter.fetchNullable(address, "confirmed"));
+  return l ? letterView(address, l) : null;
+}
+
+/** All sealed letters of a vault, by id. */
+export async function vaultLetters(program: Program<Noxvault>, vault: PublicKey): Promise<LetterView[]> {
+  const all = await withRetry(() => program.account.letter.all([{ memcmp: { offset: 8, bytes: vault.toBase58() } }]));
+  return all.map(({ publicKey, account }) => letterView(publicKey, account)).sort((a, b) => a.id - b.id);
+}
+
+/** Lowest letter id not in use. */
+export function nextLetterId(letters: { id: number }[]): number {
+  const used = new Set(letters.map((l) => l.id));
+  let id = 0;
+  while (used.has(id)) id++;
+  return id;
+}
+
+export interface LetterInput {
+  unlockRound: bigint;
+  label: string;
+  ciphertext: Uint8Array;
+}
+
+/**
+ * Instructions that create or overwrite letter `id`, one per transaction, in order. Signed and
+ * paid by the letter key. `from` resumes after a partial write (pass the letter's filled bytes).
+ */
+export async function writeLetterIxs(program: Program<Noxvault>, key: PublicKey, vault: PublicKey, id: number, l: LetterInput, from = 0): Promise<TransactionInstruction[]> {
+  const label = enc.encode(l.label);
+  if (label.length > MAX_LETTER_LABEL) throw new Error(`The label is at most ${MAX_LETTER_LABEL} bytes.`);
+  if (!l.ciphertext.length || l.ciphertext.length > MAX_LETTER) throw new Error(`A sealed letter is 1 to ${MAX_LETTER} bytes of ciphertext.`);
+  const programId = program.programId;
+  const accts = { key, vault, letterKey: letterKeyPda(vault, programId), letter: letterPda(vault, id, programId) };
+  const ixs: TransactionInstruction[] = [];
+  let off = from;
+  if (from === 0) {
+    const first = l.ciphertext.slice(0, LETTER_FIRST_CHUNK);
+    ixs.push(
+      await program.methods
+        .writeLetter(id, bn(l.unlockRound), Buffer.from(label), l.ciphertext.length, Buffer.from(first))
+        .accountsPartial({ ...accts, systemProgram: SystemProgram.programId })
+        .instruction()
+    );
+    off = first.length;
+  }
+  for (; off < l.ciphertext.length; off += LETTER_CHUNK) {
+    const chunk = l.ciphertext.slice(off, off + LETTER_CHUNK);
+    ixs.push(await program.methods.appendLetter(id, off, Buffer.from(chunk)).accountsPartial(accts).instruction());
+  }
+  return ixs;
+}
+
+export async function closeLetterIx(program: Program<Noxvault>, key: PublicKey, vault: PublicKey, id: number) {
+  const programId = program.programId;
+  return program.methods
+    .closeLetter(id)
+    .accountsPartial({ key, vault, letterKey: letterKeyPda(vault, programId), letter: letterPda(vault, id, programId) })
+    .instruction();
 }
 
 // ---------- permissionless follow-ups ----------
@@ -1325,6 +1450,7 @@ export async function preflightAction(p: Omit<ActionParams, "hashesPerTx" | "exe
   }
   if (signer.tree < SIGNER_SLOTS && inLockdown(state, now) && !isCancel && action.kind !== "ping")
     errors.push(`This vault is in lockdown until ${new Date(state.lockdownUntil * 1000).toISOString()}: only Ping and cancels execute. The recovery key's Cancel ends it.`);
+  if (signer.tree === RECOVERY_TREE && action.kind === "letterKey") errors.push("The recovery key can never set the letter key; only the vault's signers can.");
   let unrestricted = false;
   if (signer.tree === RECOVERY_TREE && !isCancel) {
     const opensAt = state.lastActive + Number(c.recoveryDelay);
@@ -1418,6 +1544,11 @@ export async function preflightAction(p: Omit<ActionParams, "hashesPerTx" | "exe
     }
     case "cancelBudget": {
       if (!(await withRetry(() => conn.getAccountInfo(budgetPda(vault, action.id, programId), "confirmed")))) errors.push(`There is no budget #${action.id}.`);
+      break;
+    }
+    case "letterKey": {
+      if (equal(action.key, ZERO32)) warnings.push("This revokes the letter key: existing letters stay, but nobody can update or close them until a new key is set.");
+      else warnings.push("The letter key is an ordinary wallet key: whoever holds it can overwrite or delete the vault's sealed letters, never move funds.");
       break;
     }
     case "migrate": {

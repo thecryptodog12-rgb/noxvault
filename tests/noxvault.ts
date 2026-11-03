@@ -65,6 +65,13 @@ import {
   fetchProtocol,
   initProtocolIx,
   vaultTier,
+  closeLetterIx,
+  fetchLetter,
+  fetchLetterKey,
+  letterKeyPda,
+  letterPda,
+  vaultLetters,
+  writeLetterIxs,
 } from "../sdk/client";
 
 const SOL = (n: number) => BigInt(Math.round(n * LAMPORTS_PER_SOL));
@@ -681,6 +688,122 @@ describe("noxvault v4", () => {
       expect(await conn.getBalance(dest)).to.eq(0);
       await act(c1, mv, action);
       expect(await conn.getBalance(dest)).to.eq(Number(SOL(0.3)));
+    });
+  });
+
+  // ---------- sealed letters ----------
+
+  describe("sealed letters", () => {
+    const letterKey = Keypair.generate();
+    const stranger = Keypair.generate();
+    let owner: Signer;
+    let duress: Signer;
+    let rec: Signer;
+    let v: PublicKey;
+    const bytes = (n: number) => Uint8Array.from({ length: n }, (_, i) => (i * 31 + 7) & 0xff);
+    const sendAs = async (ixs: TransactionInstruction[], as: Keypair) => {
+      for (const ix of ixs) await anchor.web3.sendAndConfirmTransaction(conn, Object.assign(new Transaction().add(ix), { feePayer: as.publicKey }), [as], { commitment: "confirmed" });
+    };
+
+    before(async () => {
+      owner = makeSigner(newMasterSecret(), 0, 0);
+      duress = makeDuressSigner(newMasterSecret(), 0);
+      rec = makeSigner(newMasterSecret(), 0, RECOVERY_TREE);
+      ({ vault: v } = await newVault({ recoveryRoot: rec.pub.root, recoveryDelaySecs: 12, duressRoot: duress.pub.root }, owner));
+      await fund(v, 0.5);
+      await fund(letterKey.publicKey, 0.2);
+      await fund(stranger.publicKey, 0.05);
+    });
+
+    it("authorizes a letter key with the owner's signature, as owner activity", async () => {
+      expect(await fetchLetterKey(program, v)).to.eq(null);
+      const before = (await fetchState(program, v))!;
+      await sleep(1100);
+      const { plan } = await act(owner, v, { kind: "letterKey", key: letterKey.publicKey.toBytes(), ...fee0 });
+      expect(plan.willExecute).to.eq(true);
+      const k = (await fetchLetterKey(program, v))!;
+      expect(k.key.equals(letterKey.publicKey)).to.eq(true);
+      expect(k.vault.equals(v)).to.eq(true);
+      const st = (await fetchState(program, v))!;
+      expect(st.actions).to.eq(before.actions + 1);
+      expect(st.lastActive).to.be.greaterThan(before.lastActive);
+      // The digest commits to the key like any other action field.
+      const a = { kind: "letterKey", key: letterKey.publicKey.toBytes(), ...fee0 } as wots.Action;
+      expect(wots.encodeAction(a)[0]).to.eq(11);
+      expect(wots.equal(wots.encodeAction(a).slice(1, 33), letterKey.publicKey.toBytes())).to.eq(true);
+    });
+
+    it("writes, overwrites and closes a letter with the letter key alone; funds and activity untouched", async () => {
+      const vaultBefore = await conn.getBalance(v);
+      const activeBefore = (await fetchState(program, v))!.lastActive;
+      const big = bytes(2500);
+      const ixs = await writeLetterIxs(program, letterKey.publicKey, v, 3, { unlockRound: 123_456n, label: "for Ana", ciphertext: big });
+      expect(ixs.length).to.eq(4);
+      await sendAs(ixs, letterKey);
+      let [l] = await vaultLetters(program, v);
+      expect(l.id).to.eq(3);
+      expect(l.complete).to.eq(true);
+      expect(l.label).to.eq("for Ana");
+      expect(l.unlockRound).to.eq(123_456n);
+      expect(wots.equal(l.ciphertext, big)).to.eq(true);
+      const bigRent = await conn.getBalance(letterPda(v, 3, program.programId));
+
+      // Overwrite with a shorter letter: the account shrinks and its spare rent goes back.
+      const keyBefore = await conn.getBalance(letterKey.publicKey);
+      const small = bytes(300).reverse();
+      await sendAs(await writeLetterIxs(program, letterKey.publicKey, v, 3, { unlockRound: 999_999n, label: "for Ana (v2)", ciphertext: small }), letterKey);
+      l = (await fetchLetter(program, v, 3))!;
+      expect(wots.equal(l.ciphertext, small)).to.eq(true);
+      expect(l.unlockRound).to.eq(999_999n);
+      expect(l.label).to.eq("for Ana (v2)");
+      expect(await conn.getBalance(letterPda(v, 3, program.programId))).to.be.lessThan(bigRent);
+      expect(await conn.getBalance(letterKey.publicKey)).to.be.greaterThan(keyBefore - 10_000);
+
+      // Grow it again, then a chunk out of order is refused.
+      await sendAs(await writeLetterIxs(program, letterKey.publicKey, v, 3, { unlockRound: 1n, label: "", ciphertext: bytes(1200) }), letterKey);
+      expect((await fetchLetter(program, v, 3))!.ciphertext.length).to.eq(1200);
+      const replay = await program.methods.appendLetter(3, 100, Buffer.from(bytes(10))).accountsPartial({ key: letterKey.publicKey, vault: v, letterKey: letterKeyPda(v, program.programId), letter: letterPda(v, 3, program.programId) }).instruction();
+      await expectError(sendAs([replay], letterKey), "LetterOverflow");
+      await expectError(writeLetterIxs(program, letterKey.publicKey, v, 4, { unlockRound: 1n, label: "x", ciphertext: bytes(8193) }), "1 to 8192");
+      const tooBig = await program.methods
+        .writeLetter(4, new anchor.BN(1), Buffer.from("x"), 8193, Buffer.from(bytes(10)))
+        .accountsPartial({ key: letterKey.publicKey, vault: v, letterKey: letterKeyPda(v, program.programId), letter: letterPda(v, 4, program.programId), systemProgram: SystemProgram.programId })
+        .instruction();
+      await expectError(sendAs([tooBig], letterKey), "LetterTooBig");
+
+      await sendAs([await closeLetterIx(program, letterKey.publicKey, v, 3)], letterKey);
+      expect(await conn.getAccountInfo(letterPda(v, 3, program.programId))).to.eq(null);
+      expect(await vaultLetters(program, v)).to.deep.eq([]);
+      expect(await conn.getBalance(v)).to.eq(vaultBefore);
+      expect((await fetchState(program, v))!.lastActive).to.eq(activeBefore);
+    });
+
+    it("refuses any other signer", async () => {
+      await sendAs(await writeLetterIxs(program, letterKey.publicKey, v, 0, { unlockRound: 5n, label: "keep", ciphertext: bytes(100) }), letterKey);
+      await expectError(sendAs(await writeLetterIxs(program, stranger.publicKey, v, 0, { unlockRound: 5n, label: "evil", ciphertext: bytes(50) }), stranger), "NotLetterKey");
+      await expectError(sendAs(await writeLetterIxs(program, stranger.publicKey, v, 1, { unlockRound: 5n, label: "evil", ciphertext: bytes(50) }), stranger), "NotLetterKey");
+      await expectError(sendAs([await closeLetterIx(program, stranger.publicKey, v, 0)], stranger), "NotLetterKey");
+      // A vault without a letter key accepts no letters at all.
+      const other = await newVault();
+      await expectError(sendAs(await writeLetterIxs(program, letterKey.publicKey, other.vault, 0, { unlockRound: 5n, label: "", ciphertext: bytes(10) }), letterKey), "AccountNotInitialized");
+      expect(wots.equal((await fetchLetter(program, v, 0))!.ciphertext, bytes(100))).to.eq(true);
+    });
+
+    it("never lets a duress or recovery signature set the letter key, not even after inactivity", async () => {
+      const evil = { kind: "letterKey", key: stranger.publicKey.toBytes(), ...fee0 } as wots.Action;
+      await act(owner, v, { kind: "ping", ...fee0 }); // the owner is active: recovery may only cancel
+      expect((await preflightAction({ program, payer, vault: v, signer: rec, leaf: 0, action: evil })).errors.join()).to.contain("never set the letter key");
+      await expectError(run(await planAction({ program, payer, vault: v, signer: rec, leaf: 0, action: evil, execute: true })), "RecoveryLocked");
+      if (await conn.getAccountInfo(unlockPda(v, payer, program.programId))) await cancel(v);
+
+      expect((await preflightAction({ program, payer, vault: v, signer: duress, leaf: 0, action: evil })).errors.join()).to.contain("only withdraw SOL");
+      await expectError(run(await planAction({ program, payer, vault: v, signer: duress, leaf: 0, action: evil, execute: true })), "DuressSolOnly");
+      if (await conn.getAccountInfo(unlockPda(v, payer, program.programId))) await cancel(v);
+
+      await sleep(13_000); // the owner is now inactive past the recovery delay
+      const evil2 = { ...evil, fee: 1n, feePayee: payer.toBytes() } as wots.Action; // a fresh message for a fresh leaf
+      await expectError(run(await planAction({ program, payer, vault: v, signer: rec, leaf: 1, action: evil2, execute: true })), "LetterKeySignersOnly");
+      expect((await fetchLetterKey(program, v))!.key.equals(letterKey.publicKey)).to.eq(true);
     });
   });
 

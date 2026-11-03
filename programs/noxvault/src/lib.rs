@@ -440,6 +440,96 @@ pub mod noxvault {
         check_rent(&a.vault)
     }
 
+    /// LetterKey (docs/SPEC.md §12): only a signer-threshold approval sets the letter key. Duress
+    /// and recovery approvals never do, not even after the owner's inactivity.
+    pub fn execute_letter_key(ctx: Context<ExecuteLetterKey>) -> Result<()> {
+        let a = &mut *ctx.accounts;
+        let (action, mode) = authorize(&a.approval, &a.state)?;
+        let signers = (a.approval.trees & SIGNER_BITS).count_ones() as u8;
+        require!(mode == Mode::Normal && signers >= a.state.config.threshold, NoxError::LetterKeySignersOnly);
+        let Kind::LetterKey { key } = action.kind.clone() else {
+            return err!(NoxError::WrongAction);
+        };
+        let lk = &mut a.letter_key;
+        lk.vault = a.vault.key();
+        lk.key = key;
+        lk.updated_at = Clock::get()?.unix_timestamp;
+        let seeds_owned = vault_seeds(&a.state);
+        pay_fee(&a.system_program, &a.vault, &a.fee_payee, &seeds_owned.as_slices(), &action)?;
+        a.state.actions += 1;
+        check_rent(&a.vault)
+    }
+
+    // ---------- sealed letters (docs/SPEC.md §12) ----------
+
+    /// Creates or overwrites letter `id`: sizes it for `len` ciphertext bytes and writes the first
+    /// `data` bytes (the rest follows with `append_letter`). Signed and paid by the letter key;
+    /// never touches the vault's funds or its activity clock.
+    pub fn write_letter(ctx: Context<WriteLetter>, id: u32, unlock_round: u64, label: Vec<u8>, len: u32, data: Vec<u8>) -> Result<()> {
+        let len = len as usize;
+        require!(label.len() <= MAX_LETTER_LABEL && len > 0 && len <= MAX_LETTER, NoxError::LetterTooBig);
+        require!(data.len() <= len, NoxError::LetterOverflow);
+        let a = &ctx.accounts;
+        let info = a.letter.to_account_info();
+        let key = a.key.to_account_info();
+        let vault = a.vault.key();
+        let space = Letter::space(label.len(), len);
+        let rent = Rent::get()?.minimum_balance(space);
+        let have = info.lamports();
+        if have < rent {
+            system_program::transfer(
+                CpiContext::new(a.system_program.to_account_info(), system_program::Transfer { from: key.clone(), to: info.clone() }),
+                rent - have,
+            )?;
+        }
+        if *info.owner == system_program::ID {
+            let idb = id.to_le_bytes();
+            let seeds: &[&[u8]] = &[LETTER_SEED, vault.as_ref(), &idb, &[ctx.bumps.letter]];
+            let sys = a.system_program.to_account_info();
+            system_program::allocate(
+                CpiContext::new_with_signer(sys.clone(), system_program::Allocate { account_to_allocate: info.clone() }, &[seeds]),
+                space as u64,
+            )?;
+            system_program::assign(
+                CpiContext::new_with_signer(sys, system_program::Assign { account_to_assign: info.clone() }, &[seeds]),
+                &crate::ID,
+            )?;
+        } else {
+            require_keys_eq!(*info.owner, crate::ID, NoxError::WrongAction);
+            let old = Letter::try_deserialize(&mut &info.try_borrow_data()?[..])?;
+            require_keys_eq!(old.vault, vault, NoxError::WrongVault);
+            if have > rent {
+                // Shrinking: the letter key gets the spare rent back.
+                **info.try_borrow_mut_lamports()? -= have - rent;
+                **key.try_borrow_mut_lamports()? += have - rent;
+            }
+            info.realloc(space, false)?;
+        }
+        let filled = data.len() as u32;
+        let mut content = data;
+        content.resize(len, 0);
+        let letter = Letter { vault, id, unlock_round, updated_at: Clock::get()?.unix_timestamp, filled, label, content };
+        let mut buf = info.try_borrow_mut_data()?;
+        letter.try_serialize(&mut &mut buf[..])?;
+        Ok(())
+    }
+
+    /// Writes the next chunk of a letter's ciphertext, at `offset` == bytes filled so far.
+    pub fn append_letter(ctx: Context<AppendLetter>, _id: u32, offset: u32, data: Vec<u8>) -> Result<()> {
+        let l = &mut ctx.accounts.letter;
+        let end = (offset as usize).checked_add(data.len()).ok_or(NoxError::LetterOverflow)?;
+        require!(offset == l.filled && end <= l.content.len(), NoxError::LetterOverflow);
+        l.content[offset as usize..end].copy_from_slice(&data);
+        l.filled = end as u32;
+        l.updated_at = Clock::get()?.unix_timestamp;
+        Ok(())
+    }
+
+    /// Deletes a letter; its rent goes back to the letter key.
+    pub fn close_letter(_ctx: Context<CloseLetter>, _id: u32) -> Result<()> {
+        Ok(())
+    }
+
     // ---------- permissionless follow-ups ----------
 
     /// Pays the pending SOL withdrawal, or starts the pending migration, once due.
@@ -1303,6 +1393,85 @@ pub struct ExecuteCreateBudget<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[derive(Accounts)]
+pub struct ExecuteLetterKey<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(mut, close = creator, has_one = vault, has_one = creator)]
+    pub approval: Box<Account<'info, Approval>>,
+    /// CHECK: equals approval.creator.
+    #[account(mut)]
+    pub creator: UncheckedAccount<'info>,
+    #[account(mut, seeds = [STATE_SEED, vault.key().as_ref()], bump, has_one = vault)]
+    pub state: Box<Account<'info, VaultState>>,
+    #[account(mut)]
+    pub vault: SystemAccount<'info>,
+    #[account(init_if_needed, payer = payer, space = 8 + LetterKey::INIT_SPACE, seeds = [LETTER_KEY_SEED, vault.key().as_ref()], bump)]
+    pub letter_key: Box<Account<'info, LetterKey>>,
+    /// CHECK: must equal the signed fee payee when there is a fee.
+    #[account(mut)]
+    pub fee_payee: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+// ---------- accounts: sealed letters ----------
+
+#[derive(Accounts)]
+#[instruction(id: u32)]
+pub struct WriteLetter<'info> {
+    /// The vault's letter key: signs and pays.
+    #[account(mut)]
+    pub key: Signer<'info>,
+    /// CHECK: bound to letter_key by its seeds and has_one.
+    pub vault: UncheckedAccount<'info>,
+    #[account(
+        seeds = [LETTER_KEY_SEED, vault.key().as_ref()],
+        bump,
+        has_one = vault,
+        constraint = letter_key.key == key.key() && letter_key.key != Pubkey::default() @ NoxError::NotLetterKey
+    )]
+    pub letter_key: Box<Account<'info, LetterKey>>,
+    /// CHECK: PDA ["letter", vault, id]; created, resized and written in the handler.
+    #[account(mut, seeds = [LETTER_SEED, vault.key().as_ref(), &id.to_le_bytes()], bump)]
+    pub letter: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(id: u32)]
+pub struct AppendLetter<'info> {
+    pub key: Signer<'info>,
+    /// CHECK: bound to letter_key by its seeds and has_one.
+    pub vault: UncheckedAccount<'info>,
+    #[account(
+        seeds = [LETTER_KEY_SEED, vault.key().as_ref()],
+        bump,
+        has_one = vault,
+        constraint = letter_key.key == key.key() && letter_key.key != Pubkey::default() @ NoxError::NotLetterKey
+    )]
+    pub letter_key: Box<Account<'info, LetterKey>>,
+    #[account(mut, seeds = [LETTER_SEED, vault.key().as_ref(), &id.to_le_bytes()], bump, has_one = vault)]
+    pub letter: Box<Account<'info, Letter>>,
+}
+
+#[derive(Accounts)]
+#[instruction(id: u32)]
+pub struct CloseLetter<'info> {
+    #[account(mut)]
+    pub key: Signer<'info>,
+    /// CHECK: bound to letter_key by its seeds and has_one.
+    pub vault: UncheckedAccount<'info>,
+    #[account(
+        seeds = [LETTER_KEY_SEED, vault.key().as_ref()],
+        bump,
+        has_one = vault,
+        constraint = letter_key.key == key.key() && letter_key.key != Pubkey::default() @ NoxError::NotLetterKey
+    )]
+    pub letter_key: Box<Account<'info, LetterKey>>,
+    #[account(mut, close = key, seeds = [LETTER_SEED, vault.key().as_ref(), &id.to_le_bytes()], bump, has_one = vault)]
+    pub letter: Box<Account<'info, Letter>>,
+}
+
 // ---------- accounts: permissionless follow-ups ----------
 
 #[derive(Accounts)]
@@ -1708,4 +1877,12 @@ pub enum NoxError {
     Lockdown,
     #[msg("A duress approval can only withdraw SOL")]
     DuressSolOnly,
+    #[msg("Only the vault's signers can set the letter key (not duress or recovery)")]
+    LetterKeySignersOnly,
+    #[msg("This key is not the vault's letter key")]
+    NotLetterKey,
+    #[msg("Letter too big: at most 8192 ciphertext bytes and a 64-byte label")]
+    LetterTooBig,
+    #[msg("Letter chunk out of order or past the letter's length")]
+    LetterOverflow,
 }

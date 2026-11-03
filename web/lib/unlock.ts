@@ -11,7 +11,7 @@ import { encodeRelayRequest } from "@nox/sdk/relayer";
 
 export type ActionJson = Record<string, string | number> & { kind: Action["kind"] };
 
-const KEY_FIELDS = new Set(["mint", "dest", "vote", "session", "newVault", "feePayee"]);
+const KEY_FIELDS = new Set(["mint", "dest", "vote", "session", "newVault", "feePayee", "key"]);
 const BIG_FIELDS = new Set(["amount", "interval", "start", "limit", "period", "expires", "fee"]);
 const NUM_FIELDS = new Set(["seed", "id", "count"]);
 
@@ -227,5 +227,7 @@ export function describeAction(a: Action): string {
       return `cancel budget #${a.id}${fee}`;
     case "migrate":
       return `migrate everything to vault ${short(a.newVault)}${fee}`;
+    case "letterKey":
+      return isSol(a.key) ? `revoke the letter key${fee}` : `authorize letter key ${short(a.key)} (sealed letters only, never funds)${fee}`;
   }
 }

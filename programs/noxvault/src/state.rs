@@ -14,6 +14,8 @@ pub const LINK_SEED: &[u8] = b"link";
 pub const ESCAPE_SEED: &[u8] = b"escape";
 pub const CANARY_SEED: &[u8] = b"canary";
 pub const PROTOCOL_SEED: &[u8] = b"protocol";
+pub const LETTER_KEY_SEED: &[u8] = b"letterkey";
+pub const LETTER_SEED: &[u8] = b"letter";
 
 /// Who may set the protocol parameters until governance takes over (docs/SPEC.md §10).
 /// Devnet: the deployer. Mainnet: the team multisig, later the governance program.
@@ -35,6 +37,10 @@ pub const MAX_ESCAPE_TX: usize = 1232;
 pub const DAY: i64 = 86_400;
 pub const LINK_CHANGE_DELAY: i64 = 30 * DAY;
 pub const APPROVAL_TTL: i64 = 7 * DAY;
+/// Sealed letters (docs/SPEC.md §12): ciphertext bytes per letter, plaintext label bytes.
+/// 8 KiB keeps a whole letter within one realloc step (10 KiB per instruction).
+pub const MAX_LETTER: usize = 8_192;
+pub const MAX_LETTER_LABEL: usize = 64;
 
 /// The canary: a point on the ed25519 curve found by hashing, so nobody knows its private key
 /// (docs/SPEC.md §7). Derivation: first i with SHA256("noxvault/canary/v1" || u32le(i)) on the
@@ -130,6 +136,9 @@ pub enum Kind {
     Budget { id: u8, session: Pubkey, mint: Pubkey, limit: u64, period: i64, expires: i64 },
     CancelBudget { id: u8 },
     Migrate { new_vault: Pubkey },
+    /// Authorizes an ordinary ed25519 key to write the vault's sealed letters (docs/SPEC.md §12).
+    /// The default key revokes it.
+    LetterKey { key: Pubkey },
 }
 
 /// What one approval authorizes. Signed as borsh bytes (docs/SPEC.md §4).
@@ -294,6 +303,40 @@ pub struct Canary {
     pub baseline: u64,
     pub tripped: bool,
     pub tripped_at: i64,
+}
+
+/// The key allowed to write a vault's sealed letters (docs/SPEC.md §12). A separate account so
+/// `VaultState` keeps its layout. PDA ["letterkey", vault].
+#[account]
+#[derive(InitSpace)]
+pub struct LetterKey {
+    pub vault: Pubkey,
+    /// default = no letter key (revoked).
+    pub key: Pubkey,
+    pub updated_at: i64,
+}
+
+/// One sealed letter: tlock ciphertext only, written by the vault's letter key.
+/// PDA ["letter", vault, u32le(id)].
+#[account]
+pub struct Letter {
+    pub vault: Pubkey,
+    pub id: u32,
+    /// drand quicknet round after which the ciphertext can be decrypted.
+    pub unlock_round: u64,
+    pub updated_at: i64,
+    /// Bytes of `content` written so far; the letter is complete when filled == content.len().
+    pub filled: u32,
+    /// Short plaintext label / recipient hint (at most MAX_LETTER_LABEL bytes).
+    pub label: Vec<u8>,
+    /// Opaque ciphertext (at most MAX_LETTER bytes).
+    pub content: Vec<u8>,
+}
+
+impl Letter {
+    pub fn space(label_len: usize, content_len: usize) -> usize {
+        8 + 32 + 4 + 8 + 8 + 4 + (4 + label_len) + (4 + content_len)
+    }
 }
 
 /// A signed action being assembled and verified over several transactions.

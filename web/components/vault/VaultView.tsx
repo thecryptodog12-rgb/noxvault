@@ -25,6 +25,7 @@ import { Copy, Label, Note, Panel } from "@/components/ui";
 import ActionPanel, { type StakeSlot } from "./ActionPanel";
 import TokenName from "./TokenName";
 import TierBadge from "./TierBadge";
+import LetterAutoRefresh from "@/components/letters/LetterAutoRefresh";
 import { useVaultTier } from "@/lib/nox";
 import { Approvals, Budgets, Inboxes, Migration, RunMsg, Schedules, Section, Testament } from "./sections";
 import { useNox } from "@/lib/hooks";
@@ -122,6 +123,7 @@ export default function VaultView({
         <Tile k="staked" v={stakes.length ? sol(stakeTotal) : "…"} />
         <Tile k={`your keys left`} v={`${left}/${total}`} warn={left < (mySlot === RECOVERY_TREE ? 4 : 20)} />
       </div>
+      <LetterAutoRefresh vault={vault} signer={signer} />
 
       <div className="grid gap-4 p-4 sm:p-5 lg:grid-cols-2 [&>*]:min-w-0">
         <div className="flex flex-col gap-3 text-[12.5px]">

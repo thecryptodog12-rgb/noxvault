@@ -348,6 +348,8 @@ export default function ActionPanel({
       case "cancel":
       case "ping":
         return { kind: { kind } };
+      case "letterKey":
+        throw new Error("Set the letter key on the Sealed letters page (/letters).");
     }
   };
 

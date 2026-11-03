@@ -51,6 +51,8 @@ owner registered. Off-chain and silent towards the attacker.
 
 ## B. Sealed letters (timelock encryption)
 
+*Implemented: see SPEC.md §12.*
+
 **Problem.** The testament moves funds, but heirs also need information: other wallets,
 instructions, passwords. Today that means trusting someone with it.
 

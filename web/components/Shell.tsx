@@ -35,6 +35,7 @@ const TOOLS = [
   { href: "/stats", label: "Stats" },
   { href: "/keylab", label: "Key Lab" },
   { href: "/duress", label: "Duress mode" },
+  { href: "/letters", label: "Sealed letters" },
   { href: "/escape", label: "Escape Hatch" },
   { href: "/scan", label: "Scan" },
   { href: "/canary", label: "Quantum canary" },

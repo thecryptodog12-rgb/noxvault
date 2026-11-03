@@ -16,6 +16,7 @@ import {
   buildSteps,
   fetchState,
   leafUsed,
+  letterKeyPda,
   mintTokenProgram,
   packSteps,
   remainingSteps,
@@ -45,7 +46,7 @@ const fromHex = (h: string, len?: number) => {
   return Uint8Array.from(Buffer.from(h, "hex"));
 };
 
-const KEY_FIELDS = new Set(["mint", "dest", "vote", "session", "newVault", "feePayee"]);
+const KEY_FIELDS = new Set(["mint", "dest", "vote", "session", "newVault", "feePayee", "key"]);
 const BIG_FIELDS = new Set(["amount", "interval", "start", "limit", "period", "expires", "fee"]);
 const NUM_FIELDS = new Set(["seed", "id", "count"]);
 
@@ -117,6 +118,11 @@ export async function checkRelay(program: Program<Noxvault>, relayer: PublicKey,
   if (!free) {
     if (!equal(s.action.feePayee, relayer.toBytes())) return `fee must be paid to ${relayer.toBase58()}`;
     if (s.action.fee < policy.minFee) return `fee must be at least ${policy.minFee} lamports`;
+    // Setting the first letter key creates an account the relayer pays rent for.
+    if (s.action.kind === "letterKey" && !(await conn.getAccountInfo(letterKeyPda(s.vault, program.programId), "confirmed"))) {
+      const min = policy.minFee + BigInt(await conn.getMinimumBalanceForRentExemption(8 + 72));
+      if (s.action.fee < min) return `fee must be at least ${min} lamports (it creates the letter key account)`;
+    }
   }
   const lamports = BigInt(await conn.getBalance(s.vault, "confirmed"));
   // A duress withdrawal is capped on chain, so its amount is not checked here.
