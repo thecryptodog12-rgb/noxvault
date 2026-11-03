@@ -44,6 +44,7 @@ const TOOLS = [
   { href: "/cosign", label: "Co-signer codes" },
   { href: "/offline", label: "Offline signing" },
   { href: "/backup", label: "Backup" },
+  { href: "/security", label: "Security & bounty" },
 ];
 
 // Mobile menu: the same pages, grouped so the list stays short.
