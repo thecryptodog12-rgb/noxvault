@@ -9,6 +9,7 @@ import { Lock } from "lucide-react";
 import { PublicKey } from "@solana/web3.js";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import {
+  DURESS_TREE,
   RECOVERY_TREE,
   SOL_MINT,
   actionDigest,
@@ -130,9 +131,12 @@ export default function ActionPanel({
   const tree = signer.tree;
   const isRecovery = tree === RECOVERY_TREE;
   const recoveryOpen = Math.floor(Date.now() / 1000) >= state.lastActive + Number(state.config.recoveryDelay);
-  const kinds = isRecovery && !recoveryOpen
-    ? RECOVERY_CANCELS.map((k) => KINDS.find((x) => x.k === k)!)
-    : KINDS;
+  const isDuress = tree === DURESS_TREE;
+  const kinds = isDuress
+    ? KINDS.filter((x) => x.k === "withdraw")
+    : isRecovery && !recoveryOpen
+      ? RECOVERY_CANCELS.map((k) => KINDS.find((x) => x.k === k)!)
+      : KINDS;
 
   const protocol = useProtocol();
   const needsGuardian = (k: KindName) => k === "schedule" || k === "budget";
@@ -174,7 +178,7 @@ export default function ActionPanel({
   const [running, setRunning] = useState(false);
 
   const sentinelFree = !!tier && tier.tier === TIER_SENTINEL && !!relayer?.sentinelFree;
-  const tokens = assets?.tokens.filter((t) => t.amount > 0n) ?? [];
+  const tokens = isDuress ? [] : assets?.tokens.filter((t) => t.amount > 0n) ?? [];
   const holding = isSol(asset) ? null : tokens.find((t) => t.mint.toBase58() === asset) ?? null;
   const usedStakes = stakes.filter((s): s is StakeSlot => !!s);
   const freeSeed = stakes.findIndex((s) => !s);
@@ -528,7 +532,12 @@ export default function ActionPanel({
   const maxAmount = () => {
     const fee = mode === "relayer" && relayer ? BigInt(relayer.minFee) : 0n;
     if (holding) return fromBaseUnits(holding.amount, holding.decimals).replace(/,/g, "");
-    const lamports = BigInt(assets?.lamports ?? 0) - fee;
+    let lamports = BigInt(assets?.lamports ?? 0) - fee;
+    if (isDuress) {
+      const cap = state.config.duressLimit - fee;
+      const free = BigInt(assets?.lamports ?? 0) - 890_880n - fee;
+      lamports = cap < free ? cap : free;
+    }
     return lamports > 0n ? fromBaseUnits(lamports, 9).replace(/,/g, "") : "0";
   };
 
@@ -561,7 +570,9 @@ export default function ActionPanel({
     <label className="flex flex-col gap-1.5">
       <Label>asset</Label>
       <select className="field" value={asset} onChange={(e) => (setAsset(e.target.value), setAmount(""))}>
-        <option value={SOL_MINT.toBase58()}>SOL — {sol(assets?.lamports ?? 0)} in vault</option>
+        <option value={SOL_MINT.toBase58()}>
+          SOL — {sol(isDuress ? Math.max(0, Math.min((assets?.lamports ?? 0) - 890_880, Number(state.config.duressLimit))) : assets?.lamports ?? 0)} in vault
+        </option>
         {tokens.map((t) => (
           <option key={t.mint.toBase58()} value={t.mint.toBase58()}>
             {short(t.mint.toBase58(), 4)} — {fromBaseUnits(t.amount, t.decimals)}

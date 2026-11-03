@@ -4,8 +4,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { PublicKey } from "@solana/web3.js";
 import {
+  DURESS_TREE,
   RECOVERY_TREE,
   executePendingIx,
+  inLockdown,
+  treeOf,
   fetchState,
   keysLeft,
   mintTokenProgram,
@@ -94,7 +97,13 @@ export default function VaultView({
   const hasRecovery = c.trees[RECOVERY_TREE].height > 0;
   const recoveryAt = state.lastActive + Number(c.recoveryDelay);
   const left = keysLeft(state, mySlot);
-  const total = 1 << c.trees[mySlot].height;
+  const total = 1 << treeOf(c, mySlot).height;
+  // Opened with the duress phrase (docs/SPEC.md §11): show an ordinary-looking vault holding only
+  // what that phrase can pay out, as signer 1, with nothing else to act on.
+  const duress = mySlot === DURESS_TREE;
+  const shownSlot = duress ? 0 : mySlot;
+  const duressShown = assets ? Math.max(0, Math.min(assets.lamports - 890_880, Number(c.duressLimit))) : 0;
+  const locked = inLockdown(state, now);
   const stakeTotal = stakes.reduce((s, x) => s + (x?.lamports ?? 0), 0);
   const tokenList = assets?.tokens.filter((t) => t.amount > 0n) ?? [];
   const windowSpent = now >= state.windowStart + 86400 ? 0n : state.windowSpent;
@@ -108,7 +117,7 @@ export default function VaultView({
             {short(vault.toBase58(), 8)}
           </a>
           <Copy value={vault.toBase58()} />
-          <span className="rounded-full border border-teal/50 px-2 py-0.5 text-[10.5px] uppercase tracking-[0.12em] text-teal">you: {slotName(mySlot)}</span>
+          <span className="rounded-full border border-teal/50 px-2 py-0.5 text-[10.5px] uppercase tracking-[0.12em] text-teal">you: {slotName(shownSlot)}</span>
           <TierBadge tier={tier} protocol={protocol} />
         </div>
         <button className="text-[10.5px] uppercase tracking-[0.14em] text-dim hover:text-teal" onClick={refresh}>
@@ -117,9 +126,9 @@ export default function VaultView({
       </div>
 
       <div className="grid grid-cols-2 gap-px bg-line md:grid-cols-4 [&>*]:min-w-0">
-        <Tile k="sol" v={assets ? sol(assets.lamports) : "…"} />
-        <Tile k="tokens" v={assets ? String(tokenList.length) : "…"} />
-        <Tile k="staked" v={stakes.length ? sol(stakeTotal) : "…"} />
+        <Tile k="sol" v={assets ? sol(duress ? duressShown : assets.lamports) : "…"} />
+        <Tile k="tokens" v={assets ? String(duress ? 0 : tokenList.length) : "…"} />
+        <Tile k="staked" v={duress ? "0" : stakes.length ? sol(stakeTotal) : "…"} />
         <Tile k={`your keys left`} v={`${left}/${total}`} warn={left < (mySlot === RECOVERY_TREE ? 4 : 20)} />
       </div>
 
@@ -128,7 +137,7 @@ export default function VaultView({
           <div>
             <Label>signers</Label>
             <div className="mt-1.5 text-mute">
-              {signerSlots.map((t) => (t === mySlot ? `${slotName(t)} (you)` : slotName(t))).join(" · ")} — {c.threshold} of {signerSlots.length} must approve
+              {signerSlots.map((t) => (t === shownSlot ? `${slotName(t)} (you)` : slotName(t))).join(" · ")} — {c.threshold} of {signerSlots.length} must approve
             </div>
           </div>
           <div>
@@ -144,7 +153,7 @@ export default function VaultView({
               </span>
             </div>
           </div>
-          {tokenList.length > 0 && (
+          {!duress && tokenList.length > 0 && (
             <div>
               <Label>tokens</Label>
               <ul className="mt-1.5 flex flex-col gap-1">
@@ -159,7 +168,7 @@ export default function VaultView({
               </ul>
             </div>
           )}
-          {stakes.some(Boolean) && (
+          {!duress && stakes.some(Boolean) && (
             <div>
               <Label>stake accounts</Label>
               <ul className="mt-1.5 flex flex-col gap-1">
@@ -194,17 +203,27 @@ export default function VaultView({
               {c.heirs.length ? `${c.heirs.length} heir(s), after ${duration(Number(c.testamentDelay))} of inactivity` : "none"}
             </div>
           </div>
-          <Pending vault={vault} state={state} onChanged={refresh} />
+          {locked && !duress && (
+            <Note kind="bad">
+              Lockdown until {dateTime(state.lockdownUntil)} ({duration(state.lockdownUntil - now)} left): the duress phrase was used. Only Ping and
+              cancels execute now. A Cancel signed by the recovery key ends the lockdown at once.
+            </Note>
+          )}
+          {!duress && <Pending vault={vault} state={state} onChanged={refresh} />}
           {readErr && <Note kind="warn">{readErr}</Note>}
         </div>
       </div>
 
-      <Approvals vault={vault} state={state} approvals={approvals} mySlot={mySlot} onChanged={refresh} onCosign={(a) => (setPreset(a), setOpen(true))} />
-      <Migration vault={vault} state={state} assets={assets} onChanged={refresh} />
-      <Schedules vault={vault} schedules={schedules} onChanged={refresh} />
-      <Budgets vault={vault} budgets={budgets} onChanged={refresh} />
-      <Testament vault={vault} state={state} assets={assets} stakes={stakes} onChanged={refresh} />
-      <Inboxes vault={vault} onChanged={refresh} />
+      {!duress && (
+        <>
+          <Approvals vault={vault} state={state} approvals={approvals} mySlot={mySlot} onChanged={refresh} onCosign={(a) => (setPreset(a), setOpen(true))} />
+          <Migration vault={vault} state={state} assets={assets} onChanged={refresh} />
+          <Schedules vault={vault} schedules={schedules} onChanged={refresh} />
+          <Budgets vault={vault} budgets={budgets} onChanged={refresh} />
+          <Testament vault={vault} state={state} assets={assets} stakes={stakes} onChanged={refresh} />
+          <Inboxes vault={vault} onChanged={refresh} />
+        </>
+      )}
 
       <Section title={mySlot === RECOVERY_TREE ? "recovery actions" : "actions"}>
         {!open ? (

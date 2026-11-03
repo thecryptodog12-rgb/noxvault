@@ -7,6 +7,7 @@ import { LAMPORTS_PER_SOL, PublicKey, SystemProgram, type TransactionInstruction
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import QRCode from "qrcode";
 import {
+  DURESS_TREE,
   RECOVERY_TREE,
   fetchState,
   findVaultsFor,
@@ -38,6 +39,13 @@ const signerCountOf = (c: { trees: { height: number }[] }) => [0, 1, 2].filter((
 const fromHex = (h: string) => Uint8Array.from(h.match(/../g)!.map((x) => parseInt(x, 16)));
 const RELAY_INIT_MIN = 0.02 * LAMPORTS_PER_SOL;
 type RecoveryMode = "none" | "code" | "generate";
+type Preset = "personal" | "team" | "slow" | "vesting";
+const PRESETS: readonly (readonly [Preset, string, string])[] = [
+  ["personal", "Personal", "just you; add what you like below"],
+  ["team", "Team multisig", "2 of 3 signers approve every action"],
+  ["slow", "Slow treasury", "every payout waits 72 h, cancellable"],
+  ["vesting", "Vesting treasury", "2 of 3 + 72 h wait; add schedules after"],
+];
 
 export default function SetupVault({ master, words, onForget }: { master: Uint8Array; words: string; onForget: () => void }) {
   const { connection, program, wallet, deployed } = useNox();
@@ -102,6 +110,29 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
   const [instantSol, setInstantSol] = useState("0");
   const [heirs, setHeirs] = useState<{ addr: string; pct: string }[]>([]);
   const [testDays, setTestDays] = useState("365");
+  const [duressWords, setDuressWords] = useState<string | null>(null);
+  const [duressRoot, setDuressRoot] = useState<Uint8Array | null>(null);
+  const [duressHanded, setDuressHanded] = useState(false);
+  const [duressBusy, setDuressBusy] = useState(false);
+  const [duressSol, setDuressSol] = useState("0.5");
+  const [duressDays, setDuressDays] = useState("3");
+  const [preset, setPreset] = useState<Preset>("personal");
+
+  const applyPreset = (p: Preset) => {
+    setPreset(p);
+    const team = p === "team" || p === "vesting";
+    const slow = p === "slow" || p === "vesting";
+    setCoCodes(team ? ["", ""] : []);
+    setThreshold(team ? 2 : 1);
+    setWhitelist([""]);
+    setStrict(false);
+    setSlowHours(slow ? "72" : "24");
+    setInstantSol(slow ? "0.01" : "0");
+    if (team || slow) {
+      setRecMode((m) => (m === "none" ? "generate" : m));
+      setRecDays("30");
+    }
+  };
   const [remember, setRemember] = useState<Remember>(() => {
     const s = loadWords();
     return s && s.words === words ? s.where : "off";
@@ -124,6 +155,26 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
     } finally {
       setRecBusy(false);
     }
+  };
+
+  // A duress phrase is a fresh 24 words of its own; its tree is vault number 0 of that phrase,
+  // in the duress seed range (docs/SPEC.md §11), so /mine finds it from the phrase alone.
+  const makeDuress = async () => {
+    setDuressBusy(true);
+    try {
+      const m = newMasterSecret();
+      const s = await getSigner(m, 0, DURESS_TREE);
+      setDuressWords(secretToWords(m));
+      setDuressRoot(s.pub.root);
+      setDuressHanded(false);
+    } finally {
+      setDuressBusy(false);
+    }
+  };
+  const dropDuress = () => {
+    setDuressWords(null);
+    setDuressRoot(null);
+    setDuressHanded(false);
   };
 
   // ---- 3. config + address ----
@@ -189,6 +240,20 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
     if (heirList.length && heirList.reduce((t, h) => t + h.bps, 0) !== 10000) return { error: "Heir shares must add up to exactly 100%." } as const;
     const tdays = Number(testDays);
     if (heirList.length && (!Number.isFinite(tdays) || tdays < 30 || tdays > 3650)) return { error: "Testament delay must be 30–3650 days." } as const;
+    let duressLimit: bigint | undefined;
+    let duressLockSecs: number | undefined;
+    if (duressRoot) {
+      if (!duressHanded) return { error: "Confirm the duress phrase is written down." } as const;
+      try {
+        duressLimit = toBaseUnits(duressSol.trim() || "0", 9);
+      } catch {
+        return { error: "The duress amount must be a number of SOL." } as const;
+      }
+      if (duressLimit <= 0n) return { error: "The duress amount must be more than 0 SOL." } as const;
+      const dd = Number(duressDays);
+      if (!Number.isFinite(dd) || dd < 1 || dd > 365) return { error: "The duress lockdown must be 1–365 days." } as const;
+      duressLockSecs = Math.round(dd * 86400);
+    }
     const restricted = wl.length > 0 || instant > 0n;
     if (instant > 0n && !strict && !wl.length && (!Number.isFinite(hours) || hours < 1)) return { error: "Delay must be at least 1 hour." } as const;
     const config = makeConfig(signer, {
@@ -201,9 +266,12 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
       instantLimitLamports: instant,
       heirs: heirList,
       testamentDelaySecs: heirList.length ? Math.round(tdays * 86400) : undefined,
+      duressRoot: duressRoot ?? undefined,
+      duressLimitLamports: duressLimit,
+      duressLockSecs,
     });
     return { config, vault: vaultOf(config, program.programId) } as const;
-  }, [signer, recMode, recCode, recRoot, recHanded, recDays, whitelist, strict, slowHours, coCodes, threshold, instantSol, heirs, testDays, program]);
+  }, [signer, recMode, recCode, recRoot, recHanded, recDays, whitelist, strict, slowHours, coCodes, threshold, instantSol, heirs, testDays, duressRoot, duressHanded, duressSol, duressDays, program]);
 
   const config = "config" in built ? built.config : null;
   const vault = "vault" in built ? built.vault : null;
@@ -356,6 +424,37 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
     <>
       <Panel title={`step 2 // settings · vault number ${vaultNumber}`}>
         <div className="flex flex-col gap-6 p-4 sm:p-5">
+          {/* presets */}
+          <div className="flex flex-col gap-3">
+            <Label>start from</Label>
+            <div className="grid gap-2 sm:grid-cols-4 [&>*]:min-w-0">
+              {PRESETS.map(([p, t, d]) => (
+                <button
+                  key={p}
+                  onClick={() => applyPreset(p)}
+                  className={`rounded-md border px-3 py-2.5 text-left ${preset === p ? "border-teal bg-teal/[0.06]" : "border-line-2"}`}
+                >
+                  <div className={`text-[12.5px] ${preset === p ? "text-teal" : ""}`}>{t}</div>
+                  <div className="mt-0.5 text-[11px] text-dim">{d}</div>
+                </button>
+              ))}
+            </div>
+            {preset !== "personal" && (
+              <Note kind="info">
+                {preset === "slow"
+                  ? "Payouts above 0.01 SOL a day wait 72 hours and show up as pending on the public treasury page, so holders see them coming. A recovery key (set below) can cancel them."
+                  : "Each co-signer opens /cosign with their own phrase and sends you a code; paste both below."}
+                {preset === "vesting" &&
+                  " After the vault exists, add a vesting schedule per team member (vault → new action → schedule). Schedules pay out on their own and are listed on the treasury page."}{" "}
+                Once it is live, its rules are public at /t/&lt;vault&gt; (see{" "}
+                <Link href="/treasury" className="underline">
+                  Treasuries
+                </Link>
+                ).
+              </Note>
+            )}
+          </div>
+
           {/* recovery */}
           <div className="flex flex-col gap-3">
             <Label>recovery key</Label>
@@ -557,6 +656,52 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
             )}
           </div>
 
+          {/* duress */}
+          <div className="flex flex-col gap-3">
+            <Label>duress phrase (optional)</Label>
+            <p className="text-[11.5px] text-dim">
+              A second set of 24 words to give up if someone forces you. Opening the vault with it pays out at most the amount below, right away, and
+              then locks the vault: only your recovery key can lift the lock. Every vault stores a duress slot, so nobody can see whether yours is real.{" "}
+              <Link href="/duress" className="underline">
+                How it works
+              </Link>
+            </p>
+            {!duressWords ? (
+              <button className="btn ghost self-start" onClick={makeDuress} disabled={duressBusy}>
+                {duressBusy ? "building…" : "make a duress phrase"}
+              </button>
+            ) : (
+              <>
+                <Note kind="warn">
+                  Write these 24 words down separately from your real phrase. They are shown once and never stored. Without a recovery key, a duress
+                  lockdown simply ends after the days below.
+                </Note>
+                <ol className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-4">
+                  {duressWords.split(" ").map((w, i) => (
+                    <li key={i} className="flex gap-2 bg-ink-2 px-3 py-1.5 text-[12.5px]">
+                      <span className="w-5 text-right text-[10px] text-dim">{i + 1}</span>
+                      {w}
+                    </li>
+                  ))}
+                </ol>
+                <label className="flex cursor-pointer items-center gap-2 text-[12.5px]">
+                  <input type="checkbox" className="accent-[#2ee6d6]" checked={duressHanded} onChange={(e) => setDuressHanded(e.target.checked)} />
+                  The duress phrase is written down.
+                </label>
+                <label className="flex flex-wrap items-center gap-3 text-[12.5px] text-mute">
+                  It pays at most
+                  <input className="field !w-24" inputMode="decimal" value={duressSol} onChange={(e) => setDuressSol(e.target.value)} />
+                  SOL at once, then locks the vault for
+                  <input className="field !w-20" inputMode="numeric" value={duressDays} onChange={(e) => setDuressDays(e.target.value)} />
+                  days.
+                </label>
+                <button className="self-start text-[11px] uppercase tracking-[0.14em] text-dim hover:text-bad" onClick={dropDuress}>
+                  [remove duress phrase]
+                </button>
+              </>
+            )}
+          </div>
+
           {/* remember */}
           <div className="flex flex-col gap-2">
             <Label>remember the words in this browser?</Label>
@@ -612,6 +757,12 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
                   {config!.heirs.length
                     ? `${config!.heirs.map((h) => `${short(new PublicKey(h.addr).toBase58(), 4)} ${h.bps / 100}%`).join(", ")} after ${duration(Number(config!.testamentDelay))} of inactivity`
                     : "none"}
+                </dd>
+                <dt className="text-dim">duress</dt>
+                <dd>
+                  {duressRoot
+                    ? `yes · pays up to ${sol(config!.duressLimit)} SOL at once, then locks for ${duration(Number(config!.duressLock))}`
+                    : "none (a decoy is stored, so no vault shows whether it has one)"}
                 </dd>
                 <dt className="text-dim">$NOX tier needed</dt>
                 <dd>

@@ -2,7 +2,7 @@
 import { useCallback, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { PublicKey } from "@solana/web3.js";
-import { fetchState, findVaultsFor, inSlot, withRetry, type Signer, type VaultStateView } from "@nox/sdk/client";
+import { DURESS_TREE, fetchState, findVaultsFor, inSlot, withRetry, type Signer, type VaultStateView } from "@nox/sdk/client";
 import { equal } from "@nox/sdk/wots";
 import { Empty, Label, Note, PageHead, Panel } from "@/components/ui";
 import SecretInput from "@/components/SecretInput";
@@ -49,6 +49,14 @@ export default function MyVaults() {
           const states = await withRetry(() => findVaultsFor(program, signer));
           if (!states.length) break;
           for (const { state, slot } of states) out.push({ n, signer: inSlot(signer, slot), state });
+          setFound([...out]);
+        }
+        // A phrase with no vault as signer may be a duress phrase: its tree is vault number 0 in
+        // the duress range (docs/SPEC.md §11). Same progress label, so the screen looks the same.
+        if (!out.length) {
+          const d = await getSigner(m, 0, DURESS_TREE, (done, total) => setProgress({ n: 0, done, total }));
+          const states = await withRetry(() => findVaultsFor(program, d));
+          for (const { state } of states) out.push({ n: 0, signer: d, state });
           setFound([...out]);
         }
         setUnfound(seen);

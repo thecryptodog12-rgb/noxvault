@@ -2,7 +2,7 @@
 // Signers for the web app: the slow public tree is built in a Web Worker and cached in
 // IndexedDB (public data only, keyed by sha256(pk_seed)). Secrets are never stored here.
 import { sha256 } from "@noble/hashes/sha256";
-import { RECOVERY_TREE, type Signer } from "@nox/sdk/client";
+import { DURESS_TREE, RECOVERY_TREE, type Signer } from "@nox/sdk/client";
 import { treeSeeds, seedIndex, rootFromPath, leafPublic, authPath, equal, type PublicTree } from "@nox/sdk/wots";
 import { hex } from "./format";
 
@@ -57,26 +57,26 @@ function getWorker(): Worker {
   return worker;
 }
 
-function buildInWorker(master: Uint8Array, vaultNumber: number, recovery: boolean, onProgress?: (d: number, t: number) => void): Promise<PublicTree> {
+function buildInWorker(master: Uint8Array, vaultNumber: number, range: 0 | 1 | 2, onProgress?: (d: number, t: number) => void): Promise<PublicTree> {
   return new Promise((resolve, reject) => {
     const id = nextId++;
     waiting.set(id, { resolve, reject, onProgress });
-    getWorker().postMessage({ id, master, vaultNumber, recovery });
+    getWorker().postMessage({ id, master, vaultNumber, range });
   });
 }
 
 /**
- * The tree of vault number `n` of this phrase, placed in `slot` (0..2 signer, 3 recovery).
- * A signer tree is the same whichever signer slot it sits in; recovery uses its own seeds.
+ * The tree of vault number `n` of this phrase, placed in `slot` (0..2 signer, 3 recovery, 4 duress).
+ * A signer tree is the same whichever signer slot it sits in; recovery and duress use their own seeds.
  * Fast when cached, a few seconds otherwise.
  */
 export async function getSigner(master: Uint8Array, vaultNumber: number, slot: number, onProgress?: (done: number, total: number) => void): Promise<Signer> {
-  const recovery = slot === RECOVERY_TREE;
-  const seeds = treeSeeds(master, seedIndex(vaultNumber, recovery ? 1 : 0));
-  const key = `${recovery ? 1 : 0}:${hex(sha256(seeds.pkSeed))}`;
+  const range = slot === RECOVERY_TREE ? 1 : slot === DURESS_TREE ? 2 : 0;
+  const seeds = treeSeeds(master, seedIndex(vaultNumber, range));
+  const key = `${range}:${hex(sha256(seeds.pkSeed))}`;
   let pub = await cacheGet(key);
   if (!pub || !equal(pub.pkSeed, seeds.pkSeed)) {
-    pub = await buildInWorker(master, vaultNumber, recovery, onProgress);
+    pub = await buildInWorker(master, vaultNumber, range, onProgress);
     await cachePut(key, pub);
   } else {
     onProgress?.(1 << pub.height, 1 << pub.height);

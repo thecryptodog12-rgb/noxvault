@@ -62,7 +62,7 @@ export default function Page() {
         <Link href="/create" className="btn">
           Create a vault <ArrowRight size={15} />
         </Link>
-        <span className="self-center text-[12.5px] text-mute">Live in the v4 program on devnet. Setting your own duress phrase in Create is coming next.</span>
+        <span className="self-center text-[12.5px] text-mute">Live on devnet. In Create, choose “make a duress phrase”; opening My vaults with it shows the duress view.</span>
       </div>
     </div>
   );
