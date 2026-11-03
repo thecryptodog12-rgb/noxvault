@@ -37,8 +37,9 @@ const TOOLS = [
   { href: "/keylab", label: "Key Lab" },
   { href: "/duress", label: "Duress mode" },
   { href: "/letters", label: "Sealed letters" },
+  { href: "/alerts", label: "Telegram alerts" },
   { href: "/escape", label: "Escape Hatch" },
-  { href: "/scan", label: "Scan" },
+  { href: "/scan", label: "Quantum scanner" },
   { href: "/canary", label: "Quantum canary" },
   { href: "/cosign", label: "Co-signer codes" },
   { href: "/offline", label: "Offline signing" },
@@ -62,6 +63,7 @@ const MOBILE_GROUPS: { label: string; items: { href: string; label: string }[] }
       { href: "/treasury", label: "Treasuries" },
       { href: "/duress", label: "Duress" },
       { href: "/letters", label: "Letters" },
+      { href: "/alerts", label: "Alerts" },
     ],
   },
   {
@@ -79,7 +81,7 @@ const MOBILE_GROUPS: { label: string; items: { href: string; label: string }[] }
       { href: "/faq", label: "FAQ" },
     ],
   },
-  { label: "tools", items: TOOLS.filter((t) => t.href !== "/duress" && t.href !== "/letters") },
+  { label: "tools", items: TOOLS.filter((t) => !["/duress", "/letters", "/alerts"].includes(t.href)) },
 ];
 
 const isActive = (path: string, href: string) => (href === "/" ? path === "/" : path.startsWith(href));

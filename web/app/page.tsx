@@ -145,6 +145,26 @@ export default function Home() {
         ))}
       </section>
 
+      {/* exposure scanner + alerts */}
+      <section className="grid gap-3 md:grid-cols-[1.4fr_1fr] [&>*]:min-w-0" data-reveal-group>
+        <Link href="/scan" data-reveal className="panel glow group flex flex-wrap items-center justify-between gap-4 p-6 transition-colors hover:border-teal">
+          <div className="min-w-0">
+            <span className="label">quantum scanner</span>
+            <div className="mt-1 text-[17px] font-bold">How much of your wallet is quantum-exposed?</div>
+            <p className="mt-1 text-[12.5px] leading-6 text-mute">Paste any Solana address. See the value one ed25519 key controls, its stake accounts and delegations. Read-only.</p>
+          </div>
+          <span className="btn shrink-0">
+            scan a wallet <ArrowRight size={15} />
+          </span>
+        </Link>
+        <Link href="/alerts" data-reveal className="panel glow group flex flex-col gap-1 p-6 transition-colors hover:border-teal">
+          <span className="label">telegram alerts</span>
+          <span className="text-[15px] font-bold">Know the moment something moves</span>
+          <span className="text-[12.5px] leading-6 text-mute">Pending payouts, lockdowns and deadlines, sent to your Telegram.</span>
+          <ArrowRight size={16} className="mt-auto self-end text-teal transition-transform group-hover:translate-x-1" />
+        </Link>
+      </section>
+
       {/* in plain words */}
       <section className="panel overflow-hidden" data-reveal>
         <div className="rv-glitch border-b border-line-2 px-6 py-4 text-[16px] font-medium tracking-[0.16em]">WHAT YOU GET</div>
