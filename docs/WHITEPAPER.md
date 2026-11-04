@@ -118,7 +118,7 @@ A vault is as strong as SHA-256 and the program's code; nothing in it depends on
 
 **One tree, one vault.** A key tree is used in exactly one vault, because the signed message names the vault.
 
-**Status:** devnet only. Unaudited. 36 end-to-end program tests (v4: duress mode and sealed letters included), plus an internal review that found and fixed one critical client issue before launch.
+**Status:** devnet only. Unaudited. 38 end-to-end program tests, 39 TypeScript and 13 Rust property tests (v4: duress mode and sealed letters included), plus an internal review that found and fixed one critical client issue before launch.
 
 ## $NOX utility
 
@@ -184,7 +184,7 @@ Noxvault is on devnet today; mainnet follows an independent audit, and governanc
 
 | Phase | Status | What it contains |
 | --- | --- | --- |
-| Build | Done | Protocol v1 to v4 (duress mode, sealed letters, treasury pages), 36 program tests |
+| Build | Done | Protocol v1 to v4 (duress mode, sealed letters, treasury pages), 38 end-to-end and 52 property tests |
 | Devnet | Now | Public testing, test $NOX tiers |
 | Audit | Next | External review, bug bounty |
 | Mainnet | After the audit gate: report public, findings fixed | Upgrade authority to a team multisig, $NOX tiers live |

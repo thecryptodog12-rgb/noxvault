@@ -25,11 +25,11 @@ Tests (not in scope, but useful):
 
 | File | Lines | What |
 |---|---:|---|
-| `tests/noxvault.ts` | 855 | 36 end-to-end tests against a local validator |
-| `tests/properties.chain.ts` | 416 | 9 on-chain property tests: 5 differential/fuzz properties (P-21..P-25) + 4 gap proofs (GAP-xx) |
-| `tests/properties.sdk.ts` | 466 | 24 pure property tests (P-01..P-20) on WOTS+ and the rules model |
+| `tests/noxvault.ts` | 855 | 38 end-to-end tests against a local validator |
+| `tests/properties.chain.ts` | 416 | 11 on-chain property tests: differential/fuzz properties + gap proofs (GAP-xx) |
+| `tests/properties.sdk.ts` | 466 | 28 pure property tests on WOTS+ and the rules model |
 | `tests/model.ts` | 164 | TypeScript model of the program's pure rules, line-referenced to `lib.rs` |
-| `programs/noxvault/tests/props.rs` | 314 | 10 Rust host property tests (R-01..R-10), incl. Rust ↔ TS parity vectors |
+| `programs/noxvault/tests/props.rs` | 314 | 13 Rust host property tests, incl. Rust ↔ TS parity vectors |
 
 Build:
 
@@ -46,7 +46,7 @@ Build:
 ```bash
 pnpm install                      # root (program tests, SDK)
 anchor build
-anchor test                       # local validator: all 36 e2e + 9 on-chain property + 24 pure property tests (~6 min)
+anchor test                       # local validator: all 38 e2e + 11 on-chain property + 28 pure property tests (~6 min)
 pnpm test:props                   # pure property tests only, no validator (~3 s)
 pnpm test:rust                    # Rust host property tests (cargo test -p noxvault --test props)
 FC_CHAIN_RUNS=20 anchor test      # more fast-check runs for the on-chain properties (slower)
