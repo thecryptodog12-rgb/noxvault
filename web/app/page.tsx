@@ -163,6 +163,16 @@ export default function Home() {
           <span className="text-[12.5px] leading-6 text-mute">Pending payouts, lockdowns and deadlines, sent to your Telegram.</span>
           <ArrowRight size={16} className="mt-auto self-end text-teal transition-transform group-hover:translate-x-1" />
         </Link>
+        <Link href="/report" data-reveal className="panel glow group flex flex-wrap items-center justify-between gap-4 p-6 transition-colors hover:border-teal md:col-span-2">
+          <div className="min-w-0">
+            <span className="label">quantum exposure report</span>
+            <div className="mt-1 text-[17px] font-bold">How much of Solana sits behind one ed25519 key?</div>
+            <p className="mt-1 text-[12.5px] leading-6 text-mute">A mainnet snapshot: the largest SOL accounts, top stablecoin and token holders, validators. Method and every account listed.</p>
+          </div>
+          <span className="btn ghost shrink-0">
+            read the report <ArrowRight size={15} />
+          </span>
+        </Link>
       </section>
 
       {/* in plain words */}
