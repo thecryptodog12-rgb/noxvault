@@ -35,6 +35,13 @@ export async function GET(req: Request, { params }: Ctx) {
     const { rules, caveats } = rulesOf(state);
     const v = key.toBase58();
     const href = (amount: string) => `${origin}/api/actions/fund/${v}?amount=${amount}`;
+    // ?amount=<SOL> (embed.js, fundLinks in the SDK) puts that amount first, unless it is a preset.
+    const asked = new URL(req.url).searchParams.get("amount");
+    const askedLamports = solToLamports(asked);
+    const suggested =
+      asked && askedLamports != null && askedLamports >= FUND_MIN_LAMPORTS && askedLamports <= FUND_MAX_LAMPORTS && !(FUND_PRESETS as readonly string[]).includes(asked)
+        ? [{ type: "transaction" as const, label: `${asked} SOL`, href: href(encodeURIComponent(asked)) }]
+        : [];
     const body: ActionGetResponse = {
       type: "action",
       icon: `${origin}/vault.png`,
@@ -43,6 +50,7 @@ export async function GET(req: Request, { params }: Ctx) {
       label: "Fund",
       links: {
         actions: [
+          ...suggested,
           ...FUND_PRESETS.map((a) => ({ type: "transaction" as const, label: `${a} SOL`, href: href(a) })),
           {
             type: "transaction" as const,

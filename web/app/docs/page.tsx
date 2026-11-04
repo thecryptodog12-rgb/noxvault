@@ -24,6 +24,7 @@ const TOC = [
   ["escape", "Escape Hatch & registry"],
   ["canary", "Quantum canary"],
   ["keeper", "Relayer & keeper"],
+  ["integrate", "Integrate"],
   ["flow", "On-chain flow"],
   ["once", "One key, one message"],
   ["offline", "Offline & backups"],
@@ -288,6 +289,44 @@ export default function Docs() {
             Both are <strong>conveniences, not trust assumptions</strong>. Neither can change anything that was signed: one changed
             byte and the signature no longer verifies, and permissionless instructions only do what the rules already allow. The
             worst they can do is refuse or be slow; then anyone, you included, can send the same transactions.
+          </p>
+
+          <h2 id="integrate">Integrate</h2>
+          <p>
+            Funding a vault needs no signature from the vault: it is a plain transfer to the vault address, or to the vault&apos;s
+            token account for SPL tokens. Wallets and apps can build that transfer with the TypeScript SDK, and any website can
+            add a fund button with one script tag. Both run on <strong>devnet</strong>; the program is <strong>unaudited</strong>.
+          </p>
+          <p>
+            <strong>SDK.</strong> <code>npm install @noxvault/sdk @solana/web3.js @coral-xyz/anchor @solana/spl-token</code>. It
+            ships the program id and IDL, the vault/state addresses, account decoders, the fund instructions and{" "}
+            <code>explainError</code>; everything this site and the relayer use.
+          </p>
+          <pre className="not-prose my-4 overflow-x-auto rounded border border-line bg-ink-2 p-3 text-[12px] text-bone">
+            {`import { Connection, PublicKey, Transaction } from "@solana/web3.js";
+import { readProgram, fetchState, fundVaultIx, buildFundTokenIxs } from "@noxvault/sdk";
+
+const connection = new Connection("https://api.devnet.solana.com", "confirmed");
+const vault = new PublicKey("<vault address>");
+if (!(await fetchState(readProgram(connection), vault))) throw new Error("not a Noxvault");
+
+// SOL: one SystemProgram transfer, signed by the payer's wallet
+const tx = new Transaction().add(fundVaultIx({ vault, from: wallet.publicKey, lamports: 100_000_000n }));
+// SPL / Token-2022: creates the vault's token account if needed, then transfer_checked
+const ixs = await buildFundTokenIxs(connection, { vault, from: wallet.publicKey, mint, amount: 5_000_000n });`}
+          </pre>
+          <p>
+            <strong>Fund button.</strong> Add the script once and mark any link with the vault address. It becomes a &quot;Fund this
+            vault (quantum-safe)&quot; button that opens the fund Blink in a new tab; <code>data-open=&quot;site&quot;</code> opens
+            the vault&apos;s public treasury page instead. No dependencies, under 5 KB.
+          </p>
+          <pre className="not-prose my-4 overflow-x-auto rounded border border-line bg-ink-2 p-3 text-[12px] text-bone">
+            {`<script src="https://www.nox-vault.com/embed.js" async></script>
+<a data-noxvault-fund="<vault address>" data-amount="0.1"></a>`}
+          </pre>
+          <p>
+            The same data is available without code: <code>/api/treasury/&lt;vault&gt;</code> (JSON), <code>/t/&lt;vault&gt;</code>{" "}
+            and the Solana Action at <code>/api/actions/fund/&lt;vault&gt;</code>. The SDK README has a React example.
           </p>
 
           <h2 id="flow">On-chain flow</h2>

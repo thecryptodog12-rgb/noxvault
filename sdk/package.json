@@ -1,0 +1,77 @@
+{
+  "name": "@noxvault/sdk",
+  "version": "0.4.1",
+  "description": "TypeScript SDK for Noxvault: quantum-resistant Solana vaults secured by WOTS+ hash-based one-time signatures. Devnet, unaudited.",
+  "author": "thecryptodog12",
+  "license": "Apache-2.0",
+  "homepage": "https://www.nox-vault.com/docs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thecryptodog12/noxvault.git",
+    "directory": "sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/thecryptodog12/noxvault/issues"
+  },
+  "keywords": [
+    "solana",
+    "vault",
+    "quantum-resistant",
+    "post-quantum",
+    "wots",
+    "winternitz",
+    "hash-based-signatures",
+    "merkle",
+    "anchor",
+    "multisig",
+    "blinks"
+  ],
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./idl.json": "./idl/noxvault.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "idl/noxvault.json",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit -p tsconfig.build.json",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "@noble/hashes": "^1.8.0",
+    "@scure/bip39": "^1.6.0"
+  },
+  "peerDependencies": {
+    "@coral-xyz/anchor": "^0.31.0",
+    "@solana/spl-token": "^0.4.9",
+    "@solana/web3.js": "^1.95.0"
+  },
+  "devDependencies": {
+    "tsup": "8.5.1",
+    "typescript": "5.9.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

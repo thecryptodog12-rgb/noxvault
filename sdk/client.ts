@@ -1,7 +1,8 @@
 // Noxvault v4 client: secrets, vault configs, addresses, action plans, history, preflight and
 // builders for every permissionless instruction. See docs/SPEC.md; every rule a client must
 // follow lives in this file.
-import { BN, BorshInstructionCoder, Program } from "@coral-xyz/anchor";
+import * as anchor from "@coral-xyz/anchor";
+import type { BN, BorshInstructionCoder, Program } from "@coral-xyz/anchor";
 import {
   ComputeBudgetProgram,
   Connection,
@@ -210,7 +211,10 @@ export function makeConfig(primary: Signer, s: VaultSettings = {}): Config {
 }
 
 const pk = (b: Uint8Array) => new PublicKey(b);
-const bn = (n: bigint) => new BN(n.toString());
+// Node's ESM loader only sees the names cjs-module-lexer finds in anchor's CommonJS build, and BN
+// is not one of them; bundlers see the ESM build. Read it from whichever object has it.
+const BNCtor: typeof anchor.BN = ((m: { BN?: typeof anchor.BN; default?: { BN: typeof anchor.BN } }) => m.BN ?? m.default!.BN)(anchor as never);
+const bn = (n: bigint) => new BNCtor(n.toString());
 
 export function toAnchorConfig(c: Config) {
   const pad = <T>(xs: T[], e: T) => [...xs, ...Array(4 - xs.length).fill(e)];
