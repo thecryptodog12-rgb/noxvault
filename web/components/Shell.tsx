@@ -40,6 +40,7 @@ const TOOLS = [
   { href: "/alerts", label: "Telegram alerts" },
   { href: "/escape", label: "Escape Hatch" },
   { href: "/scan", label: "Quantum scanner" },
+  { href: "/report", label: "Exposure report" },
   { href: "/canary", label: "Quantum canary" },
   { href: "/cosign", label: "Co-signer codes" },
   { href: "/offline", label: "Offline signing" },
