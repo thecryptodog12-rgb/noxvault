@@ -159,6 +159,13 @@ export default function Page() {
           Planned scope: the Noxvault program first, then the SDK&apos;s signing and encoding code. Planned to be out of scope: issues already listed in the audit documents,
           attacks that need a user&apos;s phrase or key (except where the vault rules should still limit them), third-party services, and social engineering.
         </p>
+        <p className="mt-3 text-[12.5px] leading-6 text-mute">
+          After the audit, a public challenge vault on mainnet will hold a bounty of its own: everything about it is public except the phrase.{" "}
+          <Link href="/challenge" className="text-teal underline">
+            Crack this vault
+          </Link>{" "}
+          explains the rules.
+        </p>
       </div>
 
       <div className="flex flex-wrap gap-3">

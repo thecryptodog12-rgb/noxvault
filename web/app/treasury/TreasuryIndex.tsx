@@ -14,36 +14,13 @@ import { scanTreasuries } from "@/lib/stats";
 import { tiersFor } from "@/lib/tiers";
 import { TIER_GUARDIAN, TIER_NAMES, TIER_SENTINEL, loadProtocol } from "@/lib/nox";
 import { X_URL } from "@/lib/config";
+import { ProgramSteps } from "@/components/TreasuryProgram";
 
 const WHY = [
   { Icon: Users, t: "Multi-signer", d: "2 of 3 team members must sign every payout. One leaked key moves nothing." },
   { Icon: Clock, t: "Public delay", d: "Payouts to unknown addresses wait in public, so holders see them coming and recovery can cancel." },
   { Icon: BadgeCheck, t: "Live proof", d: "A public page and badge read the rules from the chain. Nobody can fake or change them." },
   { Icon: Code2, t: "Badge + API", d: "Embed the badge on your site or listing; bots read the JSON endpoint." },
-];
-
-const PROGRAM_STEPS = [
-  {
-    k: "01",
-    t: "preset",
-    d: (
-      <>
-        Open <Link href="/create" className="underline">create</Link> and pick the <span className="text-bone">Vesting treasury</span> or{" "}
-        <span className="text-bone">Team multisig</span> preset: 2 of 3 signers, a recovery key and a public delay. Multi-signer vaults need the
-        Sentinel tier ($NOX held in the vault).
-      </>
-    ),
-  },
-  {
-    k: "02",
-    t: "fund",
-    d: "Move the treasury, team tokens or LP tokens into the vault address. Add a schedule per team member for vesting; schedules pay out on fixed dates.",
-  },
-  {
-    k: "03",
-    t: "badge",
-    d: "Your treasury gets a public page at /t/<vault> with an embed snippet. Put the badge on your site so holders can check the rules themselves.",
-  },
 ];
 
 const PAGE = 50;
@@ -406,15 +383,7 @@ export default function TreasuryIndex() {
             <h2 className="max-w-3xl text-[20px] font-bold leading-snug sm:text-[24px]">
               Token projects: put your treasury in a Noxvault and add the <span className="text-teal">badge</span> to your site.
             </h2>
-            <ol className="grid gap-px bg-line md:grid-cols-3">
-              {PROGRAM_STEPS.map((s) => (
-                <li key={s.k} className="bg-ink p-4 sm:p-5">
-                  <div className="text-[11px] text-dim">{s.k}</div>
-                  <div className="mt-1 text-[18px] font-bold uppercase text-teal">{s.t}</div>
-                  <p className="mt-2 text-[12.5px] leading-relaxed text-mute">{s.d}</p>
-                </li>
-              ))}
-            </ol>
+            <ProgramSteps />
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-[12.5px] text-mute">
                 Questions about the setup? DM{" "}
@@ -429,6 +398,9 @@ export default function TreasuryIndex() {
                 </a>
                 <Link href="/create" className="btn ghost">
                   start with a preset
+                </Link>
+                <Link href="/for-projects" className="btn ghost">
+                  full guide for projects
                 </Link>
               </div>
             </div>

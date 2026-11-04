@@ -35,19 +35,12 @@ import { TIER_FREE, TIER_NAMES, TIER_SENTINEL, noxAmount, useVaultTier } from "@
 import TierBadge from "@/components/vault/TierBadge";
 import TierHint from "@/components/vault/TierHint";
 import { NOX_CA } from "@/lib/config";
+import { PRESETS, type Preset } from "@/lib/presets";
 
 const signerCountOf = (c: { trees: { height: number }[] }) => [0, 1, 2].filter((t) => c.trees[t].height > 0).length;
 const fromHex = (h: string) => Uint8Array.from(h.match(/../g)!.map((x) => parseInt(x, 16)));
 const RELAY_INIT_MIN = 0.02 * LAMPORTS_PER_SOL;
 type RecoveryMode = "none" | "code" | "generate";
-type Preset = "personal" | "team" | "slow" | "vesting" | "dao";
-const PRESETS: readonly (readonly [Preset, string, string])[] = [
-  ["personal", "Personal", "just you; add what you like below"],
-  ["team", "Team multisig", "2 of 3 signers approve every action"],
-  ["slow", "Slow treasury", "every payout waits 72 h, cancellable"],
-  ["vesting", "Vesting treasury", "2 of 3 + 72 h wait; add schedules after"],
-  ["dao", "DAO treasury", "pays out only to a Squads or Realms address"],
-];
 
 /** The DAO preset's one destination: any valid public key (Squads vaults and Realms treasuries are PDAs). */
 function daoCheck(raw: string): { ok: true; pda: boolean } | { ok: false; error: string } | null {

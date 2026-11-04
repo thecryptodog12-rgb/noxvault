@@ -45,6 +45,8 @@ const TOOLS = [
   { href: "/offline", label: "Offline signing" },
   { href: "/backup", label: "Backup" },
   { href: "/security", label: "Security & bounty" },
+  { href: "/challenge", label: "Crack this vault" },
+  { href: "/for-projects", label: "For projects" },
 ];
 
 // Mobile menu: the same pages, grouped so the list stays short.
