@@ -65,6 +65,9 @@
     ".next-local/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "../sdk/tsup.config.ts",
+    "../sdk/dist",
+    "../sdk/node_modules"
   ]
 }
