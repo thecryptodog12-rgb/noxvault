@@ -1,0 +1,170 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+@font-face{font-family:J;src:url(JetBrainsMono-Regular.ttf);font-weight:400}
+@font-face{font-family:J;src:url(JetBrainsMono-Bold.ttf);font-weight:700}
+@font-face{font-family:J;src:url(JetBrainsMono-ExtraBold.ttf);font-weight:800}
+:root{--ink:#03070a;--ink2:#060c0f;--ink3:#0a1418;--line:#15262b;--line2:#213a40;--dim:#5f7479;--mute:#93a5a9;--bone:#e6f0ef;--teal:#2ee6d6;--tealdim:#16564f;--warn:#ffb547;--bad:#ff6b7a}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1920px;height:1080px;overflow:hidden;background:var(--ink);color:var(--bone);font-family:J,monospace;-webkit-font-smoothing:antialiased}
+#bg{position:absolute;inset:0;background:
+ radial-gradient(1200px 700px at 50% 120%,rgba(46,230,214,.10),transparent 60%),
+ linear-gradient(var(--line) 1px,transparent 1px) 0 0/80px 80px,
+ linear-gradient(90deg,var(--line) 1px,transparent 1px) 0 0/80px 80px;opacity:.55}
+#vig{position:absolute;inset:0;background:radial-gradient(ellipse at center,transparent 45%,rgba(3,7,10,.9) 100%)}
+.brand{position:absolute;left:72px;top:56px;display:flex;align-items:center;gap:16px;font-weight:800;letter-spacing:.32em;font-size:22px;color:var(--mute)}
+.brand img{width:40px;height:40px}
+.cap{position:absolute;left:0;right:0;top:150px;text-align:center;font-weight:800;font-size:68px;letter-spacing:-.01em;line-height:1.15}
+.sub{position:absolute;left:0;right:0;top:250px;text-align:center;font-size:30px;color:var(--mute)}
+.scene{position:absolute;inset:0}
+.card{position:absolute;background:linear-gradient(180deg,var(--ink3),var(--ink2));border:2px solid var(--line2);border-radius:20px;padding:40px 48px}
+.label{font-size:22px;letter-spacing:.25em;color:var(--dim);font-weight:700}
+.bal{font-size:96px;font-weight:800;margin-top:10px}
+.bal small{font-size:40px;color:var(--mute);font-weight:700}
+.row{margin-top:28px;font-size:28px;color:var(--mute);display:flex;gap:18px;align-items:center}
+.chip{display:inline-block;padding:8px 18px;border-radius:999px;font-size:22px;font-weight:800;letter-spacing:.15em}
+.seed{position:absolute;left:50%;top:380px;transform:translateX(-50%);width:1240px;display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
+.w{border:2px solid var(--line2);background:var(--ink3);border-radius:14px;padding:18px 22px;font-size:30px;display:flex;gap:14px}
+.w i{font-style:normal;color:var(--dim)}
+.tg{position:absolute;width:760px;right:110px;top:390px;background:#17212b;border-radius:28px;padding:30px 36px;box-shadow:0 30px 80px rgba(0,0,0,.6);font-size:27px;line-height:1.5}
+.tg .h{display:flex;gap:16px;align-items:center;margin-bottom:16px;font-weight:700;font-size:26px}
+.tg .av{width:52px;height:52px;border-radius:50%;background:var(--ink);display:grid;place-items:center;border:2px solid var(--tealdim)}
+.tg .av img{width:32px}
+.tg .t{color:#7f91a4;font-weight:400;font-size:22px;margin-left:auto}
+.btn{position:absolute;padding:26px 44px;border-radius:16px;font-size:32px;font-weight:800;border:2px solid var(--bad);color:var(--bad);background:rgba(255,107,122,.08)}
+.cursor{position:absolute;width:44px;height:44px}
+.end{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+.end img{width:150px;height:150px}
+.end .n{font-size:84px;font-weight:800;letter-spacing:.3em;margin-top:36px;margin-left:.3em}
+.end .tl{font-size:44px;font-weight:700;margin-top:30px}
+.end .u{font-size:40px;color:var(--teal);margin-top:44px;font-weight:700}
+.end .f{font-size:22px;color:var(--dim);margin-top:20px;letter-spacing:.12em}
+</style></head>
+<body>
+<div id="bg"></div><div id="vig"></div>
+<div class="brand" id="brand"><img src="icon.svg">NOXVAULT</div>
+
+<!-- 1: seed found -->
+<div class="scene" id="s1">
+  <div class="cap" id="c1"></div>
+  <div class="sub" id="u1">They import it into a wallet. Nothing on-chain can see that.</div>
+  <div class="seed" id="seed"></div>
+</div>
+
+<!-- 2: normal wallet -->
+<div class="scene" id="s2">
+  <div class="cap">A normal wallet: <span style="color:var(--bad)">gone</span> in one signature.</div>
+  <div class="card" style="left:50%;top:380px;transform:translateX(-50%);width:900px">
+    <div class="label">ORDINARY WALLET</div>
+    <div class="bal" id="b2">42.00 <small>SOL</small></div>
+    <div class="row" id="r2"><span>send 42 SOL → 7xQf…9kLm</span><span class="chip" id="k2" style="background:rgba(255,107,122,.15);color:var(--bad)">CONFIRMED</span></div>
+  </div>
+</div>
+
+<!-- 3-5: noxvault -->
+<div class="scene" id="s3">
+  <div class="cap" id="c3"></div>
+  <div class="sub" id="u3"></div>
+  <div class="card" id="vc" style="top:390px;width:900px">
+    <div class="label">NOXVAULT · 8Hk2…vQ4n</div>
+    <div class="bal" id="b3">42.00 <small>SOL</small></div>
+    <div class="row" id="r3"><span>withdraw 42 SOL → 7xQf…9kLm</span></div>
+    <div class="row" id="r3b"><span class="chip" id="k3">PENDING</span><span id="cd" style="font-size:44px;font-weight:800;color:var(--bone)">72:00:00</span></div>
+  </div>
+  <div class="tg" id="tg">
+    <div class="h"><div class="av"><img src="icon.svg"></div>Noxvault alerts<span class="t">now</span></div>
+    ⚠️ Vault 8Hk2…vQ4n: new pending withdrawal of 42 SOL to 7xQf…9kLm.<br>
+    Executes in 71 h 59 m.<br>
+    If this is not you, cancel it with your recovery key.
+  </div>
+  <div class="card" id="rp" style="left:1090px;top:400px;width:720px;height:200px;padding:32px 40px"><div class="label">RECOVERY PHRASE</div><div id="rpd" style="font-size:30px;margin-top:14px;letter-spacing:.02em;line-height:1.5;color:var(--mute)"></div></div>
+  <div class="btn" id="btn">Cancel withdrawal</div>
+  <svg class="cursor" id="cur" viewBox="0 0 24 24"><path d="M4 2l16 10-7 1.5L9.5 21z" fill="#e6f0ef" stroke="#03070a" stroke-width="1.2"/></svg>
+</div>
+
+<!-- 6: end -->
+<div class="scene end" id="s6">
+  <img src="icon.svg">
+  <div class="n">NOXVAULT</div>
+  <div class="tl">A leaked seed phrase shouldn't cost you everything.</div>
+  <div class="u">nox-vault.com</div>
+  <div class="f">QUANTUM-SAFE VAULTS ON SOLANA · LIVE ON DEVNET · UNAUDITED</div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const cl=(x,a=0,b=1)=>Math.min(b,Math.max(a,x));
+const lin=(t,a,b)=>cl((t-a)/(b-a));
+const ease=x=>x<.5?4*x*x*x:1-Math.pow(-2*x+2,3)/2;
+const out=x=>1-Math.pow(1-x,3);
+// visible between a and b with fades
+const vis=(t,a,b,f=.4)=>Math.min(lin(t,a,a+f),1-lin(t,b-f,b));
+const type=(s,t,a,cps=28)=>s.slice(0,Math.max(0,Math.floor((t-a)*cps)));
+const WORDS=["orbit","velvet","canyon","salt","ember","ladder","quiet","harbor","mosaic","tiger","lunar","fossil"];
+$("seed").innerHTML=WORDS.map((w,i)=>`<div class="w" id="w${i}"><i>${String(i+1).padStart(2,"0")}</i><span>${w}</span></div>`).join("");
+function setOp(el,o,dy=0){el.style.opacity=o;el.style.transform=(el.dataset.base||"")+` translateY(${(1-o)*dy}px)`;}
+const fmt=s=>{s=Math.max(0,Math.floor(s));const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return [h,m,x].map(v=>String(v).padStart(2,"0")).join(":")};
+
+window.render=function(t){
+  // ---------- scene 1: 0–5.2
+  const o1=vis(t,0,5.2,.5); $("s1").style.opacity=o1;
+  const cap1="Someone just found your seed phrase.";
+  $("c1").textContent=type(cap1,t,.3,24)+(t<2&&Math.floor(t*2.5)%2?"▌":"");
+  $("u1").style.opacity=lin(t,2.0,2.6);
+  WORDS.forEach((w,i)=>{const e=$("w"+i);const a=1.4+i*.14;e.style.opacity=lin(t,a,a+.25);e.style.transform=`translateY(${(1-out(lin(t,a,a+.35)))*20}px)`;
+    const hot=lin(t,3.6,4.0); e.style.borderColor=hot>0?`rgba(255,107,122,${.3+.5*hot})`:"";});
+
+  // ---------- scene 2: 5.2–10.4
+  $("s2").style.opacity=vis(t,5.2,10.4,.5);
+  $("r2").style.opacity=lin(t,6.6,7.0);
+  $("k2").style.opacity=lin(t,7.6,7.8);
+  const drain=ease(lin(t,7.7,8.5)); $("b2").innerHTML=(42*(1-drain)).toFixed(2)+" <small>SOL</small>";
+  $("b2").style.color=drain>0.99?"var(--bad)":"";
+
+  // ---------- scenes 3–5: 10.4–26.8
+  const s3=vis(t,10.4,26.8,.5); $("s3").style.opacity=s3;
+  // captions
+  let cap="",sub="";
+  if(t<17.2){cap="A Noxvault makes new payouts wait.";sub="72 hours, or whatever delay you set when you create it.";}
+  else if(t<21.6){cap="And you get a warning.";sub="Telegram alert the moment a payout is queued.";}
+  else {cap="Cancel it with your recovery phrase.";sub="A second phrase, kept somewhere else. The thief doesn't have it.";}
+  const capFade = t<17.2? lin(t,10.6,11.0) : t<21.6? lin(t,17.2,17.6) : lin(t,21.6,22.0);
+  $("c3").textContent=cap; $("u3").textContent=sub; $("c3").style.opacity=capFade; $("u3").style.opacity=capFade;
+  // vault card position: centered, slides left when alert appears
+  const slide=ease(lin(t,17.3,18.1));
+  const left=510-slide*390; $("vc").style.left=left+"px";
+  $("r3").style.opacity=lin(t,12.0,12.4);
+  $("r3b").style.opacity=lin(t,12.8,13.2);
+  // countdown: runs from 72:00:00 down a little each second
+  const cancelled=t>=23.9;
+  const elapsed = cl(t-13.2,0,99)*37; // compressed clock
+  $("cd").textContent=cancelled?"":fmt(72*3600-elapsed);
+  const k=$("k3");
+  if(cancelled){k.textContent="CANCELLED";k.style.background="rgba(46,230,214,.15)";k.style.color="var(--teal)";}
+  else{k.textContent="PENDING";k.style.background="rgba(255,181,71,.15)";k.style.color="var(--warn)";}
+  $("cd").style.color="var(--bone)";
+  const safe=lin(t,24.1,24.5);
+  $("b3").innerHTML=`42.00 <small>SOL</small>`+(safe>0?` <small style="color:var(--teal);opacity:${safe}">· safe</small>`:"");
+  $("vc").style.borderColor=cancelled?"var(--tealdim)":(t>12.8?"rgba(255,181,71,.45)":"");
+  // telegram
+  const tgIn=out(lin(t,18.0,18.7));
+  $("tg").style.opacity=tgIn*(1-lin(t,21.5,21.9));
+  const rpo=lin(t,21.9,22.3)*(1-lin(t,25.0,25.4)); $("rp").style.opacity=rpo; $("rpd").textContent="•••• ".repeat(Math.min(12,Math.floor(cl(t-22.2,0,9)*14))).trim()||" ";
+  $("tg").style.transform=`translateX(${(1-tgIn)*120}px)`;
+  // button + cursor
+  const bIn=lin(t,22.5,22.9);
+  const btn=$("btn"); btn.style.opacity=bIn*(1-lin(t,25.0,25.4)); btn.style.left="1090px"; btn.style.top="640px";
+  const press=t>23.6&&t<23.9; btn.style.transform=press?"scale(.95)":"";
+  btn.style.background=press?"rgba(255,107,122,.25)":"rgba(255,107,122,.08)";
+  const cm=ease(lin(t,22.8,23.5)); const cur=$("cur");
+  cur.style.opacity=bIn*(1-lin(t,25.0,25.4));
+  cur.style.left=(1700-cm*330)+"px"; cur.style.top=(940-cm*250)+"px";
+  // ---------- scene 6: 26.8–30
+  const o6=lin(t,26.9,27.5); $("s6").style.opacity=o6;
+  $("s6").children[0].style.transform=`scale(${.8+.2*out(lin(t,26.9,27.7))})`;
+  [...$("s6").children].forEach((c,i)=>{if(i>1){c.style.opacity=lin(t,27.4+i*.25,27.8+i*.25);}});
+  $("brand").style.opacity=1-o6;
+};
+render(0);
+</script>
+</body></html>
