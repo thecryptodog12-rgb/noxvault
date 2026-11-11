@@ -619,7 +619,7 @@
     {
       "name": "execute_admin",
       "docs": [
-        "Cancel, Ping, CancelSchedule, CancelBudget and Migrate."
+        "Cancel, CancelLock, Ping, CancelSchedule, CancelBudget and Migrate."
       ],
       "discriminator": [
         194,
@@ -4298,6 +4298,16 @@
       "code": 6044,
       "name": "DurationTooLong",
       "msg": "A delay, lock, interval or period is longer than 10 years"
+    },
+    {
+      "code": 6045,
+      "name": "CancelLockNeedsRecovery",
+      "msg": "Only an approval that includes the recovery tree can cancel and freeze the vault"
+    },
+    {
+      "code": 6046,
+      "name": "LockOutOfRange",
+      "msg": "A freeze lasts at least 1 day and at most 90 days"
     }
   ],
   "types": [
@@ -4714,6 +4724,15 @@
               {
                 "name": "key",
                 "type": "pubkey"
+              }
+            ]
+          },
+          {
+            "name": "CancelLock",
+            "fields": [
+              {
+                "name": "secs",
+                "type": "i64"
               }
             ]
           }
@@ -5235,7 +5254,8 @@
           {
             "name": "lockdown_until",
             "docs": [
-              "Until then only Ping and cancels execute (set by a duress withdrawal, docs/SPEC.md §11)."
+              "Until then the signers alone execute only Ping and cancels (set by a duress withdrawal,",
+              "docs/SPEC.md §11, or by a recovery `CancelLock`, v4.2)."
             ],
             "type": "i64"
           }

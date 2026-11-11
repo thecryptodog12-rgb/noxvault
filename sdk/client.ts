@@ -1,4 +1,4 @@
-// Noxvault v4 client: secrets, vault configs, addresses, action plans, history, preflight and
+// Noxvault v4.2 client: secrets, vault configs, addresses, action plans, history, preflight and
 // builders for every permissionless instruction. See docs/SPEC.md; every rule a client must
 // follow lives in this file.
 import * as anchor from "@coral-xyz/anchor";
@@ -16,6 +16,8 @@ import {
   SYSVAR_STAKE_HISTORY_PUBKEY,
   Transaction,
   TransactionInstruction,
+  TransactionMessage,
+  VersionedTransaction,
 } from "@solana/web3.js";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -81,6 +83,11 @@ export const DAY = 86_400;
 export const MAX_ACTION_FEE = 10_000_000n; // 0.01 SOL
 /** Longest delay, lock, schedule interval or budget period the program accepts (10 years). */
 export const MAX_DURATION_SECS = 10 * 365 * DAY;
+/** v4.2: bounds of a recovery CancelLock freeze (MIN_CANCEL_LOCK / MAX_CANCEL_LOCK in state.rs). */
+export const MIN_CANCEL_LOCK_SECS = DAY;
+export const MAX_CANCEL_LOCK_SECS = 90 * DAY;
+/** The freeze the apps offer by default when the recovery phrase cancels a payout. */
+export const DEFAULT_CANCEL_LOCK_DAYS = 14;
 
 /** Hash calls one transaction may spend. Measured ~180 CU each; 6500 stays well under 1.4M CU. */
 export const HASHES_PER_TX = 6500;
@@ -260,6 +267,8 @@ export function toAnchorAction(a: Action) {
         return { migrate: { newVault: pk(a.newVault) } };
       case "letterKey":
         return { letterKey: { key: pk(a.key) } };
+      case "cancelLock":
+        return { cancelLock: { secs: bn(a.secs) } };
     }
   })();
   return { kind, fee: bn(a.fee), feePayee: pk(a.feePayee) };
@@ -292,6 +301,8 @@ export function actionFromAnchor(a: { kind: Record<string, Record<string, any>>;
       return { kind, newVault: k(f.newVault ?? f.new_vault), ...fee };
     case "letterKey":
       return { kind, key: k(f.key), ...fee };
+    case "cancelLock":
+      return { kind, secs: n(f.secs), ...fee };
   }
   throw new Error(`unknown action ${kind}`);
 }
@@ -517,7 +528,7 @@ export function decodeState(program: Program<Noxvault>, data: Buffer): VaultStat
   };
 }
 
-/** Whether the vault is in lockdown after a duress withdrawal (docs/SPEC.md §11). */
+/** Whether the vault is in lockdown: after a duress withdrawal or a recovery CancelLock (docs/SPEC.md §11). */
 export function inLockdown(state: VaultStateView, now = Math.floor(Date.now() / 1000)): boolean {
   return now < state.lockdownUntil;
 }
@@ -557,7 +568,10 @@ export const PROGRAM_ERROR_TEXT: Record<string, string> = {
     "Session budgets only pay non-restricted destinations: a whitelisted address, or any address on a vault without an instant limit.",
   DurationTooLong: "A delay, interval or period is longer than 10 years.",
   NotWhitelisted: "The vault's rules do not allow this destination.",
-  Lockdown: "The vault is in lockdown: only Ping and cancels execute until it ends (the recovery key's Cancel ends it).",
+  Lockdown:
+    "The vault is in lockdown (frozen): its signers alone can only Ping or cancel until it ends. The recovery phrase's Cancel ends it; the owner and recovery phrases together can still act, e.g. escape to a new vault.",
+  CancelLockNeedsRecovery: "Only the recovery phrase can cancel and freeze the vault.",
+  LockOutOfRange: "A freeze lasts at least 1 day and at most 90 days.",
   PendingExists: "Something is already pending. Wait for it or cancel it first.",
   RecoveryLocked: "The recovery key can only cancel until the owner has been inactive long enough.",
   KeyUsed: "This one-time key has already been used.",
@@ -635,14 +649,33 @@ export async function vaultApprovals(program: Program<Noxvault>, vault: PublicKe
 
 const isCancelKind = (a: Action) => a.kind === "cancel" || a.kind === "cancelSchedule" || a.kind === "cancelBudget";
 
-/** Whether an approval set (bitmap) lets the action execute now (docs/SPEC.md §4, §11). */
+/** v4.2: a CancelLock freeze within [MIN_CANCEL_LOCK_SECS, MAX_CANCEL_LOCK_SECS]. */
+export function cancelLockInBounds(secs: bigint): boolean {
+  return secs >= BigInt(MIN_CANCEL_LOCK_SECS) && secs <= BigInt(MAX_CANCEL_LOCK_SECS);
+}
+
+/**
+ * v4.2: the recovery phrase's anti-theft cancel. Clears the pending payout or migration like
+ * `cancel`, then freezes the vault for `days` (1 to 90): the signers alone can only Ping or cancel
+ * until then, and their approvals no longer count as activity. Owner + recovery together still act.
+ */
+export function cancelLockAction(days: number = DEFAULT_CANCEL_LOCK_DAYS, fee = 0n, feePayee: Uint8Array = ZERO32): Action {
+  const secs = BigInt(Math.round(days * DAY));
+  if (!cancelLockInBounds(secs)) throw new Error("A freeze lasts 1 to 90 days.");
+  return { kind: "cancelLock", secs, fee, feePayee };
+}
+
+/** Whether an approval set (bitmap) lets the action execute now (docs/SPEC.md §4, §11; state.rs approval_mode). */
 export function canExecute(state: VaultStateView, trees: number, action: Action, now = Math.floor(Date.now() / 1000)): boolean {
   const signers = [0, 1, 2].filter((t) => trees & (1 << t)).length;
+  const recovery = (trees & (1 << RECOVERY_TREE)) !== 0;
   if (action.fee > MAX_ACTION_FEE) return false;
-  if (signers >= state.config.threshold)
-    return !inLockdown(state, now) || ((isCancelKind(action) || action.kind === "ping") && (action.fee === 0n || (trees & (1 << RECOVERY_TREE)) !== 0));
+  // v4.2: CancelLock executes only with the recovery tree, at any time.
+  if (action.kind === "cancelLock") return recovery && cancelLockInBounds(action.secs);
+  // v4.2: a lockdown only binds approvals without the recovery tree.
+  if (signers >= state.config.threshold) return !inLockdown(state, now) || recovery || ((isCancelKind(action) || action.kind === "ping") && action.fee === 0n);
   if (action.kind === "letterKey") return false; // signers only (docs/SPEC.md §12)
-  if (trees & (1 << RECOVERY_TREE)) {
+  if (recovery) {
     if (isCancelKind(action)) return true;
     return now >= state.lastActive + Number(state.config.recoveryDelay);
   }
@@ -763,6 +796,12 @@ export interface ActionParams {
   hashesPerTx?: number;
   /** Execute right after approving. Default: when this approval completes the rules. */
   execute?: boolean;
+  /**
+   * v4.2, for preflight: the owner's signer phrase(s) and the recovery phrase both approve this
+   * action (the escape during a lockdown). Lockdown limits and "recovery may only cancel" then do
+   * not apply, and a migration during a lockdown is instant.
+   */
+  together?: boolean;
 }
 
 export interface ActionPlan {
@@ -855,6 +894,7 @@ export async function executeIx(
         : m.executeCreateBudget(action.id).accountsPartial({ ...base, ...tierAccts, payer, budget: budgetPda(vault, action.id, programId) }).instruction();
     }
     case "cancel":
+    case "cancelLock":
     case "ping":
     case "cancelSchedule":
     case "cancelBudget":
@@ -1503,13 +1543,31 @@ export async function preflightAction(p: Omit<ActionParams, "hashesPerTx" | "exe
     if (action.kind !== "withdraw" || !equal(action.mint, ZERO32)) errors.push("This phrase can only withdraw SOL.");
     return { errors, warnings };
   }
-  if (signer.tree < SIGNER_SLOTS && inLockdown(state, now) && !isCancel && action.kind !== "ping")
-    errors.push(`This vault is in lockdown until ${new Date(state.lockdownUntil * 1000).toISOString()}: only Ping and cancels execute. The recovery key's Cancel ends it.`);
-  else if (signer.tree < SIGNER_SLOTS && inLockdown(state, now) && action.fee > 0n)
+  const locked = inLockdown(state, now);
+  // v4.2: an approval the recovery tree also signs is not limited by a lockdown.
+  const existingTrees = locked && signer.tree < SIGNER_SLOTS && !p.together ? (await fetchApproval(program, vault, action))?.trees ?? 0 : 0;
+  const withRecovery = p.together || (existingTrees & (1 << RECOVERY_TREE)) !== 0;
+  if (signer.tree < SIGNER_SLOTS && locked && !withRecovery && !isCancel && action.kind !== "ping")
+    errors.push(
+      `This vault is in lockdown until ${new Date(state.lockdownUntil * 1000).toISOString()}: the signers alone can only Ping or cancel. The recovery phrase's Cancel ends it; with the recovery phrase together you can still act (escape to a new vault).`
+    );
+  else if (signer.tree < SIGNER_SLOTS && locked && !withRecovery && action.fee > 0n)
     errors.push("During a lockdown the vault's signers cannot pay a fee: send this Ping or cancel with fee 0 (with your own wallet, or the relayer, which sends them for free).");
   if (signer.tree === RECOVERY_TREE && action.kind === "letterKey") errors.push("The recovery key can never set the letter key; only the vault's signers can.");
+  if (action.kind === "cancelLock") {
+    // v4.2 (docs/SPEC.md §4): only with the recovery tree, 1 to 90 days.
+    if (signer.tree !== RECOVERY_TREE && !p.together) errors.push("Only the recovery phrase can cancel and freeze the vault.");
+    if (!cancelLockInBounds(action.secs)) errors.push("A freeze lasts at least 1 day and at most 90 days.");
+    else {
+      const until = Math.max(state.lockdownUntil, now + Number(action.secs));
+      warnings.push(
+        `This cancels what is pending and freezes the vault until about ${new Date(until * 1000).toISOString()}: the signer phrase alone can then only Ping or cancel. Your main phrase and this recovery phrase together can still move funds, e.g. escape to a new vault.`
+      );
+    }
+    if (!c.trees[RECOVERY_TREE].height) errors.push("This vault has no recovery phrase.");
+  }
   let unrestricted = false;
-  if (signer.tree === RECOVERY_TREE && !isCancel) {
+  if (signer.tree === RECOVERY_TREE && !isCancel && action.kind !== "cancelLock" && !p.together) {
     const opensAt = state.lastActive + Number(c.recoveryDelay);
     if (now < opensAt) errors.push(`The recovery key can only cancel until ${new Date(opensAt * 1000).toISOString()}.`);
     unrestricted = true;
@@ -1519,9 +1577,9 @@ export async function preflightAction(p: Omit<ActionParams, "hashesPerTx" | "exe
     const have = [0, 1, 2].filter((t) => ((existing?.trees ?? 0) | (1 << signer.tree)) & (1 << t)).length;
     if (have < c.threshold) warnings.push(`This vault needs ${c.threshold} signers: after you, ${c.threshold - have} more must approve this exact action.`);
   }
-  if (action.kind === "cancel" && !state.pending && !state.migrateTo && !(signer.tree === RECOVERY_TREE && inLockdown(state, now)))
+  if (action.kind === "cancel" && !state.pending && !state.migrateTo && !(signer.tree === RECOVERY_TREE && locked))
     warnings.push("Nothing is pending; this only uses up a one-time key.");
-  if (state.migrateTo && action.kind !== "ping" && action.kind !== "cancel")
+  if (state.migrateTo && action.kind !== "ping" && action.kind !== "cancel" && action.kind !== "cancelLock")
     warnings.push("This vault is migrating; funds can be moved to the new vault by anyone. A Cancel stops what has not moved yet.");
 
   const [vaultInfo, rentMin] = await Promise.all([withRetry(() => conn.getAccountInfo(vault, "confirmed")), withRetry(() => conn.getMinimumBalanceForRentExemption(0))]);
@@ -1622,8 +1680,11 @@ export async function preflightAction(p: Omit<ActionParams, "hashesPerTx" | "exe
     case "migrate": {
       const target = await fetchState(program, pk(action.newVault));
       if (!target) errors.push("The new vault is not an initialized Noxvault.");
+      if (pk(action.newVault).equals(vault)) errors.push("The new vault cannot be this vault.");
+      // v4.2, the escape: owner + recovery together migrate at once during a lockdown.
+      const escape = locked && withRecovery;
       // v4.1 (G-02): the same restriction rule as withdrawals, instant limit included.
-      if (!unrestricted && isRestricted(c, pk(action.newVault))) {
+      if (!unrestricted && !escape && isRestricted(c, pk(action.newVault))) {
         if (c.slowDelay === 0n) errors.push("The vault's rules do not allow migrating to this vault: it is restricted (not whitelisted).");
         else {
           if (state.pending) errors.push("Something is already pending. Wait for it or cancel it first.");
@@ -1660,6 +1721,34 @@ async function tokenChecks(conn: Connection, vault: PublicKey, mint: PublicKey, 
     errors.push("Could not read this token's mint.");
   }
   return errors;
+}
+
+/**
+ * v4.2: whether the program at `program.programId` knows `Kind::CancelLock` yet. A program built
+ * before v4.2 cannot even decode the action: `open_unlock` fails with InstructionDidNotDeserialize
+ * before it looks at any account. Simulates that single instruction (nothing is signed or sent);
+ * `payer` must be an existing account (it is only the simulation's fee payer).
+ */
+export async function supportsCancelLock(program: Program<Noxvault>, payer: PublicKey, vault: PublicKey = payer): Promise<boolean> {
+  const conn = program.provider.connection;
+  const ix = await program.methods
+    .openUnlock(RECOVERY_TREE, 0, Array(32).fill(0), [], toAnchorAction(cancelLockAction(1)) as never)
+    .accountsPartial({ payer, vault, state: statePda(vault, program.programId), unlock: unlockPda(vault, payer, program.programId), systemProgram: SystemProgram.programId })
+    .instruction();
+  const { blockhash } = await withRetry(() => conn.getLatestBlockhash("confirmed"));
+  const msg = new TransactionMessage({ payerKey: payer, recentBlockhash: blockhash, instructions: [ix] }).compileToV0Message();
+  const sim = await withRetry(() => conn.simulateTransaction(new VersionedTransaction(msg), { sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed" }));
+  return !isUnsupportedActionError({ logs: sim.value.logs ?? [], message: JSON.stringify(sim.value.err) });
+}
+
+/**
+ * v4.2: true when an error (or simulation result) shows the program could not decode the action:
+ * the deployed program predates the action kind (e.g. CancelLock before the v4.2 upgrade).
+ */
+export function isUnsupportedActionError(e: unknown): boolean {
+  const o = e as { message?: unknown; logs?: string[] } | null;
+  const text = `${typeof e === "string" ? e : typeof o?.message === "string" ? o.message : JSON.stringify(e)} ${(o?.logs ?? []).join(" ")}`;
+  return /InstructionDidNotDeserialize|custom program error: 0x66\b|"Custom":102\b/.test(text);
 }
 
 export async function mintTokenProgram(conn: Connection, mint: PublicKey): Promise<PublicKey> {

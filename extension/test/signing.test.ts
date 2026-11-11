@@ -20,7 +20,8 @@ import { encodeAction, type Action } from "../../sdk/wots";
 import * as unlock from "../../web/lib/unlock";
 import { hex } from "../../web/lib/format";
 import { PendingStore, type KV } from "../src/core/pendingStore";
-import { loadHistory, prepare, sendFrozen, type Ctx, type FeeDeps } from "../src/core/signing";
+import { cancelKind, feeFor, loadHistory, lockdownFree, prepare, sendFrozen, type Ctx, type FeeDeps } from "../src/core/signing";
+import { clocks, headline } from "../src/lib/status";
 
 const VAULT = new PublicKey("B9fCLC48ySs6R7E58zS8NcrvqtFFhNtV6RgMBqQG9Fty");
 const DEST = new PublicKey("DmpPGVKPkhsxAWxW5WaxReDa2QxdJZvXk8BaG1SwQXAC");
@@ -247,5 +248,50 @@ describe("freezing and sending (prepare / sendFrozen)", () => {
     const res = await sendFrozen(ctx, { leaf: 0, action: { ...withdraw(1n, 0n), feePayee: payer.toBytes() }, mode: "wallet", source: "local" }, "wallet", { payer, send: async () => "unused" });
     expect(order).toEqual(["attempted", "tx", "attempted", "tx"]);
     expect(res.steps.every((s) => s.st === "done")).toBe(true);
+  });
+});
+
+describe("v4.2: cancel and freeze (CancelLock)", () => {
+  const RECOVERY = sdk.RECOVERY_TREE;
+
+  it("the recovery phrase cancels and freezes for the chosen days; 14 by default", () => {
+    expect(sdk.DEFAULT_CANCEL_LOCK_DAYS).toBe(14);
+    expect(cancelKind({ tree: RECOVERY, freeze: true, days: 14, supported: true })).toEqual({ kind: { kind: "cancelLock", secs: 14n * 86_400n } });
+    expect(cancelKind({ tree: RECOVERY, freeze: false, days: 14, supported: true })).toEqual({ kind: { kind: "cancel" } });
+    expect(() => cancelKind({ tree: RECOVERY, freeze: true, days: 0, supported: true })).toThrow("1 to 90 days");
+    expect(() => cancelKind({ tree: RECOVERY, freeze: true, days: 91, supported: true })).toThrow("1 to 90 days");
+    expect(cancelKind({ tree: RECOVERY, freeze: true, days: 90, supported: true }).kind).toEqual({ kind: "cancelLock", secs: 90n * 86_400n });
+  });
+
+  it("falls back to a plain cancel, with a note, on a program without CancelLock or for the owner's phrase", () => {
+    const old = cancelKind({ tree: RECOVERY, freeze: true, days: 14, supported: false });
+    expect(old.kind).toEqual({ kind: "cancel" });
+    expect(old.note).toContain("v4.2");
+    expect(cancelKind({ tree: 0, freeze: true, days: 14, supported: true }).kind).toEqual({ kind: "cancel" });
+  });
+
+  it("recognizes the old program's refusal: it cannot even decode the action", () => {
+    expect(sdk.isUnsupportedActionError(new Error("failed: custom program error: 0x66"))).toBe(true);
+    expect(sdk.isUnsupportedActionError({ logs: ["Program log: AnchorError occurred. Error Code: InstructionDidNotDeserialize."] })).toBe(true);
+    expect(sdk.isUnsupportedActionError({ message: JSON.stringify({ InstructionError: [0, { Custom: 102 }] }) })).toBe(true);
+    expect(sdk.isUnsupportedActionError(new Error("custom program error: 0x660"))).toBe(false);
+    expect(sdk.isUnsupportedActionError(new Error("Error Code: Lockdown"))).toBe(false);
+  });
+
+  it("the relayer sends the recovery phrase's cancels free, also outside a lockdown", () => {
+    const st = state();
+    expect(lockdownFree(st, RECOVERY, "cancelLock")).toBe(true);
+    expect(lockdownFree(st, RECOVERY, "cancel")).toBe(true);
+    expect(lockdownFree(st, 0, "cancel")).toBe(false);
+    const d: FeeDeps = { relayer: { relayer: RELAYER.toBase58(), minFee: "100000" } as never, feePayer: null, sentinelFree: false, state: st, tree: RECOVERY };
+    expect(feeFor("relayer", "cancelLock", d).fee).toBe(0n);
+  });
+
+  it("the vault status shows the freeze and when it ends", () => {
+    const NOW = 1_800_000_000;
+    const snap = { lockdownUntil: NOW + 14 * 86_400, pending: null, recoveryAt: null, testamentAt: null, letters: [], tokens: [] } as never;
+    expect(headline(snap, NOW).label).toBe("LOCKDOWN");
+    expect(headline(snap, NOW).detail).toContain("frozen");
+    expect(clocks(snap, NOW)[0]).toMatchObject({ label: "Lockdown / freeze ends", at: NOW + 14 * 86_400 });
   });
 });

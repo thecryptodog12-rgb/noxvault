@@ -74,6 +74,10 @@ import {
   letterPda,
   vaultLetters,
   writeLetterIxs,
+  cancelLockAction,
+  DEFAULT_CANCEL_LOCK_DAYS,
+  inLockdown,
+  supportsCancelLock,
 } from "../sdk/client";
 
 const SOL = (n: number) => BigInt(Math.round(n * LAMPORTS_PER_SOL));
@@ -710,6 +714,16 @@ describe("noxvault v4", () => {
       expect(explainError(new Error("failed: custom program error: 0x1798"))).to.contain("0.01 SOL"); // 6040 FeeTooHigh
     });
 
+    it("v4.2: a recovery CancelLock during a duress lockdown only extends it", async () => {
+      const before = (await fetchState(program, v))!;
+      expect(inLockdown(before)).to.eq(true);
+      // 1 day is shorter than what is left of the 2-day duress lockdown: nothing changes.
+      await act(rec, v, cancelLockAction(1));
+      const st = (await fetchState(program, v))!;
+      expect(st.lockdownUntil).to.eq(before.lockdownUntil);
+      expect(st.pending).to.eq(null);
+    });
+
     it("a recovery Cancel ends the lockdown, then signer withdrawals work again", async () => {
       await act(rec, v, { kind: "cancel", ...fee0 });
       const st = (await fetchState(program, v))!;
@@ -855,6 +869,190 @@ describe("noxvault v4", () => {
       const evil2 = { ...evil, fee: 1n, feePayee: payer.toBytes() } as wots.Action; // a fresh message for a fresh leaf
       await expectError(run(await planAction({ program, payer, vault: v, signer: rec, leaf: 1, action: evil2, execute: true })), "LetterKeySignersOnly");
       expect((await fetchLetterKey(program, v))!.key.equals(letterKey.publicKey)).to.eq(true);
+    });
+  });
+
+  // ---------- v4.2: recovery CancelLock (anti-theft freeze) ----------
+
+  describe("v4.2: recovery CancelLock against a stolen signer phrase", () => {
+    // The thief holds the owner's signer phrase (`owner` below); the real owner also holds `rec`.
+    const friend = Keypair.generate().publicKey; // whitelisted
+    const thiefAddr = Keypair.generate().publicKey;
+    const rescue = Keypair.generate().publicKey;
+    const RECOVERY_DELAY = 30;
+    let owner: Signer;
+    let rec: Signer;
+    let v: PublicKey;
+    let frozenActive = 0;
+
+    const blockTime = async () => (await conn.getBlockTime(await conn.getSlot("confirmed"))) ?? 0;
+    /** Signs and approves with `s`; the approval must not execute; then executing it must fail with `code`. */
+    async function refused(s: Signer, vault: PublicKey, action: wots.Action, code: string) {
+      const { plan } = await act(s, vault, action);
+      expect(plan.willExecute).to.eq(false);
+      await expectError(send([await executeIx(program, payer, vault, action, payer)]), code);
+    }
+
+    before(async () => {
+      owner = makeSigner(newMasterSecret(), 0, 0);
+      rec = makeSigner(newMasterSecret(), 0, RECOVERY_TREE);
+      ({ vault: v } = await newVault({ recoveryRoot: rec.pub.root, recoveryDelaySecs: RECOVERY_DELAY, whitelist: [friend], slowDelaySecs: 3 * 86_400, instantLimitLamports: SOL(0.05) }, owner));
+      await fund(v, 3);
+      for (const k of [friend, thiefAddr, rescue]) await fund(k, 0.01);
+    });
+
+    it("(a) the thief queues a payout; the recovery CancelLock clears it and freezes the vault", async () => {
+      await act(owner, v, { kind: "ping", ...fee0 }); // the thief keeps the vault "active"
+      await act(owner, v, withdraw(thiefAddr, SOL(2)));
+      expect((await fetchState(program, v))!.pending?.dest.equals(thiefAddr)).to.eq(true);
+      const t0 = await blockTime();
+      const lock = cancelLockAction(DEFAULT_CANCEL_LOCK_DAYS);
+      expect(wots.encodeAction(lock)[0]).to.eq(12); // appended: earlier tags unchanged
+      const { leaf } = pickLeaf((await fetchState(program, v))!, rec, await findSignedMessages(program, v, rec));
+      const pre = await preflightAction({ program, payer, vault: v, signer: rec, leaf, action: lock });
+      expect(pre.errors).to.deep.eq([]);
+      expect(pre.warnings.join()).to.contain("freezes the vault");
+      const { plan } = await act(rec, v, lock, { leaf });
+      expect(plan.willExecute).to.eq(true);
+      const st = (await fetchState(program, v))!;
+      expect(st.pending).to.eq(null);
+      expect(st.migrateTo).to.eq(null);
+      expect(st.lockdownUntil).to.be.within(t0 + 14 * 86_400 - 5, t0 + 14 * 86_400 + 60);
+      expect(inLockdown(st)).to.eq(true);
+      frozenActive = st.lastActive;
+    });
+
+    it("(a) during the freeze the thief's withdrawals, migration and new payouts all fail with Lockdown", async () => {
+      const { vault: thiefVault } = await newVault();
+      await refused(owner, v, withdraw(thiefAddr, SOL(1)), "Lockdown"); // would have been a new pending payout
+      await refused(owner, v, withdraw(friend, SOL(0.01)), "Lockdown"); // even the whitelist
+      await refused(owner, v, withdraw(thiefAddr, SOL(0.01)), "Lockdown"); // even within the instant limit
+      await refused(owner, v, { kind: "migrate", newVault: thiefVault.toBytes(), ...fee0 }, "Lockdown");
+      const st = (await fetchState(program, v))!;
+      expect(st.pending).to.eq(null);
+      expect(st.migrateTo).to.eq(null);
+      // No fee either (G-01): refused before a key is burned.
+      const { leaf } = pickLeaf(st, owner, await findSignedMessages(program, v, owner));
+      await expectError(run(await planAction({ program, payer, vault: v, signer: owner, leaf, action: { kind: "ping", fee: 1000n, feePayee: payer.toBytes() } })), "FeeInLockdown");
+      expect(await conn.getBalance(thiefAddr)).to.eq(Number(SOL(0.01)));
+    });
+
+    it("(c) a CancelLock without the recovery tree, or out of bounds, is rejected", async () => {
+      const lock = cancelLockAction(30);
+      const st = (await fetchState(program, v))!;
+      const { leaf } = pickLeaf(st, owner, await findSignedMessages(program, v, owner));
+      expect((await preflightAction({ program, payer, vault: v, signer: owner, leaf, action: lock })).errors.join()).to.contain("Only the recovery phrase");
+      await refused(owner, v, lock, "CancelLockNeedsRecovery");
+      expect((await fetchState(program, v))!.lockdownUntil).to.eq(st.lockdownUntil);
+      expect(() => cancelLockAction(0.5)).to.throw("1 to 90 days");
+      for (const [secs, leafR] of [[3600n, 14], [91n * 86_400n, 15], [-86_400n, 13]] as const) {
+        const bad: wots.Action = { kind: "cancelLock", secs, ...fee0 };
+        expect((await preflightAction({ program, payer, vault: v, signer: rec, leaf: leafR, action: bad })).errors.join()).to.contain("at most 90 days");
+        // open_unlock refuses it before a one-time key is burned.
+        await expectError(run(await planAction({ program, payer, vault: v, signer: rec, leaf: leafR, action: bad, execute: true })), "LockOutOfRange");
+        expect(leafUsed((await fetchState(program, v))!, RECOVERY_TREE, leafR)).to.eq(false);
+      }
+      expect(explainError(new Error("Error Code: CancelLockNeedsRecovery."))).to.contain("recovery phrase");
+    });
+
+    it("(f) the thief's Pings and cancels during the freeze are not activity, and cannot end it", async () => {
+      const before = (await fetchState(program, v))!;
+      await act(owner, v, { kind: "ping", ...fee0 });
+      await act(owner, v, { kind: "cancel", ...fee0 });
+      const st = (await fetchState(program, v))!;
+      expect(st.actions).to.eq(before.actions + 2); // both executed (fee 0)
+      expect(st.lastActive).to.eq(frozenActive);
+      expect(st.lockdownUntil).to.eq(before.lockdownUntil);
+    });
+
+    it("(f) so the recovery takeover opens after recovery_delay, despite the thief", async () => {
+      const opensAt = frozenActive + RECOVERY_DELAY;
+      while ((await blockTime()) < opensAt + 1) {
+        await act(owner, v, { kind: "ping", ...fee0 }); // the thief keeps trying
+        await sleep(1000);
+      }
+      expect((await fetchState(program, v))!.lastActive).to.eq(frozenActive);
+      const before = await conn.getBalance(rescue);
+      await act(rec, v, withdraw(rescue, SOL(0.5)));
+      expect(await conn.getBalance(rescue)).to.eq(before + Number(SOL(0.5)));
+    });
+
+    it("a second CancelLock extends the freeze but never shortens it", async () => {
+      const before = (await fetchState(program, v))!;
+      await act(rec, v, cancelLockAction(1));
+      expect((await fetchState(program, v))!.lockdownUntil).to.eq(before.lockdownUntil);
+      const t0 = await blockTime();
+      await act(rec, v, cancelLockAction(20));
+      expect((await fetchState(program, v))!.lockdownUntil).to.be.at.least(t0 + 20 * 86_400 - 5);
+    });
+
+    it("(d) once the freeze is lifted, the normal rules return", async () => {
+      // A freeze ends at lockdown_until (>= 1 day away, too long for this test) or by the recovery
+      // tree's Cancel; both make `now < lockdown_until` false (tests/props.rs r14..r17 cover the
+      // clock boundary). Here: the recovery Cancel.
+      await act(rec, v, { kind: "cancel", ...fee0 });
+      expect((await fetchState(program, v))!.lockdownUntil).to.eq(0);
+      const before = await conn.getBalance(friend);
+      await act(owner, v, withdraw(friend, SOL(0.1))); // whitelisted: at once
+      expect(await conn.getBalance(friend)).to.eq(before + Number(SOL(0.1)));
+      await act(owner, v, withdraw(thiefAddr, SOL(1))); // restricted: waits again
+      const st = (await fetchState(program, v))!;
+      expect(st.pending?.dest.equals(thiefAddr)).to.eq(true);
+      expect(st.lastActive).to.be.greaterThan(frozenActive); // signer approvals count again
+    });
+
+    it("(b) during a freeze the owner's signer and recovery phrases together escape to a fresh vault at once", async () => {
+      const o = makeSigner(newMasterSecret(), 0, 0);
+      const r = makeSigner(newMasterSecret(), 0, RECOVERY_TREE);
+      const { vault: v2 } = await newVault({ recoveryRoot: r.pub.root, recoveryDelaySecs: 86_400, whitelist: [friend], slowDelaySecs: 3 * 86_400 }, o);
+      await fund(v2, 2);
+      const vAta = await getOrCreateAssociatedTokenAccount(conn, wallet, mint, v2, true);
+      await mintTo(conn, wallet, mint, vAta.address, wallet, 4_321);
+      await act(o, v2, withdraw(thiefAddr, SOL(1.5))); // the thief's pending payout
+      await act(r, v2, cancelLockAction(14));
+      // The owner makes a fresh vault (new phrases) and moves everything there.
+      const { vault: fresh } = await newVault();
+      const escape: wots.Action = { kind: "migrate", newVault: fresh.toBytes(), ...fee0 };
+      const st0 = (await fetchState(program, v2))!;
+      const leafO = pickLeaf(st0, o, await findSignedMessages(program, v2, o)).leaf;
+      expect((await preflightAction({ program, payer, vault: v2, signer: o, leaf: leafO, action: escape })).errors.join()).to.contain("lockdown");
+      expect((await preflightAction({ program, payer, vault: v2, signer: o, leaf: leafO, action: escape, together: true })).errors).to.deep.eq([]);
+      const first = await act(o, v2, escape, { leaf: leafO });
+      expect(first.plan.willExecute).to.eq(false); // the signer alone is frozen
+      const second = await act(r, v2, escape);
+      expect(second.plan.willExecute).to.eq(true); // with the recovery tree: instant, whitelist or not
+      let st = (await fetchState(program, v2))!;
+      expect(st.migrateTo?.equals(fresh)).to.eq(true);
+      expect(st.pending).to.eq(null);
+      // A pre-staged signer-only Cancel of the thief cannot stop the escape during the freeze.
+      await act(o, v2, { kind: "cancel", ...fee0 });
+      st = (await fetchState(program, v2))!;
+      expect(st.migrateTo?.equals(fresh)).to.eq(true);
+      const sol = await conn.getBalance(v2);
+      await send(await migrateIxs(program, payer, v2, st, [{ mint, tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID }]));
+      expect(await conn.getBalance(v2)).to.eq(0);
+      expect(Number((await getAccount(conn, getAssociatedTokenAddressSync(mint, fresh, true))).amount)).to.eq(4_321);
+      expect(await conn.getBalance(fresh)).to.be.at.least(sol);
+      expect(await conn.getBalance(thiefAddr)).to.be.lessThan(Number(SOL(0.1)));
+    });
+
+    it("the relayer sends the recovery CancelLock for free, and decodes it", async () => {
+      const relayer = Keypair.generate();
+      await fund(relayer.publicKey, 0.1);
+      const rp = new Program<Noxvault>(program.idl, new anchor.AnchorProvider(conn, new anchor.Wallet(relayer), { commitment: "confirmed" }));
+      const st = (await fetchState(program, v))!;
+      const { leaf } = pickLeaf(st, rec, await findSignedMessages(program, v, rec));
+      const action = cancelLockAction(3);
+      const d = wots.messageDigest(program.programId.toBytes(), v.toBytes(), RECOVERY_TREE, leaf, wots.encodeAction(action));
+      const signed: SignedAction = { vault: v, tree: RECOVERY_TREE, leaf, pkSeed: rec.seeds.pkSeed, authPath: wots.authPath(rec.pub, leaf), signature: wots.sign(rec.seeds, leaf, d), action };
+      const roundTrip = decodeRelayRequest(JSON.parse(JSON.stringify(encodeRelayRequest(signed))));
+      expect(roundTrip.action.kind === "cancelLock" && roundTrip.action.secs).to.eq(3n * 86_400n);
+      expect(await checkRelay(rp, relayer.publicKey, roundTrip, { minFee: SOL(0.001) })).to.eq(null);
+      await relay(rp, relayer, roundTrip, { minFee: SOL(0.001) });
+      const after = (await fetchState(program, v))!;
+      expect(after.pending).to.eq(null);
+      expect(inLockdown(after)).to.eq(true);
+      expect(await supportsCancelLock(program, payer)).to.eq(true);
     });
   });
 

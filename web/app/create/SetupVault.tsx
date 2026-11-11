@@ -500,8 +500,10 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
               <div className="flex flex-col gap-2">
                 <Note kind="info">
                   If someone gets your phrase, they can only take {ANTITHEFT_INSTANT_SOL} SOL a day at once. Anything more, and every token payout, waits 72
-                  hours as a pending withdrawal. Your recovery phrase can cancel it in that time, and after 90 days without activity from you it can take over
-                  the vault. Tip: whitelist one wallet of your own that does not use this phrase (a hardware wallet, say). Payouts to it stay instant, so
+                  hours as a pending withdrawal. Your recovery phrase can cancel it in that time, and freeze the vault (14 days by default) so the thief
+                  cannot queue the next one: during the freeze your main phrase alone moves nothing and its pings do not count, while main and recovery
+                  phrase together can still move everything to a new vault at once. After 90 days without activity from you the recovery phrase can take
+                  over the vault. Tip: whitelist one wallet of your own that does not use this phrase (a hardware wallet, say). Payouts to it stay instant, so
                   if your phrase leaks you can move everything there at once, and a thief can only send it there too.
                 </Note>
                 <Note kind="warn">

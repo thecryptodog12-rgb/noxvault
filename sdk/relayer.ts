@@ -5,6 +5,7 @@ import { Keypair, PublicKey, Transaction, sendAndConfirmTransaction } from "@sol
 import type { Noxvault } from "./idl/noxvault";
 import {
   DURESS_TREE,
+  RECOVERY_TREE,
   SignedAction,
   SOL_MINT,
   treeOf,
@@ -59,13 +60,21 @@ export function freeLockdownAction(tree: number, kind: Action["kind"], locked: b
   return locked && tree < SIGNER_SLOTS && ["ping", "cancel", "cancelSchedule", "cancelBudget"].includes(kind);
 }
 
+/**
+ * v4.2: the recovery phrase's emergency cancels (Cancel, CancelLock) are relayed free: the person
+ * holding a recovery phrase often holds no SOL, and every such message burns a recovery key.
+ */
+export function freeEmergencyAction(tree: number, kind: Action["kind"]): boolean {
+  return tree === RECOVERY_TREE && (kind === "cancel" || kind === "cancelLock");
+}
+
 const fromHex = (h: string, len?: number) => {
   if (!/^[0-9a-f]*$/i.test(h) || h.length % 2 || (len && h.length !== len * 2)) throw new Error("bad hex");
   return Uint8Array.from(Buffer.from(h, "hex"));
 };
 
 const KEY_FIELDS = new Set(["mint", "dest", "vote", "session", "newVault", "feePayee", "key"]);
-const BIG_FIELDS = new Set(["amount", "interval", "start", "limit", "period", "expires", "fee"]);
+const BIG_FIELDS = new Set(["amount", "interval", "start", "limit", "period", "expires", "fee", "secs"]);
 const NUM_FIELDS = new Set(["seed", "id", "count"]);
 
 export function encodeRelayRequest(s: SignedAction): RelayRequest {
@@ -136,7 +145,7 @@ export async function checkRelay(program: Program<Noxvault>, relayer: PublicKey,
   if (s.action.fee > MAX_ACTION_FEE) return `fee is above the protocol maximum of ${MAX_ACTION_FEE} lamports (0.01 SOL)`;
   const locked = inLockdown(state);
   if (locked && s.tree < SIGNER_SLOTS && s.action.fee > 0n) return "the vault is in lockdown: its signers can only Ping or cancel, with fee 0";
-  const free = freeLockdownAction(s.tree, s.action.kind, locked) || (await relaysFree(program, s.vault, policy));
+  const free = freeLockdownAction(s.tree, s.action.kind, locked) || freeEmergencyAction(s.tree, s.action.kind) || (await relaysFree(program, s.vault, policy));
   if (!free) {
     if (!equal(s.action.feePayee, relayer.toBytes())) return `fee must be paid to ${relayer.toBase58()}`;
     if (s.action.fee < relayFee(policy)) return `fee must be at least ${relayFee(policy)} lamports`;

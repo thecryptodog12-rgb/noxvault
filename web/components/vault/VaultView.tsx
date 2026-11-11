@@ -195,8 +195,8 @@ export default function VaultView({
             {hasRecovery ? (
               <div className="mt-1.5 text-mute">
                 Owner last active <span className="text-bone">{dateTime(state.lastActive)}</span>. Recovery can always cancel; full control{" "}
-                {now >= recoveryAt ? <span className="text-warn">is open now</span> : <>opens in <span className="text-bone">{duration(recoveryAt - now)}</span></>}. A
-                ping resets this.
+                {now >= recoveryAt ? <span className="text-warn">is open now</span> : <>opens in <span className="text-bone">{duration(recoveryAt - now)}</span></>}.{" "}
+                {locked ? "During the lockdown a ping by the main phrase alone does not reset this." : "A ping resets this."}
               </div>
             ) : (
               <div className="mt-1.5 text-mute">No recovery key.</div>
@@ -210,8 +210,16 @@ export default function VaultView({
           </div>
           {locked && !duress && (
             <Note kind="bad">
-              Lockdown until {dateTime(state.lockdownUntil)} ({duration(state.lockdownUntil - now)} left): the duress phrase was used. Only Ping and
-              cancels execute now. A Cancel signed by the recovery key ends the lockdown at once.
+              Lockdown (frozen) until {dateTime(state.lockdownUntil)} ({duration(state.lockdownUntil - now)} left). Either the duress phrase was used, or the
+              recovery phrase cancelled a payout and froze the vault (anti-theft). Until then the main phrase alone can only Ping or cancel, and its
+              approvals do not count as activity. A Cancel signed by the recovery key ends the lockdown at once.
+              {hasRecovery && (
+                <span className="mt-1.5 block">
+                  <span className="text-bone">Escape to a new vault:</span> create a fresh vault with new phrases, then sign &quot;Migrate&quot; to it here and
+                  co-sign the same migration with the {mySlot === RECOVERY_TREE ? "main phrase (open the vault with it)" : "recovery phrase (on /recovery)"}.
+                  Main and recovery phrase together move everything at once, even during the lockdown.
+                </span>
+              )}
             </Note>
           )}
           {!duress && <Pending vault={vault} state={state} onChanged={refresh} />}

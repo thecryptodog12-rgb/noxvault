@@ -13,6 +13,9 @@ export const SIGNER_BITS = (1 << SIGNER_SLOTS) - 1;
 export const MAX_ACTION_FEE = 10_000_000n;
 /** state.rs MAX_DURATION (v4.1): 10 years. */
 export const MAX_DURATION = 10n * 365n * DAY;
+/** state.rs MIN_CANCEL_LOCK / MAX_CANCEL_LOCK (v4.2): bounds of a recovery CancelLock freeze. */
+export const MIN_CANCEL_LOCK = DAY;
+export const MAX_CANCEL_LOCK = 90n * DAY;
 
 export interface RuleConfig {
   whitelist: string[]; // non-default keys only
@@ -82,18 +85,25 @@ export function gate(st: RuleState, c: RuleConfig, kind: 0 | 1, mint: string, de
 }
 
 export type Mode = "Normal" | "Unrestricted" | "Duress";
-export type KindName = "withdraw" | "stake" | "unstake" | "collectStake" | "cancel" | "ping" | "schedule" | "cancelSchedule" | "budget" | "cancelBudget" | "migrate" | "letterKey";
+export type KindName = "withdraw" | "stake" | "unstake" | "collectStake" | "cancel" | "ping" | "schedule" | "cancelSchedule" | "budget" | "cancelBudget" | "migrate" | "letterKey" | "cancelLock";
 const isCancel = (k: KindName) => k === "cancel" || k === "cancelSchedule" || k === "cancelBudget";
 
-/** authorize, lib.rs (`fn authorize`; plus Action::is_cancel / allowed_in_lockdown, state.rs). */
-export function authorize(trees: number, c: RuleConfig, st: RuleState, kind: KindName, solWithdraw: boolean, now: bigint, fee = 0n): Mode {
+/** approval_mode, state.rs (v4.2; called by `fn authorize` in lib.rs). `secs` is a CancelLock's freeze. */
+export function authorize(trees: number, c: RuleConfig, st: RuleState, kind: KindName, solWithdraw: boolean, now: bigint, fee = 0n, secs = DAY): Mode {
   require_(fee <= MAX_ACTION_FEE, "FeeTooHigh");
   let signers = 0;
   for (let t = 0; t < SIGNER_SLOTS; t++) if (trees & (1 << t)) signers++;
+  const recovery = (trees & (1 << RECOVERY_TREE)) !== 0;
+  if (kind === "cancelLock") {
+    require_(recovery, "CancelLockNeedsRecovery");
+    require_(secs >= MIN_CANCEL_LOCK && secs <= MAX_CANCEL_LOCK, "LockOutOfRange");
+    return "Normal";
+  }
   if (signers >= c.threshold) {
-    if (now < st.lockdownUntil) {
+    // v4.2: a lockdown only binds approvals without the recovery tree.
+    if (now < st.lockdownUntil && !recovery) {
       require_(isCancel(kind) || kind === "ping", "Lockdown");
-      require_(fee === 0n || (trees & (1 << RECOVERY_TREE)) !== 0, "FeeInLockdown");
+      require_(fee === 0n, "FeeInLockdown");
     }
     return "Normal";
   }
@@ -173,9 +183,12 @@ export function feeAllowed(fee: bigint, vaultLamports: bigint, locked = false, t
   return true;
 }
 
-/** The Migrate branch of execute_admin (v4.1): the withdrawal restriction rule, never the instant allowance. */
-export function migrate(st: RuleState, c: RuleConfig, newVault: string, unrestricted: boolean, now: bigint): "started" | "queued" {
-  if (unrestricted || !restricted(c, newVault)) {
+/**
+ * The Migrate branch of execute_admin (v4.1): the withdrawal restriction rule, never the instant
+ * allowance. v4.2 `escape`: signers + recovery together during a lockdown start it at once.
+ */
+export function migrate(st: RuleState, c: RuleConfig, newVault: string, unrestricted: boolean, now: bigint, escape = false): "started" | "queued" {
+  if (unrestricted || escape || !restricted(c, newVault)) {
     st.migrateTo = newVault;
     return "started";
   }
@@ -185,11 +198,27 @@ export function migrate(st: RuleState, c: RuleConfig, newVault: string, unrestri
   return "queued";
 }
 
-/** The Cancel branch of execute_admin (v4.1): stops everything still waiting. */
-export function cancel(st: RuleState, byRecovery: boolean): void {
+/**
+ * The Cancel branch of execute_admin (v4.1): stops everything still waiting. v4.2: during a
+ * lockdown only a recovery Cancel stops a started migration (the owner's escape).
+ */
+export function cancel(st: RuleState, byRecovery: boolean, now = 0n): void {
+  st.pending = null;
+  if (byRecovery || now >= st.lockdownUntil) st.migrateTo = null;
+  if (byRecovery) st.lockdownUntil = 0n;
+}
+
+/** The CancelLock branch of execute_admin (v4.2; VaultState::extend_lockdown). */
+export function cancelLock(st: RuleState, now: bigint, secs: bigint): void {
   st.pending = null;
   st.migrateTo = null;
-  if (byRecovery) st.lockdownUntil = 0n;
+  const end = now + secs;
+  if (end > st.lockdownUntil) st.lockdownUntil = end;
+}
+
+/** approve, lib.rs: signer and duress approvals count as activity, except during a lockdown (v4.2). */
+export function approveActivity(st: RuleState, tree: number, now: bigint): void {
+  if (tree !== RECOVERY_TREE && now >= st.lockdownUntil) st.lastActive = now;
 }
 
 /** Config::roots_distinct (v4.1): no used root (non-zero) in two slots. */

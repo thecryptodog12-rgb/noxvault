@@ -300,6 +300,10 @@ export function summarize(vault: string, tree: number, leaf: number, a: Action, 
       headline = "Cancel the vault's pending withdrawal or migration";
       rows.push({ k: "action", v: "cancel pending", strong: true });
       break;
+    case "cancelLock":
+      headline = `Cancel what is pending and freeze the vault for ${dur(a.secs)} (recovery phrase only)`;
+      rows.push({ k: "action", v: "cancel and freeze", strong: true }, { k: "freeze", v: dur(a.secs), strong: true });
+      break;
     case "ping":
       headline = "Ping: mark the owner as active (resets the recovery and testament timers)";
       rows.push({ k: "action", v: "ping", strong: true });
@@ -422,7 +426,7 @@ export interface UnsignedRequest {
 }
 
 const KEY_FIELDS = new Set(["mint", "dest", "vote", "session", "newVault", "feePayee", "key"]);
-const BIG_FIELDS = new Set(["amount", "interval", "start", "limit", "period", "expires", "fee"]);
+const BIG_FIELDS = new Set(["amount", "interval", "start", "limit", "period", "expires", "fee", "secs"]);
 const NUM_FIELDS = new Set(["seed", "id", "count"]);
 
 export function encodeUnsigned(u: UnsignedRequest): string {
@@ -610,7 +614,8 @@ export async function checkSigned(program: Program<Noxvault>, s: SignedAction): 
   if (leafUsed(state, s.tree, s.leaf)) checks.push({ level: "bad", text: `One-time key #${s.leaf} is already used on chain.` });
   else checks.push({ level: "ok", text: `One-time key #${s.leaf} is unused on chain.` });
 
-  if (s.tree === RECOVERY_TREE && !["cancel", "cancelSchedule", "cancelBudget"].includes(s.action.kind)) {
+  if (s.action.kind === "cancelLock" && s.tree !== RECOVERY_TREE) checks.push({ level: "bad", text: "Only the recovery phrase can cancel and freeze the vault." });
+  if (s.tree === RECOVERY_TREE && !["cancel", "cancelSchedule", "cancelBudget", "cancelLock"].includes(s.action.kind)) {
     const opensAt = state.lastActive + Number(state.config.recoveryDelay);
     if (Date.now() / 1000 < opensAt)
       checks.push({ level: "bad", text: `The recovery key can only cancel until ${new Date(opensAt * 1000).toLocaleString()}.` });

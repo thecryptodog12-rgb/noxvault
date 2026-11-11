@@ -57,7 +57,10 @@ export function extAlerts(prev: ExtSnapshot | null, cur: ExtSnapshot, now: numbe
         out.push({
           ...base,
           title: `Lockdown · vault ${tag}`,
-          message: `🚨 The duress phrase was used. Vault ${tag} refuses withdrawals until ${fmtDate(cur.lockdownUntil)}. Check on the owner; only the recovery key can end it early.`,
+          // v4.2: alertsFor tells a recovery "cancel and freeze" (a payout vanished as it began) from other lockdowns.
+          message: a.text.includes("frozen until")
+            ? `🧊 Vault ${tag}: the pending payout was cancelled and the vault is frozen until ${fmtDate(cur.lockdownUntil)}. The main phrase alone moves nothing meanwhile. Escape to a new vault with main + recovery phrase together (nox-vault.com).`
+            : `🚨 Vault ${tag} is locked until ${fmtDate(cur.lockdownUntil)}: the duress phrase was used, or the recovery phrase froze it after cancelling a payout. Withdrawals with the main phrase are refused; only the recovery key can end it early. Check on the owner.`,
           url: links.recovery,
           urgent: true,
         });

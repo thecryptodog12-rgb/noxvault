@@ -93,7 +93,12 @@ export function Approvals({
           const ready = canExecute(state, a.trees, a.action, now);
           const mine = !!(a.trees & (1 << mySlot));
           const id = a.address.toBase58();
-          const recoveryMayCosign = mySlot === RECOVERY_TREE && (["cancel", "cancelSchedule", "cancelBudget"].includes(a.action.kind) || now >= state.lastActive + Number(state.config.recoveryDelay));
+          // v4.2: during a lockdown the recovery phrase co-signs anything the signers approved (the escape).
+          const recoveryMayCosign =
+            mySlot === RECOVERY_TREE &&
+            (["cancel", "cancelSchedule", "cancelBudget", "cancelLock"].includes(a.action.kind) ||
+              now >= state.lastActive + Number(state.config.recoveryDelay) ||
+              now < state.lockdownUntil);
           const canCosign = !mine && (mySlot !== RECOVERY_TREE || recoveryMayCosign);
           return (
             <li key={id} className="rounded-md border border-line-2 px-3 py-2.5 text-[12.5px]">

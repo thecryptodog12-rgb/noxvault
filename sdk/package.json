@@ -1,6 +1,6 @@
 {
   "name": "@noxvault/sdk",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "TypeScript SDK for Noxvault: quantum-resistant Solana vaults secured by WOTS+ hash-based one-time signatures. Devnet, unaudited.",
   "author": "thecryptodog12",
   "license": "Apache-2.0",

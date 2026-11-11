@@ -1,4 +1,4 @@
-//! Noxvault v4: vaults whose funds move only with hash-based one-time signatures, with
+//! Noxvault v4.2: vaults whose funds move only with hash-based one-time signatures, with
 //! multi-signer approvals, recovery, duress mode, testament, spending rules, schedules, session
 //! budgets, migration, invoice addresses and an Escape Hatch for ordinary wallets. See docs/SPEC.md.
 #![allow(deprecated)] // solana_program::stake re-exports; the replacement crate needs a newer Rust
@@ -113,6 +113,7 @@ pub mod noxvault {
         // v4.1: refuse here what can never execute, before a one-time key is burned on it.
         require!(action.fee <= MAX_ACTION_FEE, NoxError::FeeTooHigh);
         require!(action.durations_bounded(), NoxError::DurationTooLong);
+        require!(action.lock_bounded(), NoxError::LockOutOfRange);
         if tree < RECOVERY_TREE && action.fee > 0 {
             require!(!st.locked(Clock::get()?.unix_timestamp), NoxError::FeeInLockdown);
         }
@@ -202,7 +203,10 @@ pub mod noxvault {
         drop(u);
         a.state.mark_used(tree, leaf_index);
         // Signer and duress approvals both count as activity: a duress signature looks like any other.
-        if tree != RECOVERY_TREE {
+        // v4.2: not during a lockdown. A thief holding only the signer phrase, frozen by a
+        // recovery `CancelLock`, must not keep the vault "active" with Pings and cancels and so
+        // postpone recovery-after-inactivity forever (docs/SPEC.md §4, INVARIANTS.md A-13).
+        if tree != RECOVERY_TREE && !a.state.locked(now) {
             a.state.last_active = now;
         }
         Ok(())
@@ -245,7 +249,7 @@ pub mod noxvault {
             }
             allowance -= fee;
             sol_out(&a.system_program, &a.vault, &a.dest, &seeds, amount.min(allowance))?;
-            a.state.lockdown_until = a.state.lockdown_until.max(now.saturating_add(lock));
+            a.state.extend_lockdown(now, lock);
             a.state.actions += 1;
             return check_rent(&a.vault);
         }
@@ -343,22 +347,36 @@ pub mod noxvault {
         check_rent(&a.vault)
     }
 
-    /// Cancel, Ping, CancelSchedule, CancelBudget and Migrate.
+    /// Cancel, CancelLock, Ping, CancelSchedule, CancelBudget and Migrate.
     pub fn execute_admin(ctx: Context<ExecuteAdmin>) -> Result<()> {
         let a = &mut *ctx.accounts;
         let (action, unrestricted) = authorize_full(&a.approval, &a.state)?;
         let by_recovery = a.approval.trees & (1 << RECOVERY_TREE) != 0;
+        let by_signers = (a.approval.trees & SIGNER_BITS).count_ones() as u8 >= a.state.config.threshold;
+        let now = Clock::get()?.unix_timestamp;
+        let locked = a.state.locked(now);
         let vault = a.vault.to_account_info();
         match action.kind.clone() {
             Kind::Cancel => {
                 // v4.1 (G-04): Cancel stops everything still waiting: the pending withdrawal or
                 // migration, and a started migration (`migrate_to`) whatever it has not swept yet.
                 a.state.pending = None;
-                a.state.migrate_to = None;
+                // v4.2: during a lockdown only a Cancel the recovery tree approved stops a started
+                // migration, so a frozen signer phrase cannot interrupt the owner's escape.
+                if by_recovery || !locked {
+                    a.state.migrate_to = None;
+                }
                 // The recovery holder, not the coerced owner, decides when a lockdown ends.
                 if by_recovery {
                     a.state.lockdown_until = 0;
                 }
+            }
+            Kind::CancelLock { secs } => {
+                // v4.2: Cancel, then freeze (authorize checked the recovery bit and the bounds).
+                // Extends a running lockdown, never shortens it.
+                a.state.pending = None;
+                a.state.migrate_to = None;
+                a.state.extend_lockdown(now, secs);
             }
             Kind::Ping => {}
             Kind::CancelSchedule { id } => {
@@ -376,11 +394,15 @@ pub mod noxvault {
                 require_keys_eq!(ns.vault, new_vault, NoxError::WrongDest);
                 // v4.1 (G-02): the same rule as withdrawals (§3), instant limit included. A
                 // migration moves everything, so it never uses the instant allowance.
-                if !unrestricted && a.state.config.restricted(&new_vault) {
+                // v4.2, the escape: during a lockdown the signers and the recovery tree together
+                // migrate at once (a waiting migration could not run before the lockdown ends,
+                // and the frozen signer phrase could cancel it).
+                let escape = locked && by_recovery && by_signers;
+                if !unrestricted && !escape && a.state.config.restricted(&new_vault) {
                     let c = &a.state.config;
                     require!(c.slow_delay > 0, NoxError::NotWhitelisted);
                     require!(a.state.pending.is_none(), NoxError::PendingExists);
-                    let executable_at = Clock::get()?.unix_timestamp.saturating_add(c.slow_delay);
+                    let executable_at = now.saturating_add(c.slow_delay);
                     a.state.pending =
                         Some(Pending { kind: PENDING_MIGRATE, mint: Pubkey::default(), dest: new_vault, amount: 0, executable_at });
                 } else {
@@ -893,50 +915,16 @@ fn tier_of(p: &ProtocolParams, vault: &Pubkey, nox: &Option<Box<InterfaceAccount
     })
 }
 
-/// How an approval authorizes its action.
-#[derive(Clone, Copy, PartialEq)]
-enum Mode {
-    /// Signer threshold, or a recovery cancel: the vault's rules apply.
-    Normal,
-    /// Recovery tree after the owner's inactivity: destinations are unrestricted.
-    Unrestricted,
-    /// Duress tree alone: a capped SOL withdrawal, then lockdown (docs/SPEC.md §11).
-    Duress,
-}
-
-const SIGNER_BITS: u8 = (1 << SIGNER_SLOTS) - 1;
-
-/// Checks an approval against the vault's rules (docs/SPEC.md §4, §11). The duress bit never
-/// counts toward the threshold and never adds to recovery powers.
+/// Checks an approval against the vault's rules (docs/SPEC.md §4, §11): `state::approval_mode`
+/// with the vault's clock state. The duress bit never counts toward the threshold and never adds
+/// to recovery powers; a coercer or thief holding only a signer phrase moves nothing during a
+/// lockdown, not even through the fee (v4.1, G-01).
 fn authorize(ap: &Approval, st: &VaultState) -> Result<(Action, Mode)> {
     let action = ap.action()?;
-    // v4.1 (G-01): no execution path pays a fee above the protocol maximum (the duress path
-    // also takes its fee from the duress allowance).
-    require!(action.fee <= MAX_ACTION_FEE, NoxError::FeeTooHigh);
     let now = Clock::get()?.unix_timestamp;
-    let signers = (ap.trees & SIGNER_BITS).count_ones() as u8;
-    if signers >= st.config.threshold {
-        if st.locked(now) {
-            require!(action.allowed_in_lockdown(), NoxError::Lockdown);
-            // v4.1 (G-01): a coercer holding a signer phrase moves nothing during a lockdown, not
-            // even through the fee. Only an action the recovery tree also approved may pay one.
-            require!(action.fee == 0 || ap.trees & (1 << RECOVERY_TREE) != 0, NoxError::FeeInLockdown);
-        }
-        return Ok((action, Mode::Normal));
-    }
-    if ap.trees & (1 << RECOVERY_TREE) != 0 {
-        if action.is_cancel() {
-            return Ok((action, Mode::Normal));
-        }
-        require!(st.inactive_for(st.config.recovery_delay, now), NoxError::RecoveryLocked);
-        return Ok((action, Mode::Unrestricted));
-    }
-    if ap.trees == 1 << DURESS_TREE {
-        let sol = matches!(action.kind, Kind::Withdraw { mint, .. } if mint == Pubkey::default());
-        require!(sol, NoxError::DuressSolOnly);
-        return Ok((action, Mode::Duress));
-    }
-    err!(NoxError::NotApproved)
+    let recovery_open = st.inactive_for(st.config.recovery_delay, now);
+    let mode = approval_mode(ap.trees, st.config.threshold, st.locked(now), recovery_open, &action).map_err(|e| error!(e))?;
+    Ok((action, mode))
 }
 
 /// `authorize` for every instruction except execute_withdraw: duress approvals are refused.
@@ -1924,4 +1912,9 @@ pub enum NoxError {
     BudgetDestRestricted,
     #[msg("A delay, lock, interval or period is longer than 10 years")]
     DurationTooLong,
+    // ---- v4.2 (append only) ----
+    #[msg("Only an approval that includes the recovery tree can cancel and freeze the vault")]
+    CancelLockNeedsRecovery,
+    #[msg("A freeze lasts at least 1 day and at most 90 days")]
+    LockOutOfRange,
 }

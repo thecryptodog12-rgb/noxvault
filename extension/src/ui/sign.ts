@@ -8,7 +8,10 @@ import {
   RECOVERY_TREE,
   SOL_MINT,
   TIER_SENTINEL,
+  DEFAULT_CANCEL_LOCK_DAYS,
   explainError,
+  isUnsupportedActionError,
+  supportsCancelLock,
   fetchState,
   keysLeft,
   mintTokenProgram,
@@ -24,7 +27,7 @@ import { describeAction, type RelayerInfo, type VaultAssets } from "../../../web
 import { keypairSender } from "../core/feeAccount";
 import { PendingStore } from "../core/pendingStore";
 import { relayAction } from "../core/relayer";
-import { discard, feeFor, loadHistory, maxAmount, prepare, relayerOk, sendFrozen, type Ctx, type FeeDeps, type Frozen, type Mode, type Preflight, type Step } from "../core/signing";
+import { cancelKind, discard, feeFor, loadHistory, maxAmount, prepare, relayerOk, sendFrozen, type Ctx, type FeeDeps, type Frozen, type Mode, type Preflight, type Step } from "../core/signing";
 import { offWhitelist, withdrawTiming } from "../core/timing";
 import { buildSignerUncached } from "../core/trees";
 import { vaultAssets } from "../../../web/lib/unlock";
@@ -72,6 +75,9 @@ interface SignView {
   executed?: boolean;
   after?: VaultStateView | null;
   recN?: string;
+  /** v4.2: cancel with the recovery phrase and freeze the vault for `freezeDays` (default on). */
+  freeze?: boolean;
+  freezeDays?: string;
 }
 
 const sv = () => app.view as unknown as SignView;
@@ -96,7 +102,7 @@ function feeDeps(v: SignView): FeeDeps {
 }
 
 function base(key: string, purpose: Purpose, stage: Stage, extra: Partial<SignView> = {}): SignView {
-  return { name: "sign", key, purpose, stage, asset: SOL_MINT.toBase58(), amount: "", dest: "", mode: "relayer", ...extra };
+  return { name: "sign", key, purpose, stage, asset: SOL_MINT.toBase58(), amount: "", dest: "", mode: "relayer", freeze: true, freezeDays: String(DEFAULT_CANCEL_LOCK_DAYS), ...extra };
 }
 
 // ---------- entry points ----------
@@ -109,11 +115,13 @@ on({
     const snap = app.data.status[key]?.snap;
     const hasRecovery = snap?.rules.recoveryDelay != null;
     const ownerCan = !!w?.accountId && w.slot != null && w.slot < RECOVERY_TREE;
+    // "End lockdown": a plain recovery Cancel (a freeze would only extend it).
+    const freeze = el.dataset.plain !== "1";
     if (w && signingProblem(w.cluster)) return toast(signingProblem(w.cluster)!);
-    if (hasRecovery && !ownerCan) return go(base(key, "cancel", "phrase", { recN: String(w?.vaultNumber ?? 0) }) as never);
+    if (hasRecovery && !ownerCan) return go(base(key, "cancel", "phrase", { recN: String(w?.vaultNumber ?? 0), freeze }) as never);
     if (!hasRecovery && ownerCan) return start(key, "cancel");
     if (!hasRecovery) return toast("This vault has no recovery key, and no phrase in this extension signs for it.");
-    go(base(key, "cancel", "choose", { recN: String(w?.vaultNumber ?? 0) }) as never);
+    go(base(key, "cancel", "choose", { recN: String(w?.vaultNumber ?? 0), freeze }) as never);
   },
   "cosign-start": (el) => start(el.dataset.arg!, "cosign", Number(el.dataset.i)),
   "sign-back": () => {
@@ -224,7 +232,22 @@ function buildDraft(v: SignView): Promise<{ action: Action; tokenProgram?: Publi
   return (async () => {
     const d = feeDeps(v);
     if (v.purpose === "cosign") return { action: v.preset! };
-    if (v.purpose === "cancel") return { action: { kind: "cancel", ...feeFor(v.mode, "cancel", d) } as Action };
+    if (v.purpose === "cancel") {
+      // v4.2: the recovery phrase cancels and freezes, unless the program predates CancelLock.
+      const tree = v.signer!.tree;
+      let supported = true;
+      if (v.freeze && tree === RECOVERY_TREE) {
+        const w = findVault(v.key)!;
+        const payer = d.feePayer ?? (d.relayer ? new PublicKey(d.relayer.relayer) : null);
+        supported = payer ? await supportsCancelLock(programFor(w.cluster), payer, new PublicKey(w.address)).catch(() => false) : false;
+      }
+      const c = cancelKind({ tree, freeze: !!v.freeze && tree === RECOVERY_TREE, days: Number(v.freezeDays ?? DEFAULT_CANCEL_LOCK_DAYS), supported });
+      if (c.note) {
+        v.note = c.note;
+        v.freeze = false;
+      }
+      return { action: { ...c.kind, ...feeFor(v.mode, c.kind.kind, d) } as Action };
+    }
     const w = findVault(v.key)!;
     const isSolAsset = v.asset === SOL_MINT.toBase58();
     const holding = isSolAsset ? null : v.assets?.tokens.find((t) => t.mint.toBase58() === v.asset) ?? null;
@@ -349,12 +372,34 @@ on({
       }
       await sendNow(v);
     } catch (e) {
+      // v4.2: a program without CancelLock refuses it before anything is published (open_unlock
+      // cannot even decode it): drop the frozen freeze and offer a plain cancel instead.
+      if (isUnsupportedActionError(e) && v.frozen?.action.kind === "cancelLock") {
+        const r = await discardUnsupported(v);
+        if (r) return;
+      }
       v.sendErr = explainError(e);
       v.stage = "review";
       render();
     }
   },
 });
+
+/** Drops a CancelLock the program could not decode (nothing of it was published) and reviews a plain cancel. */
+async function discardUnsupported(v: SignView): Promise<boolean> {
+  const ctx = ctxOf(v);
+  const f = v.frozen!;
+  await store.clearAttempted(ctx.vault.toBase58(), ctx.signer.tree, f.leaf);
+  const r = await discard(ctx, f);
+  if (!r.ok) return false;
+  v.frozen = null;
+  v.pre = null;
+  v.freeze = false;
+  v.steps = [];
+  v.note = "The Noxvault program on this network does not support cancel and freeze yet (it arrives with the v4.2 upgrade). Nothing was published; review the plain cancel below.";
+  await review(v);
+  return true;
+}
 
 async function sendNow(v: SignView) {
   const f = v.frozen!;
@@ -409,8 +454,11 @@ on({
     const ta = f.elements.namedItem("words") as HTMLTextAreaElement;
     const words = ta.value;
     ta.value = ""; // never kept in the DOM
-    const n = Number(String(new FormData(f).get("n") ?? "0"));
+    const fdata = new FormData(f);
+    const n = Number(String(fdata.get("n") ?? "0"));
     v.recN = String(n);
+    v.freeze = fdata.get("freeze") === "1";
+    v.freezeDays = String(fdata.get("days") ?? v.freezeDays ?? DEFAULT_CANCEL_LOCK_DAYS);
     v.err = "";
     let master: Uint8Array | null = null;
     try {
@@ -478,7 +526,14 @@ function timingBox(v: SignView, a: Action): string {
   if (a.kind === "withdraw" && offWhitelist(v.state, a.dest))
     html += `<div class="alert bad"><div class="t">⚠ NOT ON THE WHITELIST</div><p style="margin:4px 0 0">${esc(new PublicKey(a.dest).toBase58())} is not one of this vault's whitelisted addresses. Check every character. If you did not type it yourself, stop.</p></div>`;
   if (!t) {
-    if (a.kind === "cancel") html += `<div class="note">${v.state.pending ? "Stops the pending payout. It never executes." : "Ends the lockdown / clears what is pending."}</div>`;
+    if (a.kind === "cancel")
+      html += `<div class="note">${v.state.pending ? "Stops the pending payout. It never executes." : "Ends the lockdown / clears what is pending."}${
+        v.signer?.tree === RECOVERY_TREE ? " A plain recovery cancel also ends any lockdown; whoever holds the main phrase can queue a new payout right after." : ""
+      }</div>`;
+    if (a.kind === "cancelLock")
+      html += `<div class="alert warnc"><div class="t">🧊 CANCEL AND FREEZE ${esc(Math.round(Number(a.secs) / 86_400))} DAYS</div><p style="margin:4px 0 0">${
+        v.state.pending ? "Stops the pending payout, then f" : "F"
+      }reezes the vault until about ${esc(new Date((Math.max(v.state.lockdownUntil, now()) + Number(a.secs)) * 1000).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }))}. Meanwhile the main phrase alone can only Ping or cancel: nothing can be withdrawn or migrated with it, and its Pings do not count as activity. The owner can still escape: main phrase and recovery phrase together move everything to a new vault (on nox-vault.com).</p></div>`;
     return html;
   }
   if (t.kind === "instant") html += `<div class="note ok-note"><b>Instant.</b> Executes as soon as it is approved (${esc(t.why)}).</div>`;
@@ -493,7 +548,7 @@ defineView("sign", () => {
   const v = sv();
   const w = findVault(v.key);
   if (!w) return back("Vaults", "home");
-  const title = v.purpose === "send" ? "Send" : v.purpose === "cancel" ? "Cancel pending payout" : "Approve (co-sign)";
+  const title = v.purpose === "send" ? "Send" : v.purpose === "cancel" ? (v.freeze && (!v.signer || v.signer.tree === RECOVERY_TREE) ? "Cancel and freeze" : "Cancel pending payout") : "Approve (co-sign)";
   const head = `${back(w.label || shortAddr(w.address), "sign-back")}<div class="h">${esc(title)} <span class="grow"></span></div>`;
   const note = v.note ? `<div class="note warn" style="margin-bottom:8px">${esc(v.note)}</div>` : "";
   switch (v.stage) {
@@ -502,11 +557,13 @@ defineView("sign", () => {
         <p class="muted" style="margin:0">Who cancels it?</p>
         <button class="btn danger block" data-a="cancel-recovery">With the recovery phrase</button>
         <button class="btn block" data-a="cancel-owner">With my owner phrase (uses one of my one-time keys)</button>
-        <div class="note warn">If someone else started this payout, they may have your owner phrase. Cancel with the recovery phrase, then move your funds.</div></div>`;
+        <div class="note warn">If someone else started this payout, they may have your owner phrase. Cancel with the recovery phrase and freeze the vault (14 days by default), then move your funds to a new vault: during the freeze the owner phrase alone moves nothing.</div></div>`;
     case "phrase":
       return `${head}<form class="panel stack" data-a="rec-submit" autocomplete="off">
         <label class="field"><span>Recovery phrase (24 words)</span><textarea name="words" rows="4" class="secret" autocapitalize="off" spellcheck="false" autofocus></textarea></label>
         <label class="field"><span>Vault number</span><input type="text" name="n" inputmode="numeric" value="${esc(v.recN ?? "0")}"/></label>
+        <label class="check"><input type="radio" name="freeze" value="1" ${v.freeze ? "checked" : ""}/> <span>Cancel and freeze for <input type="text" name="days" inputmode="numeric" value="${esc(v.freezeDays ?? DEFAULT_CANCEL_LOCK_DAYS)}" style="width:3.2em"/> days (recommended if your main phrase may be stolen)</span></label>
+        <label class="check"><input type="radio" name="freeze" value="0" ${v.freeze ? "" : "checked"}/> <span>Plain cancel (also ends a lockdown)</span></label>
         ${v.err ? `<div class="err">${esc(v.err)}</div>` : ""}
         <button class="btn danger block" type="submit">Check and continue</button>
         <div class="dim small">Used for this one cancel only. It is never stored and is wiped from memory when you leave this screen.</div></form>`;

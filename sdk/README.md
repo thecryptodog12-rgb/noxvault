@@ -6,8 +6,9 @@ so spending from it does not rely on ed25519. The SDK holds everything a client 
 and IDL, vault and state addresses, account decoders, the signing and action planner, the relayer
 checks, and simple deposit ("fund") instructions for wallets and apps.
 
-> **Devnet only, unaudited.** The program (`8iDqwPFRxr2rHiuieVhGL4jdTT7XPE5qPAReS6VzTPw4`, v4.1) runs
-> on Solana devnet and is still upgradeable. It has had an internal review, not an external audit.
+> **Devnet only, unaudited.** The program (`8iDqwPFRxr2rHiuieVhGL4jdTT7XPE5qPAReS6VzTPw4`) runs
+> on Solana devnet and is still upgradeable. This SDK follows program v4.2; the recovery action
+> `cancelLock` works only once devnet runs v4.2 (check with `supportsCancelLock`). It has had an internal review, not an external audit.
 > Do not put funds you cannot afford to lose into a vault. See the [risks](https://www.nox-vault.com/risks)
 > and the [docs](https://www.nox-vault.com/docs).
 
