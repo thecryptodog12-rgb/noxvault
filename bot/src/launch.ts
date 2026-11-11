@@ -17,14 +17,11 @@ export const pumpUrl = (token: string) => `https://pump.fun/coin/${token}`;
 
 const NO_DMS = "Nobody from Noxvault will DM you. Only trust the CA on nox-vault.com and @noxvaultHQ.";
 
-/** Launch time in CEST/CET, e.g. "20:00 CEST". */
+/** Launch time in UTC, e.g. "18:00 UTC". */
 export function launchClock(launchAt: string): string {
   const d = new Date(launchAt);
   const hm = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
-  const zone = new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", timeZoneName: "short" })
-    .formatToParts(d)
-    .find((p) => p.type === "timeZoneName")?.value;
-  return zone ? `${hm} ${zone}` : hm;
+  return `${hm} UTC`;
 }
 
 /** "2h 14m" (or "45s" in the last minute); null once the launch time has passed. */

@@ -28,7 +28,7 @@ function Ca() {
   if (!NOX_TOKEN) {
     return (
       <div className="rounded-md border border-line-2 bg-ink px-3 py-2.5">
-        <Label>contract address · launching on pump.fun at {launchCest} CEST</Label>
+        <Label>contract address · launching on pump.fun at {launchCest} UTC</Label>
         <div className="mt-1.5 text-[22px] font-bold text-teal">
           <Countdown />
         </div>

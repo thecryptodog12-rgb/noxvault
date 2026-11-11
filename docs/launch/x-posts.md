@@ -1,6 +1,6 @@
 # $NOX launch — X posts (@noxvaultHQ)
 
-Images: docs/launch/*.jpg (16:9). Post order and times are a suggestion (CEST, 13 Oct 2026).
+Images: docs/launch/*.jpg (16:9). Post order and times are a suggestion (UTC, 13 Oct 2026).
 Never post a contract address that did not come from the pump.fun page you created yourself.
 
 ---
@@ -13,7 +13,7 @@ One leak, one drainer, one quantum computer, and it's gone.
 Noxvault is the safer wallet for Solana: hash-based keys, a backup key, trusted addresses, inheritance, all enforced on-chain.
 
 $NOX launches tonight.
-20:00 CEST · fair launch on pump.fun · no presale
+18:00 UTC · fair launch on pump.fun · no presale
 
 www.nox-vault.com
 

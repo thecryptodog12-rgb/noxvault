@@ -5,8 +5,8 @@ const AT = "2026-10-13T20:00:00+02:00";
 const MINT = "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm";
 
 describe("launch commands", () => {
-  it("launchClock shows CEST", () => {
-    expect(launchClock(AT)).toBe("20:00 CEST");
+  it("launchClock shows UTC", () => {
+    expect(launchClock(AT)).toBe("18:00 UTC");
   });
   it("timeLeft", () => {
     const t = Date.parse(AT);
@@ -16,7 +16,7 @@ describe("launch commands", () => {
   });
   it("/ca before launch: countdown, no address", () => {
     const s = caText({ token: "", launchAt: AT }, Date.parse(AT) - 3600_000);
-    expect(s).toContain("20:00 CEST");
+    expect(s).toContain("18:00 UTC");
     expect(s).toContain("in 1h 0m");
     expect(s).not.toContain("pump.fun/coin");
   });

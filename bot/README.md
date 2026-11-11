@@ -25,7 +25,7 @@ The first poll after `/watch` only records the latest signature — no backfill.
 | `/watch <address>` | watch a vault address (base58, max 10 per chat) |
 | `/unwatch <address>` | stop watching |
 | `/list` | addresses this chat watches |
-| `/ca` | the $NOX contract address + pump.fun link (before launch: countdown to 20:00 CEST) |
+| `/ca` | the $NOX contract address + pump.fun link (before launch: countdown to the launch time, in UTC) |
 | `/buy` | short how-to-buy steps + https://www.nox-vault.com/buy |
 | `/links` | site, X, buy guide, whitepaper |
 | `/start`, `/help` | explanation + safety note |
