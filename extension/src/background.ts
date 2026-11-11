@@ -56,7 +56,7 @@ async function doPoll(only?: string[]) {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       // Keep the last good snapshot so the popup still shows something; flag the error.
-      next = { checkedAt: now(), snap: prev, error: /decode|offset|range/i.test(msg) ? "Could not decode this account (older vault version?)" : msg.slice(0, 160) };
+      next = { checkedAt: now(), snap: prev, error: /decode|offset|range/i.test(msg) ? "Could not decode this account (older vault version?)" : /429|rate l|Too Many/i.test(msg) ? "RPC busy, showing last check. Retrying soon." : msg.slice(0, 160) };
     }
     status[k] = next;
     await save({ status }); // progressive: the popup re-renders as each vault lands

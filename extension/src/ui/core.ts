@@ -36,7 +36,10 @@ export const ago = (t: number) => {
   const s = now() - t;
   return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`;
 };
-export const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+export const errText = (e: unknown) => {
+  const m = e instanceof Error ? e.message : String(e);
+  return /429|rate l|Too Many/i.test(m) ? "The RPC is busy (rate limited). Try again in a moment, or set your own RPC in Settings." : m;
+};
 
 const $toast = () => document.getElementById("toast")!;
 export function toast(msg: string) {
