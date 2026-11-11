@@ -1,6 +1,8 @@
-// Service worker: polls every watched vault on a chrome.alarms schedule, stores the snapshots for the
-// popup, fires one desktop notification per new event and keeps the red badge in sync.
-// It only makes read-only JSON-RPC calls. It never sees a phrase or a key.
+// Service worker: polls every vault on a chrome.alarms schedule, stores the snapshots for the
+// popup, fires one desktop notification per new event, keeps the red badge in sync, and enforces
+// the auto-lock. It only makes read-only JSON-RPC calls and never decrypts or signs anything:
+// signing happens in the extension page the user is looking at.
+import { lock, lockDue, readUnlocked } from "./core/session";
 import { badgeCount, dedupe, extAlerts } from "./lib/alerts";
 import { readSnapshot } from "./lib/chain";
 import { SITE, parseAddress, rpcFor, rpcOriginPattern } from "./lib/net";
@@ -8,6 +10,7 @@ import { MAX_WATCHED, load, save } from "./lib/store";
 import { watchKey, type ExtAlert, type ExtSnapshot, type VaultStatus, type Watched } from "./lib/types";
 
 const ALARM = "nox-poll";
+const LOCK_ALARM = "nox-autolock";
 const BAD = "#ff6b7a";
 
 async function ensureAlarm(force = false) {
@@ -72,8 +75,10 @@ async function doPoll(only?: string[]) {
 
 async function notify(a: ExtAlert) {
   const id = `nox-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  const { notifUrls } = await load("notifUrls");
-  notifUrls[id] = a.url;
+  const { notifUrls, watched } = await load("notifUrls", "watched");
+  // v0.2: pending / lockdown alerts open the vault inside the extension (cancel happens there).
+  const w = watched.find((x) => x.address === a.vault);
+  notifUrls[id] = w && a.urgent ? chrome.runtime.getURL(`popup.html?tab=1#vault=${encodeURIComponent(watchKey(w))}`) : a.url;
   const keys = Object.keys(notifUrls);
   for (const k of keys.slice(0, Math.max(0, keys.length - 50))) delete notifUrls[k];
   await save({ notifUrls });
@@ -82,7 +87,7 @@ async function notify(a: ExtAlert) {
     iconUrl: chrome.runtime.getURL("icons/icon-128.png"),
     title: a.title,
     message: a.message,
-    contextMessage: a.urgent ? "Noxvault never asks for your phrase in this extension." : "Noxvault · devnet · unaudited",
+    contextMessage: a.urgent ? "Open the extension to cancel. Nobody from Noxvault will ever ask for your phrase." : "Noxvault · devnet · unaudited",
     priority: a.urgent ? 2 : 0,
     requireInteraction: a.urgent,
   });
@@ -170,10 +175,34 @@ chrome.permissions.onAdded.addListener((p) => {
   if (p.permissions?.includes("scripting") && p.origins?.some((o) => o.includes("nox-vault.com"))) void importAndAdd();
 });
 
-chrome.runtime.onInstalled.addListener(() => void ensureAlarm(true));
-chrome.runtime.onStartup.addListener(() => void ensureAlarm());
+// ---------- auto-lock ----------
+// The unlocked masters live in chrome.storage.session (src/core/session.ts). Every minute: lock when
+// idle for longer than the setting. A browser restart clears session storage by itself; onStartup
+// removes it again to be sure.
+
+async function checkLock() {
+  const u = await readUnlocked();
+  if (!u) return;
+  const { settings } = await load("settings");
+  if (lockDue(u, settings.autoLockMin, Date.now())) await lock();
+}
+
+function ensureLockAlarm() {
+  void chrome.alarms.get(LOCK_ALARM).then((a) => (a ? undefined : chrome.alarms.create(LOCK_ALARM, { periodInMinutes: 1 })));
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  void ensureAlarm(true);
+  ensureLockAlarm();
+});
+chrome.runtime.onStartup.addListener(() => {
+  void lock();
+  void ensureAlarm();
+  ensureLockAlarm();
+});
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === ALARM) void poll();
+  if (a.name === LOCK_ALARM) void checkLock();
 });
 
 chrome.notifications.onClicked.addListener(async (id) => {
@@ -182,7 +211,7 @@ chrome.notifications.onClicked.addListener(async (id) => {
   chrome.notifications.clear(id);
 });
 
-export type Msg = { type: "refresh"; only?: string[] } | { type: "settings" } | { type: "import" };
+export type Msg = { type: "refresh"; only?: string[] } | { type: "settings" } | { type: "import" } | { type: "lock" };
 
 chrome.runtime.onMessage.addListener((msg: Msg, _sender, reply) => {
   (async () => {
@@ -195,6 +224,9 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, reply) => {
         return { ok: true };
       case "import":
         return { ok: true, ...(await importAndAdd()) };
+      case "lock":
+        await lock();
+        return { ok: true };
     }
   })()
     .then(reply)
@@ -204,4 +236,6 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, reply) => {
 
 // The worker restarts often; make sure the alarm exists and the badge is current each time.
 void ensureAlarm();
+ensureLockAlarm();
+void checkLock();
 void updateBadge();

@@ -1,137 +1,158 @@
-# Noxvault browser extension (v0.1, watch-only)
+# Noxvault browser extension (v0.2, wallet)
 
-A Chrome / Brave extension (Manifest V3) that keeps an eye on your Noxvault vaults from the toolbar:
+A Chrome / Brave extension (Manifest V3) that is a full wallet for Noxvault vaults, on **Solana devnet**.
+Unaudited software: use test SOL only.
 
-- **Watch vaults**: add vault addresses by hand, or import the vaults you created on nox-vault.com in
-  this browser. Network: devnet (default), mainnet-beta, or a custom RPC.
-- **Per vault**: SOL balance, token balances, rules (signers/threshold, withdrawal delay, instant
-  limit, whitelist, recovery key, testament, one-time keys left) and status: pending withdrawal or
-  migration (amount, destination, live countdown), lockdown, recovery and testament clocks, sealed letters.
-- **Background alerts**: a service worker polls the chain every 1, 2 or 5 minutes (`chrome.alarms`).
-  A new pending withdrawal, migration, lockdown, an inactivity clock under 14/3/1 days or a letter
-  opening within a week fires one desktop notification, e.g.
-  `⚠️ 42 SOL wants to leave vault 8Hk2…: executes in 2 days 23 h. Not you? Cancel with your recovery phrase.`
-  The red badge counts what still needs attention. Each event notifies once. Clicking opens the
-  right page on nox-vault.com (`/recovery?vault=…` for cancel / lockdown, `/mine` for the owner).
-- **Deposit**: the vault address with copy button and a QR code generated locally.
+- **Onboarding like MetaMask**: create a 24-word phrase (shown blurred, revealed on click, three words
+  confirmed) or import one; set a password. Several phrases ("accounts") under one password.
+- **Create a vault** in the extension with the site's presets (Personal, Anti-theft, Team multisig, Slow
+  treasury, Vesting, DAO) and settings (recovery key, whitelist, instant limit, delay, co-signer codes,
+  testament, duress phrase). The one-time-key tree is built by the site's own worker
+  (`web/lib/tree.worker.ts`). A recovery or duress phrase is **shown once, confirmed, and never stored**.
+  Then fund + initialize: through the site's relayer (free, Guardian tier and ≥ 0.02 SOL), or paid by the
+  account's fee account. Devnet: "Get test $NOX" calls the site's faucet (Sentinel tier).
+- **Vault home**: SOL and token balances, rules, status, clocks, one-time keys left (warning under 20),
+  open co-signer approvals, recent activity. The v0.1 alerts, badge and notifications keep running, also
+  while locked.
+- **Send** SOL or SPL tokens: form → review → sign → send. The review is the SDK's `preflightAction` plus
+  a plain summary: destination, amount, fee, which one-time key, and whether it is **instant** or becomes
+  a **pending payout** (and when it executes), with a red warning for a destination that is not on the
+  whitelist. Fees: the relayer (the vault repays it, 0.0001 SOL; free for Sentinel vaults and lockdown
+  cancels) or the fee account.
+- **Pending payouts**: cancel with the recovery phrase, typed in for that one action and wiped afterwards,
+  or with your own owner phrase. Execute a due payout (the fee account pays the network fee; the site's
+  keeper also does this on its own). Lockdown shown with a countdown; the recovery cancel ends it.
+- **Deposit**: address, copy, local QR. **Multiple vaults and accounts**: rename, remove, export the
+  vault config (JSON), find a phrase's existing vaults on chain.
+- **Settings**: network (devnet default; mainnet shown as "not live yet", signing off), custom RPC,
+  auto-lock timer (5/15/30/60 min), alert interval, notifications, accounts, reveal phrase (password),
+  lock now, reset.
 
-Signing, withdrawing and cancelling stay on [nox-vault.com](https://www.nox-vault.com): the WOTS+
-signing UI lives there and the extension only deep-links to it. **The extension never asks for, reads
-or stores a phrase or key.** Noxvault runs on Solana devnet and is unaudited.
+Popup 380×600; long flows can be opened in a tab (⤢ button, `popup.html?tab=1`).
+
+## Security model
+
+| What | Where | How |
+| --- | --- | --- |
+| Account phrases (24 words) | `chrome.storage.local` key `keyring` | **Encrypted only**: AES-256-GCM with a 256-bit key from PBKDF2-HMAC-SHA256, **600 000 iterations**, a random 16-byte salt and a random 12-byte IV for every save, fixed AAD. WebCrypto. A blob with fewer iterations is refused. (`src/core/keyring.ts`) |
+| Your password | nowhere | Typed, used to derive the key, dropped. Wrong passwords are counted; from the 5th in a row unlocking pauses 30 s, doubling to 15 min. |
+| Master secrets while unlocked | `chrome.storage.session` key `unlocked` | In memory only (never on disk), cleared when the browser closes (and again on startup), readable only by the extension's own pages and service worker. (`src/core/session.ts`) |
+| Auto-lock | service worker alarm, every minute | Removes the session after N minutes idle (setting, default 15). Pages close any screen that holds a secret when it locks. |
+| Recovery and duress phrases | **never stored** | Generated in the page, shown once, confirmed, then dropped. Their trees are built without the tree cache. A recovery phrase typed in to cancel is read from the field once (the field is cleared), used for that cancel, and its secret seed is zeroed when the screen closes. |
+| One-time key trees | IndexedDB `noxvault/trees` (extension origin) | **Public data only** (the site's own cache, `web/lib/trees.ts`): only the account phrases' signer trees. |
+| Signing state | `chrome.storage.local` `pendingActions`, `attempted` | Public: which action is frozen for which one-time key, and whether something was sent for it. Written **before** signing / sending (port of `web/lib/unlock.ts`). |
+| Fee account | derived, never stored | An ordinary Solana key: `seed = SHA-256("nox-ext/fee-account/v1" ‖ master)`. It only pays network fees and rent; it has no power over any vault. Keep a little SOL on it. |
+| Vault configs | `chrome.storage.local` `watched[].config` | Public: the rules fixed in the vault address (the site keeps the same JSON as `nox3.config.<vault>`). |
+
+Signing never leaves the page you are looking at: the tree, the WOTS signature and the transactions are
+built in the extension page (popup or tab). The relayer on nox-vault.com receives only the finished,
+public signature (exactly like the site) and the service worker never decrypts anything. JS strings
+cannot be zeroed; byte arrays (masters, secret seeds) are zeroed after use where the code holds them.
+
+One-time keys: the extension does not reinvent the WOTS logic. It imports the SDK (`../sdk`) and the
+site's pure modules (`../web/lib/{unlock,configJson,presets,format,alerts/logic}.ts`, the tree worker) and
+ports, line by line, the non-React parts of the site's `ActionPanel.tsx` (`src/core/signing.ts`) and
+`SetupVault.tsx` (`src/core/create.ts`). Before every signature it reads the vault's whole history
+(`findSignedMessages`) and the on-chain used bitmap (`pickLeaf`): a key that already published part of a
+signature can only complete that same message; preflight runs before signing and the history is read
+again right before the action is frozen.
 
 ## How it is built
 
 | Path | What |
 | --- | --- |
-| `src/background.ts` | service worker: alarm → poll → notifications + badge; site import |
-| `src/popup.ts`, `public/popup.html`, `public/popup.css` | popup UI (plain DOM), 380×600 |
-| `src/lib/chain.ts` | reads one vault with the SDK (`../sdk/client`: `fetchState`, `vaultSchedules`, `vaultLetters`, …) |
-| `src/lib/alerts.ts` | wraps the site's alert rules (`../web/lib/alerts/logic.ts` `alertsFor`) for desktop notifications, dedupe, badge |
-| `src/lib/rules.ts`, `status.ts`, `net.ts`, `qr.ts` | pure display logic, address checks, deep links, local QR |
-| `test/` | vitest unit tests for all pure logic |
-| `scripts/` | esbuild build, zip, icon render, devnet smoke test, Playwright screenshots |
+| `src/background.ts` | service worker: alarm → poll → notifications + badge; auto-lock; site import |
+| `src/popup.ts`, `src/ui/*` | the app page (popup and tab): onboarding/lock, vaults, send/cancel, create/fund, settings |
+| `src/core/keyring.ts`, `session.ts`, `wallet.ts` | encryption, the unlocked session, accounts |
+| `src/core/signing.ts` | port of `web/components/vault/ActionPanel.tsx` (history → leaf → preflight → freeze → send) |
+| `src/core/create.ts` | port of `web/app/create/SetupVault.tsx` (presets, validation, config, free vault number) |
+| `src/core/trees.ts` | copy of `web/lib/trees.ts` (only the worker URL differs; a test guards the rest) |
+| `src/core/pendingStore.ts` | the storage half of `web/lib/unlock.ts` on `chrome.storage.local` |
+| `src/core/relayer.ts` | the site's `/api/relayer-info`, `/api/relay`, `/api/init`, `/api/faucet` |
+| `src/core/feeAccount.ts`, `vaults.ts`, `timing.ts` | fee account, discovery / init / execute / activity, instant-vs-pending |
+| `src/lib/*` | v0.1: chain snapshot, alerts, rules, status, QR, storage |
+| `test/` | vitest: crypto storage, one-time-key tracking, parity with site/SDK, v0.1 logic |
+| `scripts/` | esbuild build, zip, icons, smoke, screenshots, **e2e on devnet**, `run-ts.mjs` |
 
-The SDK and the alert logic are imported from the repo (`../sdk`, `../web/lib/alerts/logic.ts`), not
-copied. Their bare imports resolve against `extension/node_modules`, so the bundle has one pinned copy
-of web3.js / Anchor. Fonts (JetBrains Mono, OFL) are bundled; MV3 forbids remote code and the CSP is
-`script-src 'self'`.
-
-### Permissions
+### Permissions (store-listing justifications)
 
 | Permission | Why |
 | --- | --- |
-| `storage` | watched addresses, labels, settings, last snapshot per vault, which alerts were shown |
-| `alarms` | the background poll |
-| `notifications` | the alerts |
-| host `api.devnet.solana.com`, `api.mainnet-beta.solana.com` | read-only JSON-RPC |
-| optional host (asked at runtime, one host at a time) | your custom RPC, if you set one |
-| optional `scripting` + `nox-vault.com` (asked when you click Import) | read the names of the `nox3.config.<vault>` keys the site saved; never any value |
+| `storage` | the encrypted keyring, vault list, settings, last snapshot per vault, alerts shown; `storage.session` holds the unlocked secret in memory |
+| `alarms` | the background poll and the auto-lock check |
+| `notifications` | alerts about pending payouts, lockdowns and inactivity clocks |
+| host `api.devnet.solana.com`, `api.mainnet-beta.solana.com` | JSON-RPC: read vaults, send signed transactions |
+| host `www.nox-vault.com/api/*` | the Noxvault relayer (gasless sending, vault initialization) and the devnet test-token faucet. Only public data is sent: finished signatures and public vault configs |
+| optional host (asked at runtime, one host) | your custom RPC, if you set one |
+| optional `scripting` + `nox-vault.com` (asked on Import) | read the names of the `nox3.config.<vault>` keys the site saved; never any value |
+
+No remote code: everything is bundled, CSP `script-src 'self'`. Single purpose: "A wallet for Noxvault
+vaults on Solana: create vaults, sign actions with one-time keys, and get alerts about pending payouts."
 
 ## Develop
 
 ```sh
 cd extension
 pnpm install
-pnpm run build      # → dist/
-pnpm test           # unit tests
-pnpm run typecheck
-node scripts/smoke.mjs            # read every devnet vault through the extension's chain code
-pnpm run screenshot               # full Chromium + dist/ → docs/*.png (needs `npx playwright install chromium`)
-pnpm run zip                      # build + noxvault-extension-<version>.zip for the Web Store
+pnpm run build       # → dist/
+pnpm test            # unit tests
+pnpm exec tsc --noEmit
+pnpm run zip         # build + noxvault-extension-<version>.zip
+FUNDER=~/.config/solana/id.json node scripts/e2e.mjs   # full devnet run, screenshots → docs/v0.2/
 ```
 
-## Load it in Chrome or Brave ("Load unpacked")
+`scripts/e2e.mjs` drives the real extension in Playwright's full Chromium (`--load-extension`): onboard →
+create an Anti-theft vault → fund it and the fee account → initialize → send 0.06 SOL to a new address
+(pending, 72 h) → cancel with the recovery phrase → send the rest home (instant) → return the fee
+account's SOL. It writes `docs/v0.2/e2e-report.json` with every signature. `STOP=create` stops before
+any SOL moves. Needs `npx playwright install chromium` once.
 
-1. `cd extension && pnpm install && pnpm run build`
-2. Open `chrome://extensions` (Brave: `brave://extensions`).
-3. Switch on **Developer mode** (top right).
-4. Click **Load unpacked** and pick the `extension/dist` folder.
-5. Pin it: puzzle-piece icon in the toolbar → pin **Noxvault**.
-6. Click the icon → **+ Add vault address** (or **Import from site** if you created vaults on
-   nox-vault.com in this browser). macOS: allow Chrome notifications in System Settings →
-   Notifications, or the alerts stay silent.
+## Load it in Chrome or Brave
 
-After a rebuild, press the reload arrow on the extension's card in `chrome://extensions`.
+1. `pnpm install && pnpm run build`, then `chrome://extensions` → Developer mode → **Load unpacked** →
+   `extension/dist`. Pin it.
+2. Click the icon → create or import a phrase, set a password.
+3. After a rebuild press the reload arrow on the extension's card.
 
 ## Publish on the Chrome Web Store
 
-The owner does this once, under the project's pseudonymous Google account (thecryptodog12 / Noxvault),
-not a personal one.
+Same as v0.1 (pseudonymous developer account, US$5 one-time, non-trader): `pnpm run zip`, upload, fill in
+the listing with the permission table above, "Remote code: No", data usage: nothing collected.
+A wallet that holds keys gets a closer review; say "devnet, unaudited" in the description.
 
-1. Register as a Chrome Web Store developer: <https://chrome.google.com/webstore/devconsole>. One-time
-   **US$5** registration fee. Use the pseudonymous account; set the publisher display name to
-   "Noxvault". Google may ask to verify an email address and, for some regions, a physical address that
-   is not shown publicly for non-trader accounts; declare **non-trader** (no sales).
-2. `cd extension && pnpm run zip` → `noxvault-extension-<version>.zip`.
-3. Dev console → **New item** → upload the zip.
-4. **Store listing**: name "Noxvault", short description (from the manifest), category "Tools" (or
-   "Productivity"), language English. Upload the 128×128 icon (`public/icons/icon-128.png`) and at
-   least one 1280×800 or 640×400 screenshot (frame the popup shots in `docs/` on an ink background).
-   Homepage: https://www.nox-vault.com.
-5. **Privacy practices** tab:
-   - Single purpose: "Watch Noxvault vault addresses on Solana and alert the user to pending
-     withdrawals, lockdowns and inactivity clocks."
-   - Justify each permission with the table above.
-   - Remote code: **No**.
-   - Data usage: tick nothing (no data collected); certify the three disclosures.
-   - Privacy policy URL: publish the statement below on the site (e.g. `/extension-privacy`) and link it.
-6. **Distribution**: Public (or Unlisted for a first round), all regions.
-7. Submit for review. First reviews usually take a few days; `optional_host_permissions: https://*/*`
-   (only for a custom RPC) can draw extra questions; answer with the custom-RPC justification.
-
-Updates: bump `version` in `package.json`, `pnpm run zip`, upload the new zip on the same item.
-
-### Privacy statement (for the store listing and the site)
+### Privacy statement
 
 > **Noxvault extension privacy statement**
 >
-> The Noxvault extension is watch-only. It does not collect, sell or share any personal data, and it
-> has no analytics, accounts or servers of its own.
+> The Noxvault extension has no accounts, analytics or servers of its own and collects no personal data.
 >
-> What it stores, only in your browser (`chrome.storage.local`): the vault addresses and labels you
-> add, your settings (network, custom RPC URL, check interval, notifications on/off), the last public
-> on-chain state of each watched vault, and which alerts it has already shown you.
+> Stored only in your browser: your phrases, encrypted with your password (AES-256-GCM, PBKDF2-SHA256
+> 600 000 iterations); vault addresses, labels and their public rules; settings; the last public state of
+> each vault; which alerts were shown. While unlocked, the decrypted secret is kept in memory only.
+> Recovery and duress phrases are never stored.
 >
-> What it sends: read-only JSON-RPC requests for your watched vault addresses to the Solana RPC
-> endpoint you choose (by default `api.devnet.solana.com`, or `api.mainnet-beta.solana.com`, or a
-> custom RPC you enter). That RPC provider sees those requests and your IP address, as with any
-> Solana wallet or explorer.
->
-> If you use "Import from nox-vault.com", the extension reads only the names of the vault entries that
-> nox-vault.com saved in this browser, to learn their addresses. It never reads, asks for or stores a
-> recovery phrase, owner phrase or any private key. Noxvault never asks for your phrase in the
-> extension; if anything does, it is not us.
->
-> Links in the extension open pages on www.nox-vault.com, which has its own privacy terms.
-> Uninstalling the extension deletes everything it stored.
+> Sent: JSON-RPC requests and signed transactions to the Solana RPC you choose (default
+> `api.devnet.solana.com`), and, when you use them, finished signatures and public vault settings to the
+> Noxvault relayer on www.nox-vault.com. Those services see your IP address. Your phrase and password are
+> never sent anywhere. Uninstalling the extension deletes everything it stored.
 
-## Known gaps (v0.1)
+## Next (not in v0.2)
 
-- Watch-only: no signing in the extension by design. Cancel / withdraw happen on nox-vault.com.
-- `/recovery?vault=` is passed but the current recovery page does not prefill the address from it yet.
-- The program is on devnet only; mainnet-beta shows "not a vault" for every address until a mainnet launch.
-- Token balances show the mint address, not a token name or price.
-- Public RPCs rate-limit (each vault costs about six reads per check). With many vaults, use a custom RPC
-  or a 5-minute interval.
-- Alerts only arrive while the browser is running (MV3 service worker + `chrome.alarms`).
-- Firefox is not packaged yet (MV3 there uses `background.scripts`).
+- dApp connection provider (`window.solana` injection / Wallet Standard), so sites can request signatures.
+- Hardware wallets.
+- Staking, schedules, budgets, sealed letters, migrate and the Escape Hatch in the extension: deep-link to
+  nox-vault.com for now ("Schedules, staking ↗").
+- Mainnet (the program is on devnet only), Firefox packaging, token names / prices.
+- Co-signer code generation (nox-vault.com/cosign) and showing approvals for slots other than your own.
+
+## Known gaps and caveats (v0.2)
+
+- Unaudited, devnet only. The extension inherits every limit of the program and the SDK.
+- JavaScript strings (the typed phrase, the password) cannot be wiped from memory; byte arrays are.
+- A recovery phrase typed into this browser is exposed to this browser for that moment. If you suspect
+  the computer, cancel from another device.
+- Signing runs in the open page: closing the popup mid-send is safe (the frozen action and the
+  "attempted" marker make the next try complete the same message), but use the tab for long flows.
+- Reading a vault's full history uses public RPC requests; heavy vaults may hit rate limits (then signing
+  is blocked, never guessed). Use a custom devnet RPC.
+- Alerts only arrive while the browser runs (MV3 service worker + `chrome.alarms`).

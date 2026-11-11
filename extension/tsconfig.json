@@ -19,8 +19,9 @@
       "@solana/spl-token": ["./node_modules/@solana/spl-token"],
       "@noble/hashes/*": ["./node_modules/@noble/hashes/*"],
       "@scure/bip39": ["./node_modules/@scure/bip39"],
-      "@scure/bip39/*": ["./node_modules/@scure/bip39/*"]
+      "@scure/bip39/*": ["./node_modules/@scure/bip39/*"],
+      "@nox/sdk/*": ["../sdk/*"]
     }
   },
-  "include": ["src", "test"]
+  "include": ["src", "test", "scripts/*.ts"]
 }

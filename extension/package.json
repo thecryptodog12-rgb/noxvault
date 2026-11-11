@@ -1,8 +1,8 @@
 {
   "name": "noxvault-extension",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Noxvault watch-only browser extension: vault balances, rules, pending withdrawals and alerts. Devnet, unaudited.",
+  "description": "Noxvault browser wallet: create vaults, send with one-time keys, cancel pending payouts, alerts. Devnet, unaudited.",
   "author": "thecryptodog12",
   "license": "Apache-2.0",
   "type": "module",
@@ -13,7 +13,8 @@
     "test": "vitest run",
     "zip": "node scripts/build.mjs && node scripts/zip.mjs",
     "icons": "node scripts/icons.mjs",
-    "screenshot": "node scripts/screenshot.mjs"
+    "screenshot": "STOP=create node scripts/e2e.mjs",
+    "e2e": "node scripts/e2e.mjs"
   },
   "dependencies": {
     "@coral-xyz/anchor": "0.31.1",

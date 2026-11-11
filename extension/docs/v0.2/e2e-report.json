@@ -1,0 +1,42 @@
+{
+  "funder": "BFwro7RnsG9GR2jV3yGXGwtGkRq8MDxH9LSoTAjMQf2x",
+  "txs": {
+    "depositVault": "2Lvrhn8w5LMmfVCGqSEA7W3MzmPEBahHsg1bBG9DUW2K5pqmsycXTqsjaKbLoxTR827wKRmLhNt3vY9GAMxumyAV",
+    "fundFeeAccount": "BQqc192tgSTLn6yUFNwg3QaQLjtfM4u2RkZZ5G8zu9w7NhMF5oQREvs9atRFVmCfCN1Dk6dBACiAjHM22gRZ6tb",
+    "init": "2gUbu9Mc6YfZ59fg1z6uQtJrUQyLjUwz6XESQELhFCzD73EFcdD68weR1uZAyyLR4yueAgmgaYuTVssz8jJq9iLL",
+    "withdrawPending": [
+      "LQFmePHm7DgbQNCYJ64iwLNSVKBa72HV8z7KUkSCyLyxwLcYKQDtZUsdYDWw7SS4eKFQwVdh2YjhVV9e2VQTYTD",
+      "FvQDTTY5PXiepVkez3yVtXwKCf1cLraN3vMktF3PJ3tY5ehUwSKbDudcQQShb5LSccnzAz8LjX5gzGDewdNJkLt"
+    ],
+    "cancelWithRecovery": [
+      "4JHSy6iL9ndH4qkSw4EQjWq1hkwFR5GB2oGYKBmJRMsvnNwCUH86NdtgBk9vdv65m6b2CsHoJM8rXYGwRc9tM6B5",
+      "mYidxC9YCAQyDFtzVVr8LMqVk4qz37Kak9UPUtvz4EyP23NuHye1PeC1fgDuHn5dnFDEPBQxtoukzD81UCCScuU"
+    ],
+    "withdrawHome": [
+      "4vHEGwN6CQLcjnhjCJL9obQKhYiYWDe5dQGUsjDvPgSxa6XZ9rAXNq2EiLYMoziPToi7gwyikUGCen7c7EnPRZEJ",
+      "5PLc5iQwS9fgufx8rLcwunmmKLVZHPn7dCHmv7cQWso2GiWotXU9hRnsujQg7evdDk3mpwYXtK9TFBbS3oSEQR3"
+    ],
+    "returnFee": "5hAsAL3YUCFe5rRAc6uXjpXY2WYDFwkvduiSysWkQdNxSd51GQZaT5naXyHdz9KZSf1FLaDCig857V14x6W6wj3J"
+  },
+  "steps": [
+    "funder BFwro7RnsG9GR2jV3yGXGwtGkRq8MDxH9LSoTAjMQf2x 4.261107973 SOL",
+    "extension id gambjgbkmodioeenkkaghbgnbodepnng",
+    "storage.local holds no phrase / password ✓ ( 692 bytes )",
+    "vault CMQnPwC2mMT8Ro8ccAyBTHpHgW4Es1wVWVRfxb7XRrFK",
+    "recovery phrase not stored ✓",
+    "deposited 0.1 SOL to vault: 2Lvrhn8w5LMmfVCGqSEA7W3MzmPEBahHsg1bBG9DUW2K5pqmsycXTqsjaKbLoxTR827wKRmLhNt3vY9GAMxumyAV",
+    "funded fee account 0.03 SOL: BQqc192tgSTLn6yUFNwg3QaQLjtfM4u2RkZZ5G8zu9w7NhMF5oQREvs9atRFVmCfCN1Dk6dBACiAjHM22gRZ6tb",
+    "init: Vault initialized. tx 2gUbu9Mc6YfZ…",
+    "withdraw 0.06 (pending): LQFmePHm7DgbQNCYJ64iwLNSVKBa72HV8z7KUkSCyLyxwLcYKQDtZUsdYDWw7SS4eKFQwVdh2YjhVV9e2VQTYTD FvQDTTY5PXiepVkez3yVtXwKCf1cLraN3vMktF3PJ3tY5ehUwSKbDudcQQShb5LSccnzAz8LjX5gzGDewdNJkLt",
+    "vault balance after queued withdraw 0.0999",
+    "cancel with recovery: 4JHSy6iL9ndH4qkSw4EQjWq1hkwFR5GB2oGYKBmJRMsvnNwCUH86NdtgBk9vdv65m6b2CsHoJM8rXYGwRc9tM6B5 mYidxC9YCAQyDFtzVVr8LMqVk4qz37Kak9UPUtvz4EyP23NuHye1PeC1fgDuHn5dnFDEPBQxtoukzD81UCCScuU",
+    "withdraw rest home (instant): 4vHEGwN6CQLcjnhjCJL9obQKhYiYWDe5dQGUsjDvPgSxa6XZ9rAXNq2EiLYMoziPToi7gwyikUGCen7c7EnPRZEJ 5PLc5iQwS9fgufx8rLcwunmmKLVZHPn7dCHmv7cQWso2GiWotXU9hRnsujQg7evdDk3mpwYXtK9TFBbS3oSEQR3",
+    "unlock after wrong password ✓",
+    "returned fee account SOL: 0.01492016 5hAsAL3YUCFe5rRAc6uXjpXY2WYDFwkvduiSysWkQdNxSd51GQZaT5naXyHdz9KZSf1FLaDCig857V14x6W6wj3J",
+    "funder spent 0.00538984 SOL net; vault holds 0 SOL"
+  ],
+  "vault": "CMQnPwC2mMT8Ro8ccAyBTHpHgW4Es1wVWVRfxb7XRrFK",
+  "feeAccount": "GyXJNksNLHYPEiNgfRZTcnHsWtyYLXTqxcfvxR4uutWX",
+  "spentSol": 0.00538984,
+  "vaultLeft": 0
+}

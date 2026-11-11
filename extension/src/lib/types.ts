@@ -1,13 +1,28 @@
 // Shared shapes. Everything stored in chrome.storage is plain JSON (no bigint, no PublicKey).
 import type { VaultSnapshot } from "../../../web/lib/alerts/logic";
+import type { ConfigJson } from "../../../web/lib/configJson";
 
 export type ClusterId = "devnet" | "mainnet-beta" | "custom";
+
+/** How this extension relates to a vault. "watch": address only (v0.1). The others belong to an account. */
+export type VaultRole = "watch" | "owner" | "cosigner" | "duress";
 
 export interface Watched {
   address: string;
   cluster: ClusterId;
   label: string;
   addedAt: number;
+  /** v0.2: absent on v0.1 entries (= "watch"). */
+  role?: VaultRole;
+  /** The account (phrase) whose tree signs for this vault. */
+  accountId?: string;
+  /** Vault number of that phrase (docs/SPEC.md §2) and the slot its tree sits in (0..2 signer, 4 duress). */
+  vaultNumber?: number;
+  slot?: number;
+  /** The full public config (web/lib/configJson.ts), saved at creation so an uninitialized vault can be initialized later. */
+  config?: ConfigJson;
+  /** Preset used at creation. */
+  preset?: string;
 }
 
 export interface Settings {
@@ -18,9 +33,12 @@ export interface Settings {
   /** Background poll interval, minutes (1..5). */
   intervalMin: number;
   notify: boolean;
+  /** Lock the wallet after this many minutes without use. */
+  autoLockMin: number;
 }
 
-export const DEFAULT_SETTINGS: Settings = { cluster: "devnet", customRpc: "", intervalMin: 2, notify: true };
+export const AUTOLOCK_CHOICES = [5, 15, 30, 60] as const;
+export const DEFAULT_SETTINGS: Settings = { cluster: "devnet", customRpc: "", intervalMin: 2, notify: true, autoLockMin: 15 };
 
 /** The vault's rules, flattened for display. Amounts are lamports as decimal strings; durations seconds. */
 export interface RulesView {

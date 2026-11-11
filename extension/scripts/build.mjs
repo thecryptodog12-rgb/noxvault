@@ -1,30 +1,21 @@
-// Builds the extension into dist/: bundles the service worker and the popup with esbuild and copies
-// public/ (manifest, popup.html, css, fonts, icons). `node scripts/build.mjs --watch` rebuilds on change.
+// Builds the extension into dist/: bundles the service worker, the app page (popup + full tab) and
+// the tree worker with esbuild and copies public/ (manifest, popup.html, css, fonts, icons).
+// `node scripts/build.mjs --watch` rebuilds on change.
 //
-// The bundles import the SDK straight from ../sdk and the pure alert logic from ../web/lib/alerts.
-// Bare imports from those files are resolved against extension/node_modules, so the extension
-// always ships one copy of web3.js / Anchor, its own pinned versions.
+// The bundles import the SDK straight from ../sdk and pure modules from ../web/lib (the site's own
+// code: alerts, presets, config JSON, action JSON, the tree worker). Bare imports from those files
+// are resolved against extension/node_modules, so the extension ships one copy of web3.js / Anchor,
+// its own pinned versions. The site's "@nox/sdk/<file>" alias is mapped to ../sdk/<file>.
 import { build, context } from "esbuild";
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ownDeps } from "./resolve.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(root, "dist");
 const watch = process.argv.includes("--watch");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-
-/** Resolve bare imports made by files outside extension/ (../sdk, ../web) from extension/node_modules. */
-const ownDeps = {
-  name: "own-deps",
-  setup(b) {
-    b.onResolve({ filter: /^[^./]/ }, async (args) => {
-      if (!args.importer || args.importer.startsWith(root + sep) || args.pluginData === "own-deps") return undefined;
-      const r = await b.resolve(args.path, { kind: args.kind, resolveDir: root, pluginData: "own-deps" });
-      return r.errors.length ? { errors: r.errors } : { path: r.path, sideEffects: r.sideEffects };
-    });
-  },
-};
 
 function copyStatic() {
   cpSync(join(root, "public"), dist, { recursive: true });
@@ -34,7 +25,12 @@ function copyStatic() {
 }
 
 const options = {
-  entryPoints: { background: join(root, "src/background.ts"), popup: join(root, "src/popup.ts") },
+  entryPoints: {
+    background: join(root, "src/background.ts"),
+    popup: join(root, "src/popup.ts"),
+    // The site's own worker, unchanged (web/lib/tree.worker.ts): builds a PUBLIC tree from a master.
+    "tree-worker": join(root, "../web/lib/tree.worker.ts"),
+  },
   outdir: dist,
   bundle: true,
   format: "iife",
@@ -45,7 +41,7 @@ const options = {
   legalComments: "none",
   inject: [join(root, "src/shim/node.ts")],
   define: { global: "globalThis", "process.env.NODE_ENV": '"production"' },
-  plugins: [ownDeps],
+  plugins: [ownDeps(root)],
   logLevel: "info",
 };
 

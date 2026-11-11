@@ -3,7 +3,7 @@
   "name": "Noxvault",
   "short_name": "Noxvault",
   "version": "0.0.0",
-  "description": "Watch your Noxvault quantum-safe Solana vaults: balances, rules, pending withdrawals and alerts. Watch-only. Devnet, unaudited.",
+  "description": "Wallet for Noxvault quantum-safe Solana vaults: create vaults, send with one-time keys, cancel pending payouts, alerts. Devnet, unaudited.",
   "homepage_url": "https://www.nox-vault.com",
   "minimum_chrome_version": "114",
   "icons": {
@@ -25,7 +25,7 @@
     "service_worker": "background.js"
   },
   "permissions": ["storage", "alarms", "notifications"],
-  "host_permissions": ["https://api.devnet.solana.com/*", "https://api.mainnet-beta.solana.com/*"],
+  "host_permissions": ["https://api.devnet.solana.com/*", "https://api.mainnet-beta.solana.com/*", "https://www.nox-vault.com/api/*"],
   "optional_permissions": ["scripting"],
   "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
   "content_security_policy": {
