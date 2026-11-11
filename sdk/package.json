@@ -7,11 +7,11 @@
   "homepage": "https://www.nox-vault.com/docs",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/thecryptodog12/noxvault.git",
+    "url": "git+https://github.com/thecryptodog12-rgb/noxvault.git",
     "directory": "sdk"
   },
   "bugs": {
-    "url": "https://github.com/thecryptodog12/noxvault/issues"
+    "url": "https://github.com/thecryptodog12-rgb/noxvault/issues"
   },
   "keywords": [
     "solana",

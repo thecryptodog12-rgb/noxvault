@@ -184,7 +184,7 @@ Options: `data-label`, `data-open="site"` (the public treasury page instead of t
 - **Keepers:** `executePendingIx`, `runScheduleIx`, `testamentIxs`, `migrateIxs`, `sweepInboxIxs`, `spendBudgetIx`.
 - **Addresses:** `vaultPda`, `statePda`, `approvalPda`, `schedulePda`, `budgetPda`, `inboxPda`, `linkPda`, `protocolPda`, …
 
-The protocol is specified in `docs/SPEC.md` in the [repository](https://github.com/thecryptodog12/noxvault);
+The protocol is specified in `docs/SPEC.md` in the [repository](https://github.com/thecryptodog12-rgb/noxvault);
 every rule a client must follow is implemented here.
 
 ## License
