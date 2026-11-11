@@ -155,7 +155,7 @@ function exposureCard(w: WalletMeta, res: HoldingsResult | undefined, c: WalletC
   return `<div class="expo t-${tone}">
     <div class="row between"><div class="t">⚛ QUANTUM-EXPOSED</div><span class="chip ${tone}">${esc(r.level === "none" ? "LOW" : r.level.toUpperCase())}</span></div>
     <div class="expo-h">This wallet is exposed: its address is its public key.</div>
-    <div class="muted small">${esc(r.headline)} A future quantum computer could derive the private key from it. Vaults sign with hash-based one-time keys instead.</div>
+    <div class="muted small">${esc(r.headline)} No quantum computer can do this today, but a large enough one could derive the private key from it. Vaults sign with hash-based one-time keys instead.</div>
     ${w.kind === "watch" ? "" : `<button class="btn primary block" style="margin-top:8px" data-a="w-protect">Protect it → move into a vault</button>`}
   </div>`;
 }

@@ -1,6 +1,6 @@
 {
   "name": "noxvault-extension",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Noxvault browser wallet: Solana wallet accounts with holdings and send, plus quantum-safe vaults (devnet). Unaudited.",
   "author": "thecryptodog12",
