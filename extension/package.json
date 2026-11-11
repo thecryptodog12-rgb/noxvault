@@ -1,0 +1,35 @@
+{
+  "name": "noxvault-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Noxvault watch-only browser extension: vault balances, rules, pending withdrawals and alerts. Devnet, unaudited.",
+  "author": "thecryptodog12",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "zip": "node scripts/build.mjs && node scripts/zip.mjs",
+    "icons": "node scripts/icons.mjs",
+    "screenshot": "node scripts/screenshot.mjs"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "0.31.1",
+    "@noble/hashes": "1.8.0",
+    "@scure/bip39": "1.6.0",
+    "@solana/spl-token": "0.4.14",
+    "@solana/web3.js": "1.98.4",
+    "buffer": "6.0.3",
+    "qrcode-generator": "1.5.2"
+  },
+  "devDependencies": {
+    "@types/chrome": "0.1.4",
+    "esbuild": "0.25.10",
+    "fflate": "0.8.2",
+    "playwright-core": "1.61.1",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  }
+}

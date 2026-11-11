@@ -7,3 +7,7 @@ test-ledger
 .yarn
 .vercel
 sdk/dist
+
+# browser extension build output
+extension/dist
+extension/*.zip
