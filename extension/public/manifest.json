@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Noxvault",
+  "short_name": "Noxvault",
+  "version": "0.0.0",
+  "description": "Watch your Noxvault quantum-safe Solana vaults: balances, rules, pending withdrawals and alerts. Watch-only. Devnet, unaudited.",
+  "homepage_url": "https://www.nox-vault.com",
+  "minimum_chrome_version": "114",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "Noxvault",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["storage", "alarms", "notifications"],
+  "host_permissions": ["https://api.devnet.solana.com/*", "https://api.mainnet-beta.solana.com/*"],
+  "optional_permissions": ["scripting"],
+  "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+  }
+}
