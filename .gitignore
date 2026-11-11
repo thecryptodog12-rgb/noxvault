@@ -11,3 +11,6 @@ sdk/dist
 # browser extension build output
 extension/dist
 extension/*.zip
+
+# private planning and outreach drafts (kept locally, never pushed)
+private/
