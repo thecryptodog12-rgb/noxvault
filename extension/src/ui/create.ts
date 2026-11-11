@@ -15,7 +15,8 @@ import { initWithFeeAccount } from "../core/vaults";
 import { qrSvg } from "../lib/qr";
 import { MAX_WATCHED, load, save } from "../lib/store";
 import { watchKey, type Watched } from "../lib/types";
-import { activeAccount, app, back, connFor, defineView, errText, esc, expandToTab, feeAccountOf, findVault, go, needMaster, on, programFor, render, send, signingProblem, solNum, tierOf, toast } from "./core";
+import { activeAccount, app, back, connFor, defineView, errText, esc, expandToTab, findVault, go, needMaster, on, payerOf, programFor, render, send, signingProblem, solNum, tierOf, toast } from "./core";
+import { startMove, takeProtect } from "./wallet";
 import { wordGrid } from "./onboard";
 
 const RELAY_INIT_MIN = 0.02 * LAMPORTS_PER_SOL;
@@ -35,6 +36,8 @@ interface CreateView {
   recBusy?: boolean;
   duressWords?: string | null;
   duressBusy?: boolean;
+  /** v0.3 "Protect it": the wallet account that pays for and then funds this vault */
+  fromWallet?: string | null;
 }
 
 const cv = () => app.view as unknown as CreateView;
@@ -47,7 +50,11 @@ on({
     const problem = signingProblem(app.data.settings.cluster);
     if (problem) return toast(problem);
     if (!acct) return;
-    go({ name: "create", stage: "loading", accountId: acct.id, form: defaultForm(), label: `Vault ${app.data.watched.filter((w) => w.accountId === acct.id).length + 1}` } as never);
+    const fromWallet = takeProtect();
+    const fw = app.data.wallets.find((x) => x.id === fromWallet);
+    // A vault is signed by a Noxvault phrase: the wallet's own phrase when it is derived, else the active phrase.
+    const accountId = fw?.phraseId && app.data.accounts.some((a) => a.id === fw.phraseId) ? fw.phraseId : acct.id;
+    go({ name: "create", stage: "loading", accountId, fromWallet, form: defaultForm(), label: fw ? `${fw.name} vault`.slice(0, 24) : `Vault ${app.data.watched.filter((w) => w.accountId === accountId).length + 1}` } as never);
   },
   "create-expand": () => expandToTab("create"),
 });
@@ -164,7 +171,10 @@ defineView(
   () => {
     const v = cv();
     const expand = app.tab ? "" : `<button class="btn ghost small" data-a="create-expand" style="float:right">Open in a tab ⤢</button>`;
-    const head = `${back("Vaults", "home")}${expand}<div class="h">Create a vault <span class="grow"></span></div>`;
+    const fw = app.data.wallets.find((x) => x.id === v.fromWallet);
+    const head = `${back("Vaults", "home")}${expand}<div class="h">Create a vault <span class="grow"></span></div>${
+      fw ? `<div class="note ok-note" style="margin-bottom:8px">Protecting <b>${esc(fw.name)}</b>: it pays the creation fee and rent and initializes the vault, then you move funds in. devnet · unaudited.</div>` : ""
+    }`;
     if (v.err && v.stage === "loading") return `${head}<div class="alert bad"><p style="margin:0">${esc(v.err)}</p></div><button class="btn block" data-a="cr-retry" style="margin-top:8px">Retry</button>`;
     if (v.stage === "loading")
       return `${head}<div class="panel stack"><div>Building your one-time key tree (256 keys) and checking the chain for vaults this phrase already has…</div>
@@ -336,7 +346,7 @@ on({
     app.data.watched = [...next, w];
     app.data.settings = { ...app.data.settings, cluster: "devnet" };
     void send({ type: "refresh", only: [key] });
-    go({ name: "fund", key });
+    go({ name: "fund", key, fromWallet: v.fromWallet ?? null });
   },
 });
 
@@ -350,6 +360,9 @@ interface FundView {
   tier?: { tier: number; tiersOn: boolean; held: bigint } | null;
   feeAddress?: string | null;
   feeBalance?: number | null;
+  /** v0.3: name of the wallet account that pays */
+  feeName?: string | null;
+  fromWallet?: string | null;
   createFee?: bigint;
   busy?: string | null;
   msg?: { ok: boolean; text: string; sig?: string } | null;
@@ -369,9 +382,10 @@ async function pollFund(v: FundView) {
     v.initialized = !!st;
     v.tier = tier;
     if (w.accountId && app.unlocked) {
-      const fee = await feeAccountOf(w.accountId).catch(() => null);
-      v.feeAddress = fee?.publicKey.toBase58() ?? null;
-      v.feeBalance = fee ? await conn.getBalance(fee.publicKey, "confirmed").catch(() => null) : null;
+      const p = await payerOf(w.accountId).catch(() => null);
+      v.feeAddress = p?.kp.publicKey.toBase58() ?? null;
+      v.feeName = p?.wallet.name ?? null;
+      v.feeBalance = p ? await conn.getBalance(p.kp.publicKey, "confirmed").catch(() => null) : null;
     }
     const p =await fetchProtocol(programFor(w.cluster)).catch(() => null);
     v.createFee = p?.createFee ?? 0n;
@@ -393,7 +407,8 @@ defineView(
     const freeFee = v.tier && v.tier.tiersOn && v.tier.tier === TIER_FREE ? v.createFee ?? 0n : 0n;
     const bal = v.balance ?? null;
     const relayOk = !v.initialized && tierOk && (bal ?? 0) >= RELAY_INIT_MIN && !(v.tier?.tiersOn && v.tier.tier < 1);
-    const feeOk = !v.initialized && tierOk && (v.feeBalance ?? 0) > 3_000_000 + Number(freeFee);
+    const feeOk = !v.initialized && tierOk && (v.feeBalance ?? 0) > 8_000_000 + Number(freeFee);
+    const wname = esc(v.feeName ?? "your wallet");
     return `${back(w.label, "detail", v.key)}<div class="h">Fund &amp; initialize <span class="grow"></span></div>
       <div class="qr small">${qrSvg(w.address)}</div>
       <div class="copybox"><code>${esc(w.address)}</code><button class="btn" data-a="copy" data-arg="${esc(w.address)}">Copy</button></div>
@@ -404,13 +419,13 @@ defineView(
       </dl></div>
       ${
         v.initialized
-          ? `<div class="alert okc" style="margin-top:8px"><div class="t">✓ READY</div><p style="margin:4px 0 0">The vault is live. Deposits can come from any wallet or exchange.</p></div><button class="btn primary block" style="margin-top:8px" data-a="detail" data-arg="${esc(v.key)}">Open vault</button>`
+          ? `<div class="alert okc" style="margin-top:8px"><div class="t">✓ READY</div><p style="margin:4px 0 0">The vault is live. Deposits can come from any wallet or exchange.</p></div><button class="btn primary block" style="margin-top:8px" data-a="wmove-start" data-arg="${esc(v.key)}">Move funds in from my wallet</button><button class="btn block" style="margin-top:8px" data-a="detail" data-arg="${esc(v.key)}">Open vault</button>`
           : `<div class="stack" style="margin-top:8px">
-        <div class="note">1. Send SOL to the address above from any wallet. 2. Initialize it: free through the relayer once it holds ≥ 0.02 SOL and has the Guardian tier, or paid by your fee account${freeFee > 0n ? ` (Free tier: ${sol(freeFee)} SOL creation fee + rent)` : " (rent)"}.</div>
-        ${app.data.settings.cluster === "devnet" || w.cluster === "devnet" ? `<button class="btn" data-a="fund-faucet" ${v.busy ? "disabled" : ""}>${v.busy === "faucet" ? "Sending…" : "Get test $NOX (devnet, Sentinel tier)"}</button>` : ""}
-        <button class="btn primary" data-a="fund-relayer" ${relayOk && !v.busy ? "" : "disabled"}>${v.busy === "relayer" ? "Asking relayer…" : "Initialize via relayer (free)"}</button>
-        <button class="btn" data-a="fund-fee" ${feeOk && !v.busy ? "" : "disabled"}>${v.busy === "fee" ? "Sending…" : "Initialize with my fee account"}</button>
-        <div class="dim small">Fee account ${v.feeAddress ? `<button class="link" data-a="copy" data-arg="${esc(v.feeAddress)}">${esc(short(v.feeAddress, 4))}</button> · ${solNum(v.feeBalance ?? 0)} SOL` : "(unlock to see it)"}. It only pays network fees and rent; it has no power over the vault.</div>
+        <div class="note">Your wallet signs and pays: one transaction initializes the vault${freeFee > 0n ? ` (Free tier: ${sol(freeFee)} SOL creation fee + rent ≈ 0.006 SOL)` : " (rent ≈ 0.006 SOL)"}, no relayer needed. Then you move funds in. Without wallet SOL: send ≥ 0.02 SOL to the vault from anywhere and let the relayer initialize it (Guardian tier).</div>
+        <button class="btn ${feeOk ? "primary" : ""}" data-a="fund-fee" ${feeOk && !v.busy ? "" : "disabled"}>${v.busy === "fee" ? "Sending…" : `Create with ${wname} (pays fee + rent)`}</button>
+        <div class="dim small">Payer ${v.feeAddress ? `${wname} <button class="link" data-a="copy" data-arg="${esc(v.feeAddress)}">${esc(short(v.feeAddress, 4))}</button> · ${solNum(v.feeBalance ?? 0)} devnet SOL` : "(unlock to see it)"}. It only pays network fees and rent; it gets no power over the vault.</div>
+        <button class="btn ${feeOk ? "" : "primary"}" data-a="fund-relayer" ${relayOk && !v.busy ? "" : "disabled"}>${v.busy === "relayer" ? "Asking relayer…" : "Or: initialize via relayer (free)"}</button>
+        ${app.data.settings.cluster === "devnet" || w.cluster === "devnet" ? `<button class="btn ghost" data-a="fund-faucet" ${v.busy ? "disabled" : ""}>${v.busy === "faucet" ? "Sending…" : "Get test $NOX (devnet, Sentinel tier)"}</button>` : ""}
         ${!tierOk ? `<div class="note warn">These settings need the ${TIER_NAMES[need]} tier: send $NOX to the vault first${need === TIER_SENTINEL ? " (multi-signer)" : " (testament)"}.</div>` : ""}
       </div>`
       }
@@ -466,10 +481,14 @@ on({
     render();
     try {
       if (!w.accountId) throw new Error("No account for this vault");
-      const kp = await feeAccountOf(w.accountId);
+      const { kp, wallet } = await payerOf(w.accountId);
       const sig = await initWithFeeAccount(programFor(w.cluster), kp, configFromJson(w.config!));
-      v.msg = { ok: true, text: `Vault initialized. tx ${sig.slice(0, 12)}…`, sig };
+      v.msg = { ok: true, text: `Vault initialized by ${wallet.name}. tx ${sig.slice(0, 12)}…`, sig };
       void send({ type: "refresh", only: [v.key] });
+      if (v.fromWallet && app.view === (v as never)) {
+        v.busy = null;
+        return startMove(v.key, wallet.id, true, sig);
+      }
     } catch (e) {
       v.msg = { ok: false, text: errText(e) };
     }

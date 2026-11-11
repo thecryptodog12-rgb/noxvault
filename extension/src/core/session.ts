@@ -9,6 +9,8 @@ export const SESSION_KEY = "unlocked";
 export interface Unlocked {
   /** accountId → master secret, hex. */
   masters: Record<string, string>;
+  /** v0.3: wallet account id → its 32-byte ed25519 seed, hex (derived and imported wallets). */
+  wallets?: Record<string, string>;
   /** ms */
   unlockedAt: number;
   /** ms; refreshed by the UI while it is used */
@@ -25,9 +27,15 @@ export async function readUnlocked(): Promise<Unlocked | null> {
   return got[SESSION_KEY] ?? null;
 }
 
-export async function writeUnlocked(masters: Record<string, string>): Promise<void> {
+export async function writeUnlocked(masters: Record<string, string>, wallets: Record<string, string> = {}): Promise<void> {
   const t = Date.now();
-  await chrome.storage.session.set({ [SESSION_KEY]: { masters, unlockedAt: t, lastActive: t } satisfies Unlocked });
+  await chrome.storage.session.set({ [SESSION_KEY]: { masters, wallets, unlockedAt: t, lastActive: t } satisfies Unlocked });
+}
+
+/** Adds / replaces wallet seeds in the unlocked session (no-op while locked). */
+export async function putWalletSeeds(add: Record<string, string>): Promise<void> {
+  const u = await readUnlocked();
+  if (u) await chrome.storage.session.set({ [SESSION_KEY]: { ...u, wallets: { ...(u.wallets ?? {}), ...add }, lastActive: Date.now() } });
 }
 
 /** Marks the wallet as in use (resets the auto-lock timer). No-op while locked. */
@@ -54,5 +62,17 @@ export async function masterFor(accountId: string, autoLockMin: number): Promise
     return null;
   }
   const h = u.masters[accountId];
+  return h ? fromHex(h) : null;
+}
+
+/** The ed25519 seed of a wallet account while unlocked; null otherwise. Caller zeroes it. */
+export async function walletSeedFor(walletId: string, autoLockMin: number): Promise<Uint8Array | null> {
+  const u = await readUnlocked();
+  if (!u) return null;
+  if (lockDue(u, autoLockMin, Date.now())) {
+    await lock();
+    return null;
+  }
+  const h = u.wallets?.[walletId];
   return h ? fromHex(h) : null;
 }

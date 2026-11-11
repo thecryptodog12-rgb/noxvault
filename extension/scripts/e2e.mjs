@@ -13,9 +13,8 @@
 // screenshots mask them.
 import { chromium } from "playwright-core";
 import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
-import { sha256 } from "@noble/hashes/sha256";
-import { mnemonicToEntropy } from "@scure/bip39";
-import { wordlist } from "@scure/bip39/wordlists/english";
+import { mnemonicToSeedSync } from "@scure/bip39";
+import { derivePath } from "ed25519-hd-key";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -104,6 +103,7 @@ await shot("password");
 await click("form[data-a='ob-pw-submit'] button[type='submit']");
 await view("home", 60_000);
 await shot("home-empty");
+await click("[data-a='home-tab'][data-arg='vaults']"); // v0.3 home: vaults live in their own tab
 
 // No plaintext phrase on disk.
 const disk = await sw.evaluate(async () => JSON.stringify(await chrome.storage.local.get(null)));
@@ -151,8 +151,9 @@ if (process.env.STOP === "create") {
 }
 
 // ---------- fund vault + fee account, initialize with the fee account ----------
-const { accounts } = await sw.evaluate(() => chrome.storage.local.get("accounts"));
-const feeAddr = new PublicKey(accounts[0].feeAddress);
+// v0.3: the payer is the selected wallet account (m/44'/501'/0'/0' of the phrase), no longer the v0.2 fee account
+const { wallets } = await sw.evaluate(() => chrome.storage.local.get("wallets"));
+const feeAddr = new PublicKey(wallets[0].address);
 report.feeAccount = feeAddr.toBase58();
 report.txs.depositVault = await transfer(new PublicKey(vault), VAULT_SOL);
 report.txs.fundFeeAccount = await transfer(feeAddr, FEE_SOL);
@@ -287,8 +288,7 @@ await tab.waitForSelector("[data-a='cr-preset']", { timeout: 120_000 });
 await tab.screenshot({ path: join(docs, `${String(++shotN).padStart(2, "0")}-create-in-tab.png`) });
 
 // ---------- return the fee account's SOL ----------
-const master = mnemonicToEntropy(phrase, wordlist);
-const fee = Keypair.fromSeed(sha256(new Uint8Array([...new TextEncoder().encode("nox-ext/fee-account/v1"), ...master])));
+const fee = Keypair.fromSeed(derivePath("m/44'/501'/0'/0'", Buffer.from(mnemonicToSeedSync(phrase)).toString("hex")).key);
 if (!fee.publicKey.equals(feeAddr)) throw new Error("fee account derivation mismatch");
 const feeBal = await conn.getBalance(fee.publicKey);
 if (feeBal > 5000) {

@@ -34,7 +34,8 @@ function chipFor(w: Watched, st: VaultStatus | undefined): string {
 
 // ---------- home ----------
 
-defineView("home", () => {
+/** The Vaults tab of the home screen (and the whole home screen in watch-only mode). */
+export function vaultsTab(opts: { banners?: boolean } = {}): string {
   const ws = visible();
   const acct = activeAccount();
   const accounts = app.data.accounts;
@@ -43,13 +44,14 @@ defineView("home", () => {
       ? `<div class="seg acct">${accounts.map((a) => `<button class="${a.id === acct?.id ? "on" : ""}" data-a="acct-switch" data-arg="${esc(a.id)}">${esc(a.name)}</button>`).join("")}</div>`
       : "";
   const lockedBanner =
-    app.data.keyring && !app.unlocked ? `<button class="alert warnc block-btn" data-a="go-lock"><div class="t">🔒 LOCKED</div><p style="margin:2px 0 0">Unlock to send, cancel or create. Alerts keep running.</p></button>` : "";
-  const noWallet = !app.data.keyring
+    opts.banners && app.data.keyring && !app.unlocked ?`<button class="alert warnc block-btn" data-a="go-lock"><div class="t">🔒 LOCKED</div><p style="margin:2px 0 0">Unlock to send, cancel or create. Alerts keep running.</p></button>` : "";
+  const noWallet = opts.banners && !app.data.keyring
     ? `<div class="note warn" style="margin-bottom:10px">Watch-only. <button class="link" data-a="ob-welcome">Set up a wallet</button> to send and cancel from here.</div>`
     : "";
+  const devnote = `<div class="netnote"><span class="chip warn">DEVNET · UNAUDITED</span><span class="dim small">Vaults are not live on mainnet yet.</span></div>`;
   if (!ws.length) {
-    return `${switcher}${lockedBanner}${noWallet}<div class="empty">${hexSvg}<h2>No vault yet</h2>
-      <p>Create a vault: its rules (delay, whitelist, recovery key) are fixed in its address forever.</p>
+    return `${switcher}${lockedBanner}${noWallet}${devnote}<div class="empty">${hexSvg}<h2>No vault yet</h2>
+      <p>A vault is quantum-safe: no ed25519 key can move its funds. Its rules (delay, whitelist, recovery key) are fixed in its address forever.</p>
       <div class="stack"><button class="btn primary block" data-a="create-start">+ Create a vault</button>
       <button class="btn block" data-a="add">Watch an address</button>
       <button class="btn ghost block" data-a="import">Import watched vaults from nox-vault.com</button></div></div>`;
@@ -82,10 +84,13 @@ defineView("home", () => {
   const banner = urgent
     ? `<div class="alert bad" style="margin-bottom:10px"><div class="t">⚠ ${urgent} VAULT${urgent > 1 ? "S" : ""} NEED${urgent > 1 ? "" : "S"} ATTENTION</div><p style="margin:4px 0 0">Money is trying to leave or a vault is locked. Open it to see what and how long you have.</p></div>`
     : "";
-  return `${switcher}${lockedBanner}${noWallet}${banner}<div class="total"><div class="lbl">${esc(acct?.name ?? "Watched")} · ${esc(CLUSTER_LABEL[app.data.settings.cluster])}</div><div class="num">${esc(solNum(total))}<small>SOL</small></div></div>
-    <div class="h">Vaults <span class="grow"></span><span>${ws.length}</span></div>${cards}
+  const head = opts.banners
+    ? `<div class="total"><div class="lbl">${esc(acct?.name ?? "Watched")} · ${esc(CLUSTER_LABEL[app.data.settings.cluster])}</div><div class="num">${esc(solNum(total))}<small>SOL</small></div></div>`
+    : devnote;
+  return `${switcher}${lockedBanner}${noWallet}${banner}${head}
+    <div class="h">Vaults <span class="grow"></span><span>${esc(solNum(total))} SOL · ${ws.length}</span></div>${cards}
     <div class="grid2" style="margin-top:10px"><button class="btn primary" data-a="create-start">+ Create vault</button><button class="btn" data-a="add">Watch address</button></div>`;
-});
+}
 
 on({
   home: () => go({ name: "home" }),
@@ -95,7 +100,7 @@ on({
     app.data.activeAccount = el.dataset.arg!;
     render();
   },
-  detail: (el) => go({ name: "vault", key: el.dataset.arg }),
+  detail: (el) => ((app.homeTab = "vaults"), go({ name: "vault", key: el.dataset.arg })),
   add: () => go({ name: "add" }),
   import: () => importFromSite(),
   "open-tx": (el) => openUrl(txUrl(el.dataset.arg!, (el.dataset.cluster as Watched["cluster"]) ?? "devnet", app.data.settings.customRpc)),
@@ -129,7 +134,8 @@ defineView(
         <button class="btn primary" data-a="send-start" data-arg="${esc(v.key)}" ${owned && s ? "" : "disabled"} title="${owned ? "" : "Watch-only: no phrase of yours signs for this vault"}">↑ Send</button>
         <button class="btn" data-a="deposit" data-arg="${esc(v.key)}">↓ Deposit</button>
         <button class="btn" data-a="more" data-arg="${esc(v.key)}">⋯ More</button>
-      </div>`;
+      </div>
+      ${app.data.keyring && w.cluster !== "mainnet-beta" ? `<button class="btn block" style="margin-top:8px" data-a="wmove-start" data-arg="${esc(v.key)}">↓ Deposit from wallet</button>` : ""}`;
     const more = v.more
       ? `<div class="panel stack" style="margin-top:8px">
           <form class="row" data-a="rename" autocomplete="off"><input type="text" name="label" maxlength="24" value="${esc(w.label)}"/><button class="btn" type="submit">Rename</button></form>
@@ -319,7 +325,7 @@ on({
       if (!w.accountId) throw new Error("Watch-only vault: unlock an account to pay the network fee, or let the keeper run it.");
       const fee = await feeAccountOf(w.accountId);
       const bal = await connFor(w.cluster).getBalance(fee.publicKey, "confirmed");
-      if (bal < 10_000) throw new Error(`Your fee account (${shortAddr(fee.publicKey.toBase58())}) has no SOL. Send it a little, or wait: the site's keeper executes due payouts automatically.`);
+      if (bal < 10_000) throw new Error(`Your wallet (${shortAddr(fee.publicKey.toBase58())}) has no devnet SOL for the network fee. Fund it, or wait: the site's keeper executes due payouts automatically.`);
       const sig = await executePending(programFor(w.cluster), fee, new PublicKey(w.address));
       v.execMsg = { ok: true, text: `Executed. tx ${sig.slice(0, 10)}…` };
       void send({ type: "refresh", only: [v.key] });
@@ -356,6 +362,7 @@ defineView("deposit", () => {
     <div class="qr">${qrSvg(w.address)}</div>
     <div class="copybox"><code>${esc(w.address)}</code><button class="btn" data-a="copy" data-arg="${esc(w.address)}">Copy</button></div>
     <div class="stack" style="margin-top:10px">
+      ${app.data.keyring && w.cluster !== "mainnet-beta" ? `<button class="btn primary block" data-a="wmove-start" data-arg="${esc(app.view.key)}">Deposit from my wallet</button>` : ""}
       <div class="note ${w.cluster === "mainnet-beta" ? "warn" : ""}">Send SOL or tokens to this address on <b>${esc(CLUSTER_LABEL[w.cluster])}</b>. Anyone can deposit; nothing needs signing by the vault. Noxvault runs on devnet and is unaudited: do not send funds you cannot lose.</div>
       <button class="btn block" data-a="open" data-arg="${esc(links.fund)}">Deposit with a wallet on nox-vault.com ↗</button>
     </div>`;

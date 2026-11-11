@@ -234,7 +234,33 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, reply) => {
   return true; // async reply
 });
 
+// The public mainnet RPC (api.mainnet-beta.solana.com) answers 403 to any request that carries an
+// `Origin: chrome-extension://…` header. Drop that header, only for this extension's own requests to that
+// one host (declarativeNetRequestWithHostAccess: no new permission warning, no other site affected).
+async function ensureRpcRule() {
+  try {
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: [1],
+      addRules: [
+        {
+          id: 1,
+          priority: 1,
+          action: { type: chrome.declarativeNetRequest.RuleActionType.MODIFY_HEADERS, requestHeaders: [{ header: "origin", operation: chrome.declarativeNetRequest.HeaderOperation.REMOVE }] },
+          condition: {
+            requestDomains: ["api.mainnet-beta.solana.com"],
+            initiatorDomains: [chrome.runtime.id],
+            resourceTypes: [chrome.declarativeNetRequest.ResourceType.XMLHTTPREQUEST, chrome.declarativeNetRequest.ResourceType.WEBSOCKET, chrome.declarativeNetRequest.ResourceType.OTHER],
+          },
+        },
+      ],
+    });
+  } catch (e) {
+    console.warn("rpc header rule", e);
+  }
+}
+
 // The worker restarts often; make sure the alarm exists and the badge is current each time.
+void ensureRpcRule();
 void ensureAlarm();
 ensureLockAlarm();
 void checkLock();

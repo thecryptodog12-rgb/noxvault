@@ -30,7 +30,7 @@ import { buildSignerUncached } from "../core/trees";
 import { vaultAssets } from "../../../web/lib/unlock";
 import { shortAddr } from "../lib/net";
 import { watchKey, type Watched } from "../lib/types";
-import { app, back, connFor, defineView, errText, esc, feeAccountOf, findVault, go, now, on, programFor, relayerInfo, render, send, signerOf, signingProblem, solNum, stepsHtml, tierOf, toast } from "./core";
+import { app, back, connFor, defineView, errText, esc, findVault, go, now, on, payerOf, programFor, relayerInfo, render, send, signerOf, signingProblem, solNum, stepsHtml, tierOf, toast } from "./core";
 
 type Purpose = "send" | "cancel" | "cosign";
 type Stage = "choose" | "phrase" | "loading" | "blocked" | "form" | "review" | "sending" | "done";
@@ -55,6 +55,7 @@ interface SignView {
   sentinelFree?: boolean;
   feeAddress?: string | null;
   feeBalance?: number | null;
+  feeName?: string | null;
   // form
   asset: string;
   amount: string;
@@ -75,6 +76,8 @@ interface SignView {
 
 const sv = () => app.view as unknown as SignView;
 const store = new PendingStore();
+/** Below this much devnet SOL the wallet does not pay; the relayer does (the vault repays it). */
+const WALLET_PAYS_MIN = 5_000_000;
 
 function ctxOf(v: SignView): Ctx {
   const w = findVault(v.key)!;
@@ -177,16 +180,18 @@ async function begin(v: SignView, signer: Signer) {
   v.relayer = rel.info;
   v.relayerErr = rel.err;
   v.sentinelFree = !!tier && tier.tier === TIER_SENTINEL && !!rel.info?.sentinelFree;
-  v.mode = rel.info ? "relayer" : "wallet";
   if (w.accountId) {
     try {
-      const fee = await feeAccountOf(w.accountId);
-      v.feeAddress = fee.publicKey.toBase58();
-      v.feeBalance = await connFor(w.cluster).getBalance(fee.publicKey, "confirmed").catch(() => null);
+      const p = await payerOf(w.accountId);
+      v.feeAddress = p.kp.publicKey.toBase58();
+      v.feeName = p.wallet.name;
+      v.feeBalance = await connFor(w.cluster).getBalance(p.kp.publicKey, "confirmed").catch(() => null);
     } catch {
       v.feeAddress = null;
     }
   }
+  // v0.3: the selected wallet account pays when it holds enough SOL; the relayer is the fallback.
+  v.mode = v.feeAddress && (v.feeBalance ?? 0) >= WALLET_PAYS_MIN ? "wallet" : rel.info ? "relayer" : "wallet";
   v.note = hist.note;
   if (hist.history.kind !== "ready") {
     v.stage = "blocked";
@@ -358,12 +363,13 @@ async function sendNow(v: SignView) {
   let payer: PublicKey | undefined;
   let sender;
   if (f.mode === "wallet") {
-    if (!w.accountId) throw new Error("No fee account for this vault");
-    const kp = await feeAccountOf(w.accountId);
+    if (!w.accountId) throw new Error("No wallet account pays for this vault");
+    const { kp, wallet } = await payerOf(w.accountId);
+    // A frozen action names its fee payee only when fee > 0 (relayer); with fee 0 any wallet may pay.
     payer = kp.publicKey;
     sender = keypairSender(kp);
     const bal = await connFor(w.cluster).getBalance(payer, "confirmed");
-    if (bal < 5_000_000) throw new Error(`Your fee account ${shortAddr(payer.toBase58())} holds ${solNum(bal)} SOL; it needs about 0.005 SOL for this (mostly rent it gets back). Fund it in Settings, or use the relayer.`);
+    if (bal < WALLET_PAYS_MIN) throw new Error(`${wallet.name} (${shortAddr(payer.toBase58())}) holds ${solNum(bal)} devnet SOL; it needs about 0.005 SOL for this (mostly rent it gets back). Fund it, or use the relayer.`);
   }
   v.stage = "sending";
   v.steps = [];
@@ -459,7 +465,7 @@ function actionLines(v: SignView, a: Action): string {
       ? a.fee > 0n
         ? `${solAmt(a.fee)} from the vault to the relayer (no wallet needed)`
         : "free (relayer)"
-      : `network fees from your fee account (${solNum(v.feeBalance ?? 0)} SOL)`,
+      : `network fees from ${v.feeName ?? "your wallet"} (${solNum(v.feeBalance ?? 0)} SOL)`,
   ]);
   rows.push(["One-time key", `#${v.frozen?.leaf ?? v.leaf} of ${1 << v.signer!.pub.height}${v.state ? ` · ${keysLeft(v.state, v.signer!.tree)} left` : ""}${v.signer!.tree === RECOVERY_TREE ? " (recovery)" : ""}`]);
   return `<dl class="kv wide">${rows.map(([k, val, cls]) => `<dt>${esc(k)}</dt><dd class="${cls === "mono" ? "mono-addr" : ""}">${esc(val)}</dd>`).join("")}</dl>`;
@@ -524,7 +530,7 @@ defineView("sign", () => {
         ${wl.length ? `<div class="chips"><span class="dim small">whitelist:</span>${wl.map((a) => `<button type="button" class="chipbtn" data-a="sign-wl" data-arg="${esc(a)}">${esc(shortAddr(a))}</button>`).join("")}</div>` : ""}
         <label class="field"><span>Network fees</span><select name="mode">
           <option value="relayer" ${v.mode === "relayer" ? "selected" : ""} ${v.relayer ? "" : "disabled"}>Relayer: the vault pays ${v.sentinelFree ? "nothing (Sentinel)" : v.relayer ? `${solNum(BigInt(v.relayer.minFee))} SOL` : "(unavailable)"}</option>
-          <option value="wallet" ${v.mode === "wallet" ? "selected" : ""} ${v.feeAddress ? "" : "disabled"}>My fee account pays (${esc(solNum(v.feeBalance ?? 0))} SOL)</option>
+          <option value="wallet" ${v.mode === "wallet" ? "selected" : ""} ${v.feeAddress ? "" : "disabled"}>${esc(v.feeName ?? "My wallet")} pays (${esc(solNum(v.feeBalance ?? 0))} SOL)</option>
         </select></label>
         ${v.err ? `<div class="err">${esc(v.err)}</div>` : ""}
         <button class="btn primary block" type="submit">Review</button>

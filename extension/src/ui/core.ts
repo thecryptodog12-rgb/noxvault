@@ -5,16 +5,16 @@ import type { Program } from "@coral-xyz/anchor";
 import { DURESS_TREE, inSlot, vaultTier, type Noxvault, type Signer, type TierView } from "../../../sdk/client";
 import { readProgram } from "../../../sdk/integrate";
 import type { RelayerInfo } from "../../../web/lib/unlock";
-import { feeKeypair } from "../core/feeAccount";
 import { fetchRelayerInfo } from "../core/relayer";
 import { masterFor, readUnlocked, touch } from "../core/session";
 import { getSigner } from "../core/trees";
+import { walletKeypair } from "../core/wallet";
 import { connection } from "../lib/chain";
-import { rpcFor } from "../lib/net";
-import { load, type AccountMeta, type StoreShape } from "../lib/store";
-import { watchKey, type ClusterId, type Watched } from "../lib/types";
+import { RPC, rpcFor } from "../lib/net";
+import { load, type AccountMeta, type StoreShape, type WalletMeta } from "../lib/store";
+import { watchKey, type ClusterId, type WalletCluster, type Watched } from "../lib/types";
 
-export type Data = Pick<StoreShape, "watched" | "settings" | "status" | "accounts" | "activeAccount" | "keyring">;
+export type Data = Pick<StoreShape, "watched" | "settings" | "status" | "accounts" | "activeAccount" | "keyring" | "wallets" | "activeWallet">;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type View = { name: string; [k: string]: any };
@@ -23,6 +23,8 @@ export const app = {
   data: null as unknown as Data,
   unlocked: false,
   view: { name: "boot" } as View,
+  /** Home screen tab. */
+  homeTab: "wallet" as "wallet" | "vaults",
   /** Opened as a full tab (popup.html?tab=1) instead of the toolbar popup. */
   tab: new URLSearchParams(location.search).get("tab") === "1",
 };
@@ -38,7 +40,9 @@ export const ago = (t: number) => {
 };
 export const errText = (e: unknown) => {
   const m = e instanceof Error ? e.message : String(e);
-  return /429|rate l|Too Many/i.test(m) ? "The RPC is busy (rate limited). Try again in a moment, or set your own RPC in Settings." : m;
+  if (/429|rate l|Too Many/i.test(m)) return "The RPC is busy (rate limited). Try again in a moment, or set your own RPC in Settings.";
+  if (/\b403\b|Access forbidden/i.test(m)) return "The public RPC refused the request (it blocks busy IPs for a while). Try again in a minute, or set your own RPC in Settings.";
+  return m;
 };
 
 const $toast = () => document.getElementById("toast")!;
@@ -151,7 +155,13 @@ function countdownText(secs: number): string {
 function paintHeader() {
   const c = app.data?.settings.cluster ?? "devnet";
   const pill = document.getElementById("net-pill");
-  if (pill) pill.textContent = `${c === "mainnet-beta" ? "mainnet" : c === "custom" ? "custom" : "devnet"} · unaudited`;
+  // The wallet view has its own network; everything about vaults is devnet (or the custom RPC).
+  const walletSide = WALLET_VIEWS.has(app.view.name) && !(app.view.name === "home" && app.homeTab === "vaults");
+  const shown = walletSide ? (app.data?.settings.walletCluster ?? "mainnet-beta") : c;
+  if (pill) {
+    pill.textContent = `${shown === "mainnet-beta" ? "mainnet" : shown === "custom" ? "custom" : "devnet"} · unaudited`;
+    pill.classList.toggle("main", shown === "mainnet-beta");
+  }
   const lockBtn = document.getElementById("lock-btn");
   if (lockBtn) lockBtn.hidden = !app.unlocked;
   const exp = document.getElementById("expand-btn");
@@ -161,11 +171,48 @@ function paintHeader() {
 // ---------- data ----------
 
 export async function reload() {
-  app.data = await load("watched", "settings", "status", "accounts", "activeAccount", "keyring");
+  app.data = await load("watched", "settings", "status", "accounts", "activeAccount", "keyring", "wallets", "activeWallet");
   app.unlocked = !!(await readUnlocked());
 }
 
 export const activeAccount = (): AccountMeta | undefined => app.data.accounts.find((a) => a.id === app.data.activeAccount) ?? app.data.accounts[0];
+export const activeWallet = (): WalletMeta | undefined => app.data.wallets.find((w) => w.id === app.data.activeWallet) ?? app.data.wallets[0];
+
+/** Views that belong to the wallet side (the header pill shows the wallet network there). */
+export const WALLET_VIEWS = new Set(["home", "wallets", "wmanage", "wimport", "wwatch", "receive", "wsend"]);
+
+/** RPC of the wallet view: mainnet (or the user's own mainnet RPC) or devnet (or the custom devnet RPC). */
+export function walletRpc(c: WalletCluster): string {
+  const s = app.data.settings;
+  if (c === "mainnet-beta") return s.mainnetRpc || RPC["mainnet-beta"];
+  return s.cluster === "custom" && s.customRpc ? s.customRpc : RPC.devnet;
+}
+export const walletConn = (c: WalletCluster): Connection => connection(walletRpc(c));
+
+/** The keypair of a wallet account; throws when locked or watch-only. */
+export async function walletKp(id: string): Promise<Keypair> {
+  const w = app.data.wallets.find((x) => x.id === id);
+  if (w?.kind === "watch") throw new Error("This is a watched address: there is no key for it here.");
+  const kp = await walletKeypair(id, app.data.settings.autoLockMin);
+  if (!kp) {
+    app.unlocked = !!(await readUnlocked());
+    throw new Error("The wallet is locked. Unlock it and try again.");
+  }
+  return kp;
+}
+
+/**
+ * The account that pays network fees and rent for vault actions: the selected wallet account when it
+ * has a key; else wallet #0 of the vault's phrase. (v0.2 used a separate fee account; it is now listed
+ * as a wallet account, so it can still be selected and emptied.)
+ */
+export async function payerOf(accountId?: string): Promise<{ kp: Keypair; wallet: WalletMeta }> {
+  const ws = app.data.wallets;
+  const act = activeWallet();
+  const pick = act && act.kind !== "watch" ? act : ws.find((w) => w.kind === "derived" && w.phraseId === accountId && (w.index ?? 0) === 0) ?? ws.find((w) => w.kind !== "watch");
+  if (!pick) throw new Error("No wallet account to pay the network fee.");
+  return { kp: await walletKp(pick.id), wallet: pick };
+}
 export const findVault = (key: string): Watched | undefined => app.data.watched.find((w) => watchKey(w) === key);
 
 let lastTouch = 0;
@@ -229,13 +276,9 @@ export async function needMaster(accountId: string): Promise<Uint8Array> {
   return m;
 }
 
+/** v0.3: the payer of vault transactions (see payerOf). Kept under the v0.2 name for the vault screens. */
 export async function feeAccountOf(accountId: string): Promise<Keypair> {
-  const m = await needMaster(accountId);
-  try {
-    return feeKeypair(m);
-  } finally {
-    m.fill(0);
-  }
+  return (await payerOf(accountId)).kp;
 }
 
 /** The signer (one-time key tree) this extension holds for an owned vault. Cached tree; a few seconds on first use. */

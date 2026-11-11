@@ -24,8 +24,23 @@ export interface KeyringAccount {
   words: string;
 }
 
+/** v0.3: an imported ordinary Solana wallet (from Phantom etc.): its phrase + account index, or its key. */
+export interface KeyringImport {
+  /** The WalletMeta id it belongs to. */
+  id: string;
+  kind: "phrase" | "key";
+  /** kind "phrase": normalized BIP39 words (12–24). */
+  words?: string;
+  /** kind "phrase": account index of m/44'/501'/i'/0'. */
+  index?: number;
+  /** kind "key": the 32-byte ed25519 seed, hex. */
+  seed?: string;
+}
+
 export interface KeyringPlain {
   accounts: KeyringAccount[];
+  /** v0.3; absent in v0.2 keyrings. */
+  imports?: KeyringImport[];
 }
 
 export class WrongPasswordError extends Error {

@@ -35,10 +35,18 @@ export interface Settings {
   notify: boolean;
   /** Lock the wallet after this many minutes without use. */
   autoLockMin: number;
+  /** v0.3: network of the wallet view (holdings, send). Vaults stay on `cluster` (devnet). */
+  walletCluster: WalletCluster;
+  /** v0.3: optional own mainnet RPC for the wallet view (https). */
+  mainnetRpc: string;
+  /** v0.3: hide zero balances and likely spam tokens. */
+  hideSpam: boolean;
 }
 
+export type WalletCluster = "mainnet-beta" | "devnet";
+
 export const AUTOLOCK_CHOICES = [5, 15, 30, 60] as const;
-export const DEFAULT_SETTINGS: Settings = { cluster: "devnet", customRpc: "", intervalMin: 2, notify: true, autoLockMin: 15 };
+export const DEFAULT_SETTINGS: Settings = { cluster: "devnet", customRpc: "", intervalMin: 2, notify: true, autoLockMin: 15, walletCluster: "mainnet-beta", mainnetRpc: "", hideSpam: true };
 
 /** The vault's rules, flattened for display. Amounts are lamports as decimal strings; durations seconds. */
 export interface RulesView {

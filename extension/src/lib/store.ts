@@ -15,6 +15,34 @@ export interface AccountMeta {
   /** The account's fee account: an ordinary Solana address derived from the phrase (src/core/feeAccount.ts). */
   feeAddress: string;
   createdAt: number;
+  /** v0.3: set once this phrase's wallet accounts were set up. Absent on phrases added by v0.2 (their fee account is then listed as a wallet). */
+  walletsInit?: boolean;
+}
+
+/**
+ * v0.3 wallet account: an ordinary ed25519 Solana key (NOT quantum-safe) or a watched address. Public
+ * facts only; the key is derived from a phrase in the keyring (derived, legacy-fee) or stored encrypted
+ * in the keyring (imported-*). A watch account has no key at all.
+ */
+export interface WalletMeta {
+  id: string;
+  name: string;
+  address: string;
+  kind: "derived" | "legacy-fee" | "imported-phrase" | "imported-key" | "watch";
+  /** derived / legacy-fee: the keyring account (phrase) it comes from. */
+  phraseId?: string;
+  /** derived / imported-phrase: the account index i of m/44'/501'/i'/0'. */
+  index?: number;
+  createdAt: number;
+}
+
+/** Cached token facts per `${cluster}:${mint}` (public data). */
+export interface TokenMetaCache {
+  name: string;
+  symbol: string;
+  logo?: string;
+  /** unix s */
+  at: number;
 }
 
 export interface StoreShape {
@@ -28,8 +56,12 @@ export interface StoreShape {
   /** The encrypted phrases; null until onboarding. */
   keyring: EncryptedKeyring | null;
   accounts: AccountMeta[];
-  /** Account the UI shows. */
+  /** Account (phrase) whose vaults the UI shows. */
   activeAccount: string;
+  /** v0.3 wallet accounts and the selected one. */
+  wallets: WalletMeta[];
+  activeWallet: string;
+  tokenMeta: Record<string, TokenMetaCache>;
   /** Wrong unlock attempts in a row, and until when unlocking is paused (unix s). */
   unlockFails: { count: number; until: number };
   /** The action frozen for a one-time key, per `${vault}.${tree}` (web/lib/unlock.ts PendingAction). Public data. */
@@ -47,6 +79,9 @@ const DEFAULTS: StoreShape = {
   keyring: null,
   accounts: [],
   activeAccount: "",
+  wallets: [],
+  activeWallet: "",
+  tokenMeta: {},
   unlockFails: { count: 0, until: 0 },
   pendingActions: {},
   attempted: {},

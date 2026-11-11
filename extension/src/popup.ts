@@ -7,12 +7,13 @@ import { bindCreate, onCreateInput, refreshCreateButton } from "./ui/create";
 import "./ui/onboard";
 import "./ui/settings";
 import "./ui/sign";
+import { refreshWallet } from "./ui/wallet";
 import { visible } from "./ui/vaults";
 
 if (app.tab) document.body.classList.add("tab");
 
 // Views that hold secrets or need the wallet unlocked; they close when it locks.
-const NEEDS_UNLOCK = new Set(["create", "account", "ob-password", "ob-scan"]);
+const NEEDS_UNLOCK = new Set(["create", "account", "ob-password", "ob-scan", "wsend", "wmove", "wimport", "wmanage"]);
 
 document.addEventListener("click", (e) => {
   activity();
@@ -48,7 +49,8 @@ document.addEventListener("change", (e) => {
   const el = e.target as HTMLSelectElement;
   if (app.view.name === "create" && el.dataset.bind) {
     bindCreate(el.dataset.bind, el.value);
-    render();
+    // text inputs are already bound on "input"; re-rendering on their blur would eat the next click
+    if (el.tagName === "SELECT") render();
   }
 });
 document.addEventListener("keydown", () => activity());
@@ -65,6 +67,7 @@ async function refreshNow() {
   btn.classList.add("spin");
   try {
     const v = app.view;
+    if (["home", "wallets"].includes(v.name) && !(v.name === "home" && app.homeTab === "vaults")) refreshWallet();
     const only = v.key ? [v.key] : visible().map(watchKey);
     await send({ type: "refresh", only });
     if (v.name === "vault") v.loadedFor = undefined;
@@ -93,15 +96,15 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
   if (area !== "local" || !app.data) return;
   let dirty = false;
-  for (const k of ["watched", "settings", "status", "accounts", "activeAccount", "keyring"] as const) {
+  for (const k of ["watched", "settings", "status", "accounts", "activeAccount", "keyring", "wallets", "activeWallet"] as const) {
     if (changes[k]) {
       (app.data as Record<string, unknown>)[k] =
-        k === "settings" ? { ...app.data.settings, ...changes[k].newValue } : changes[k].newValue ?? (k === "watched" || k === "accounts" ? [] : k === "status" ? {} : k === "keyring" ? null : "");
+        k === "settings" ? { ...app.data.settings, ...changes[k].newValue } : changes[k].newValue ?? (k === "watched" || k === "accounts" || k === "wallets" ? [] : k === "status" ? {} : k === "keyring" ? null : "");
       dirty = true;
     }
   }
   // Do not re-render under the user's cursor while they type in a form.
-  if (dirty && ["home", "vault"].includes(app.view.name)) render();
+  if (dirty && ["home", "vault", "wallets"].includes(app.view.name)) render();
 });
 
 setInterval(tick, 1000);
@@ -114,7 +117,7 @@ setInterval(tick, 1000);
   if (vk && app.data.watched.some((w) => watchKey(w) === vk)) target = { name: "vault", key: vk };
   if (location.hash === "#create") target = { name: "create-boot" };
 
-  if (!app.data.keyring) go(app.data.watched.length && target.name !== "home" ? target : { name: "welcome" });
+  if (!app.data.keyring) go(app.data.watched.length && target.name !== "home" ? target : app.data.wallets.length ? { name: "home" } : { name: "welcome" });
   else if (!app.unlocked) go({ name: "lock", next: target.name === "create-boot" ? { name: "home" } : target });
   else if (target.name === "create-boot") handler("create-start")!(document.body, new Event("boot"));
   else go(target);

@@ -1,0 +1,40 @@
+{
+  "funder": "BFwro7RnsG9GR2jV3yGXGwtGkRq8MDxH9LSoTAjMQf2x",
+  "txs": {
+    "fundWallet": "EHKHon8yHncUMkGC6oYVipCheDP7E68HFjL7b1rU42JfmbZDXeqjSxJCRmiJJnu79bbZrU4NoHnCag97T68CUsW",
+    "sendSol": "4P2h8JRt5dg4ZA1Kis2pyWzduEWCnzQgHDy64iuub6YHuHhVYq7XSkQLoHMCBx3GVga42pvBHigoLYmRLKzEtEbL",
+    "initByWallet": "439rC5YJyLEVwKyZo6oF4fbzZahcDZzwvyCHWL1E21V6Q8hAqveGF8E3Ewm8x6dM2qu3vcrSUexaDA8yRneoa1Cb",
+    "moveIntoVault": [
+      "5vh5MtsaB2JiijcqU3QbmFn4gFcRyQGYuvRE8xwASciH2CpxhkqrE59VV8d3VsJtazDkDzweWnSSdphHpzAqAPEu"
+    ],
+    "vaultWithdraw": [
+      "azdgDXWboKKNBUijkXTdpatJi7GcZN6Ku1TRba6i85kLcuCHo8BWkkpn1Bgu15CDpjsWwyzdtVcjgcyJXdNrm2k",
+      "4gqwzf5wSwhGCv6fK4m1h8DgFDS5rcwnjvGkUWvnDfEQ2T75XqtFj4BeytP5Kr6u9McuvdTrMvs1jX44VsT9CgRY"
+    ],
+    "returnMax": "59ZgMSLEsybu7w2j6j4g6hD1CnD1HvYAyV6N479UtMXnZGHfuaWAAsVLEKfG7hja9JGxrWx7PeiNoAcV7xMiZaCU"
+  },
+  "steps": [
+    "funder BFwro7RnsG9GR2jV3yGXGwtGkRq8MDxH9LSoTAjMQf2x 4.240333613 SOL",
+    "wallet #1 4jeuGZDP5tL4RBQvNtJLpkcBkV5EUhL6JzMGSs662XXe = m/44'/501'/0'/0' of the phrase (ed25519-hd-key) ✓",
+    "storage.local holds no phrase, wallet seed or password ✓",
+    "mainnet RPC from the extension page: 200",
+    "funded wallet 0.12 SOL: EHKHon8yHncUMkGC6oYVipCheDP7E68HFjL7b1rU42JfmbZDXeqjSxJCRmiJJnu79bbZrU4NoHnCag97T68CUsW",
+    "sent 0.01 SOL to funder: 4P2h8JRt5dg4ZA1Kis2pyWzduEWCnzQgHDy64iuub6YHuHhVYq7XSkQLoHMCBx3GVga42pvBHigoLYmRLKzEtEbL",
+    "vault CBvEyitZE1aVZbUeGgDTggrdVWNJWywiHFLYvt7X4YZs",
+    "vault initialized, paid by the wallet: 439rC5YJyLEVwKyZo6oF4fbzZahcDZzwvyCHWL1E21V6Q8hAqveGF8E3Ewm8x6dM2qu3vcrSUexaDA8yRneoa1Cb",
+    "init fee payer = wallet #1 ✓ (no relayer)",
+    "moved 0.03 SOL into the vault: 5vh5MtsaB2JiijcqU3QbmFn4gFcRyQGYuvRE8xwASciH2CpxhkqrE59VV8d3VsJtazDkDzweWnSSdphHpzAqAPEu",
+    "vault shows the deposit; on chain 0.03 SOL",
+    "vault send: default payer = wallet ✓",
+    "vault withdraw (wallet paid fees): azdgDXWboKKNBUijkXTdpatJi7GcZN6Ku1TRba6i85kLcuCHo8BWkkpn1Bgu15CDpjsWwyzdtVcjgcyJXdNrm2k 4gqwzf5wSwhGCv6fK4m1h8DgFDS5rcwnjvGkUWvnDfEQ2T75XqtFj4BeytP5Kr6u9McuvdTrMvs1jX44VsT9CgRY",
+    "imported the 'abandon … about' test phrase → HAgk14Jp…Kpqk (published Phantom address) ✓; not on disk ✓",
+    "export private key behind password ✓ (matches wallet #1)",
+    "returned the wallet's SOL with Max: 59ZgMSLEsybu7w2j6j4g6hD1CnD1HvYAyV6N479UtMXnZGHfuaWAAsVLEKfG7hja9JGxrWx7PeiNoAcV7xMiZaCU wallet left 0 lamports",
+    "mainnet read-only holdings of 2ojv9BAiHUrvsm9gxDe7fJSzbNZSJcxZvf8dqmWGHG8S total $857.33",
+    "funder spent 0.00510484 SOL net; vault holds 0 SOL (its rent)"
+  ],
+  "wallet": "4jeuGZDP5tL4RBQvNtJLpkcBkV5EUhL6JzMGSs662XXe",
+  "vault": "CBvEyitZE1aVZbUeGgDTggrdVWNJWywiHFLYvt7X4YZs",
+  "spentSol": 0.00510484,
+  "vaultLeft": 0
+}

@@ -30,13 +30,24 @@ defineView(
     const locks = AUTOLOCK_CHOICES.map((m) => `<button type="button" class="${s.autoLockMin === m ? "on" : ""}" data-a="set-autolock" data-arg="${m}">${m} min</button>`).join("");
     const accounts = app.data.accounts
       .map(
-        (a) => `<div class="acct-row"><div><div class="name">${esc(a.name)} ${a.id === app.data.activeAccount ? '<span class="role">ACTIVE</span>' : ""}</div><div class="dim small">fingerprint ${esc(a.fingerprint)} · fee account ${esc(shortAddr(a.feeAddress))}${
-          v.feeBal?.[a.id] != null ? ` · ${solNum(v.feeBal[a.id])} SOL` : ""
-        }</div></div><button class="btn" data-a="acct-open" data-arg="${esc(a.id)}">Manage</button></div>`
+        (a) => `<div class="acct-row"><div><div class="name">${esc(a.name)} ${a.id === app.data.activeAccount ? '<span class="role">ACTIVE</span>' : ""}</div><div class="dim small">fingerprint ${esc(a.fingerprint)} · ${app.data.wallets.filter((x) => x.phraseId === a.id).length} wallet account(s)</div></div><button class="btn" data-a="acct-open" data-arg="${esc(a.id)}">Manage</button></div>`
       )
       .join("");
-    return `${back("Vaults", "home")}
-    <div class="h">Network <span class="grow"></span></div>
+    const wsegs = (["mainnet-beta", "devnet"] as const)
+      .map((c) => `<button type="button" class="${s.walletCluster === c ? "on" : ""}" data-a="set-wcluster" data-arg="${c}">${c === "mainnet-beta" ? "mainnet" : "devnet"}</button>`)
+      .join("");
+    return `${back("Home", "home")}
+    <div class="h">Wallet <span class="grow"></span></div>
+    <div class="panel stack">
+      <div><div class="dim small" style="margin-bottom:4px">WALLET NETWORK (HOLDINGS, SEND)</div><div class="seg">${wsegs}</div></div>
+      <form class="stack" data-a="mrpc-form"><label class="field"><span>Own mainnet RPC (optional, https)</span><input type="url" name="rpc" value="${esc(s.mainnetRpc)}" placeholder="${esc("https://api.mainnet-beta.solana.com")}" spellcheck="false" /></label>
+        ${v.mErr ? `<div class="err">${esc(v.mErr)}</div>` : ""}<button class="btn block" type="submit">Save mainnet RPC</button></form>
+      <button class="btn block" data-a="wallets">Wallet accounts (${app.data.wallets.length})</button>
+      <div class="dim small">Wallet accounts are ordinary Solana keys and work on mainnet. They are <b>not quantum-safe</b>; vaults are (devnet only for now). Prices come from Jupiter (mainnet only): the mints you hold are sent to lite-api.jup.ag.</div>
+    </div>
+    <div class="h">Connected sites <span class="grow"></span></div>
+    <div class="panel stack"><div class="muted small">No sites can connect yet. A dApp connection (window.solana / Wallet Standard) comes in a later version; until then no website can see your addresses or ask this wallet to sign.</div></div>
+    <div class="h">Vault network <span class="grow"></span></div>
     <div class="panel stack">
       <div class="seg">${segs}</div>
       ${s.cluster === "mainnet-beta" ? `<div class="note warn"><b>Not live yet.</b> The Noxvault program runs on devnet only. On mainnet every address shows as "not a vault" and signing is off.</div>` : ""}
@@ -56,7 +67,7 @@ defineView(
       <div class="dim small">Also locks when the browser closes. Locked: alerts keep running; signing needs the password.</div>
       ${app.unlocked ? `<button class="btn block" data-a="lock-now">Lock now</button>` : `<button class="btn block" data-a="go-lock">Unlock</button>`}
     </div>
-    <div class="h">Accounts <span class="grow"></span></div>
+    <div class="h">Phrases (vault keys) <span class="grow"></span></div>
     <div class="panel stack">${accounts}
       <div class="grid2"><button class="btn" data-a="acct-add-new" ${app.unlocked ? "" : "disabled"}>+ New phrase</button><button class="btn" data-a="acct-add-import" ${app.unlocked ? "" : "disabled"}>+ Import phrase</button></div>
     </div>`
@@ -79,27 +90,35 @@ defineView(
       <div class="dim">Noxvault · devnet · unaudited · v${esc(chrome.runtime.getManifest().version)}</div>
       ${app.data.keyring ? `<button class="btn danger block" data-a="reset-ask">${v.confirmReset ? "Click again: delete phrases from this browser" : "Reset wallet"}</button>` : ""}
     </div>`;
-  },
-  () => {
-    const v = app.view;
-    if (v.feeBal) return;
-    v.feeBal = {};
-    void (async () => {
-      for (const a of app.data.accounts) {
-        try {
-          v.feeBal[a.id] = await connFor("devnet").getBalance(new PublicKey(a.feeAddress), "confirmed");
-        } catch {
-          /* ignore */
-        }
-      }
-      if (app.view === v) render();
-    })();
   }
 );
 
 on({
   settings: () => go({ name: "settings" }),
   "set-cluster": (el) => void setSettings({ cluster: el.dataset.arg as ClusterId }),
+  "set-wcluster": (el) => void setSettings({ walletCluster: el.dataset.arg as Settings["walletCluster"] }),
+  "mrpc-form": (form) => {
+    const url = String(new FormData(form as HTMLFormElement).get("rpc") ?? "").trim();
+    if (!url) {
+      app.view.mErr = "";
+      return void setSettings({ mainnetRpc: "" });
+    }
+    const pattern = rpcOriginPattern(url);
+    if (!pattern) {
+      app.view.mErr = "Use an https:// RPC URL.";
+      return render();
+    }
+    chrome.permissions
+      .request({ origins: [pattern] })
+      .then(async (ok) => {
+        app.view.mErr = ok ? "" : "Chrome did not grant access to that host.";
+        if (ok) {
+          await setSettings({ mainnetRpc: url });
+          toast("Mainnet RPC saved");
+        } else render();
+      })
+      .catch((err) => ((app.view.mErr = String(err?.message ?? err)), render()));
+  },
   "set-interval": (el) => void setSettings({ intervalMin: Number(el.dataset.arg) }),
   "set-autolock": (el) => void setSettings({ autoLockMin: Number(el.dataset.arg) }),
   "set-notify": (el) => void setSettings({ notify: (el as HTMLInputElement).checked }),
@@ -173,11 +192,16 @@ defineView("account", () => {
       <button class="btn block" data-a="acct-use" data-arg="${esc(a.id)}">Show this account's vaults</button>
       <button class="btn block" data-a="acct-scan" data-arg="${esc(a.id)}" ${app.unlocked ? "" : "disabled"}>Find my vaults on chain</button>
     </div>
-    <div class="h">Fee account <span class="grow"></span></div>
+    <div class="h">Wallet accounts of this phrase <span class="grow"></span></div>
     <div class="panel stack">
-      <div class="qr small">${qrSvg(a.feeAddress)}</div>
-      <div class="copybox"><code>${esc(a.feeAddress)}</code><button class="btn" data-a="copy" data-arg="${esc(a.feeAddress)}">Copy</button></div>
-      <div class="dim small">An ordinary devnet address derived from this phrase. It only pays network fees and rent (initialize a vault, execute a due payout, send without the relayer). It has no power over your vaults. Keep a little SOL here, e.g. 0.05.</div>
+      ${app.data.wallets
+        .filter((x) => x.phraseId === a.id)
+        .map((x) => `<div class="row between"><span>${esc(x.name)} <span class="role">${x.kind === "legacy-fee" ? "FEE · V0.2" : `#${(x.index ?? 0) + 1}`}</span></span><span class="dim small">${esc(shortAddr(x.address))}</span></div>`)
+        .join("")}
+      <div class="dim small">Standard Solana accounts (m/44'/501'/i'/0'): the same 24 words show these addresses in Phantom or Solflare. The selected wallet pays network fees and rent for vault actions; it has no power over your vaults.${
+        app.data.wallets.some((x) => x.phraseId === a.id && x.kind === "legacy-fee") ? " The v0.2 fee account is kept as a wallet so its SOL stays reachable." : ""
+      }</div>
+      <button class="btn block" data-a="wallets">Manage wallet accounts</button>
     </div>
     <div class="h">Secret phrase <span class="grow"></span></div>
     <form class="panel stack" data-a="acct-reveal" autocomplete="off">

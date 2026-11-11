@@ -33,13 +33,13 @@ export const wordGrid = (words: string, blur = false) =>
 defineView("welcome", () => {
   const watching = app.data.watched.length;
   return `<div class="empty">${hexSvg}<h2>Noxvault wallet</h2>
-    <p>Quantum-safe vaults on Solana. Every action is signed with a one-time key from your 24-word phrase.</p>
+    <p>A Solana wallet with quantum-safe vaults. One 24-word phrase gives you ordinary wallet accounts (the same addresses as in Phantom) and the one-time keys that guard your vaults.</p>
     <div class="stack">
       <button class="btn primary block" data-a="ob-new">Create a new phrase</button>
       <button class="btn block" data-a="ob-import">I already have a phrase</button>
       ${watching ? `<button class="btn ghost block" data-a="ob-watch">Continue watch-only (${watching} vault${watching > 1 ? "s" : ""})</button>` : ""}
     </div>
-    <div class="note warn" style="margin-top:14px;text-align:left">Devnet only, unaudited software. Use test SOL. Your phrase is stored encrypted on this device and never leaves it.</div></div>`;
+    <div class="note warn" style="margin-top:14px;text-align:left">Unaudited software. Wallet accounts work on mainnet; vaults run on devnet only for now. Your phrase is stored encrypted on this device and never leaves it.</div></div>`;
 });
 
 on({
@@ -136,7 +136,10 @@ on({
       go({ name: "ob-password", words, master, imported: true, adding: app.view.adding });
     } catch (e) {
       ta.value = "";
-      app.view.err = errText(e);
+      const m = errText(e);
+      app.view.err = /24 words|valid Noxvault/.test(m)
+        ? `${m}. A 12-word wallet phrase (Phantom, Solflare…) cannot hold vault keys: create a new Noxvault phrase here, then add your old wallet under Accounts → Import wallet.`
+        : m;
       render();
     }
   },

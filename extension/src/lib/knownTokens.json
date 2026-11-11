@@ -1,0 +1,87 @@
+{
+ "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": {
+  "name": "USD Coin",
+  "symbol": "USDC",
+  "logo": "https://static.datapi.jup.ag/token-icons/6c4e5669d2a438653105399865445682e4a6cb51e19e1e61dc97578cd27bb9b2.webp"
+ },
+ "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": {
+  "name": "USDT",
+  "symbol": "USDT",
+  "logo": "https://static.datapi.jup.ag/token-icons/36574a5ee2cd469e059d070180985e59fbd57c82a54ea95763fab39973174100.webp"
+ },
+ "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN": {
+  "name": "Jupiter",
+  "symbol": "JUP",
+  "logo": "https://static.datapi.jup.ag/token-icons/12254fdd34fa9a0ad62075bd3872df61e28584f9519fe00c744b71b514d4c3d7.webp"
+ },
+ "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263": {
+  "name": "Bonk",
+  "symbol": "Bonk",
+  "logo": "https://arweave.net/hQiPZOsRZXGXBJd_82PhVdlM_hACsT_q6wqwf5cSY7I"
+ },
+ "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm": {
+  "name": "dogwifhat",
+  "symbol": "$WIF",
+  "logo": "https://bafkreibk3covs5ltyqxa272uodhculbr6kea6betidfwy3ajsav2vjzyum.ipfs.nftstorage.link"
+ },
+ "jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL": {
+  "name": "JITO",
+  "symbol": "JTO",
+  "logo": "https://metadata.jito.network/token/jto/image"
+ },
+ "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3": {
+  "name": "Pyth Network",
+  "symbol": "PYTH",
+  "logo": "https://static.datapi.jup.ag/token-icons/2e7287e5e03af0bdcbc4e442da5f687d3b5d28836b958a926302a5aff7d6accd.webp"
+ },
+ "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R": {
+  "name": "Raydium",
+  "symbol": "RAY",
+  "logo": "https://static.datapi.jup.ag/token-icons/e3a3487516776ef5cd3166a0861525d053845b5aa0cf27442a56ca65e673b265.webp"
+ },
+ "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So": {
+  "name": "Marinade staked SOL (mSOL)",
+  "symbol": "mSOL",
+  "logo": "https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So/logo.png"
+ },
+ "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn": {
+  "name": "Jito Staked SOL",
+  "symbol": "JitoSOL",
+  "logo": "https://storage.googleapis.com/token-metadata/JitoSOL-256.png"
+ },
+ "bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1": {
+  "name": "BlazeStake Staked SOL (bSOL)",
+  "symbol": "bSOL",
+  "logo": "https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1/logo.png"
+ },
+ "orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE": {
+  "name": "Orca",
+  "symbol": "ORCA",
+  "logo": "https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE/logo.png"
+ },
+ "85VBFQZC9TZkfaptBWjvUw7YbZjy52A6mjtPGjstQAmQ": {
+  "name": "Wormhole Token",
+  "symbol": "W",
+  "logo": "https://wormhole.com/token.png"
+ },
+ "rndrizKT3MK1iimdxRdWabcF7Zg7AR5T4nud4EkHBof": {
+  "name": "Render Token",
+  "symbol": "RENDER",
+  "logo": "https://assets.coingecko.com/coins/images/11636/standard/rndr.png?1696511529"
+ },
+ "hntyVP6YFm1Hg25TN9WGLqM12b8TQmcknKrdu1oxWux": {
+  "name": "Helium Network Token",
+  "symbol": "HNT",
+  "logo": "https://entities.nft.helium.io/v2/assets/hnt.png"
+ },
+ "So11111111111111111111111111111111111111112": {
+  "name": "Wrapped SOL",
+  "symbol": "SOL",
+  "logo": "https://static.datapi.jup.ag/token-icons/79a96c7b893fd899512411dd07a8adf6f9e26dd135989f51d46ddb50f0b8bb6c.webp"
+ },
+ "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo": {
+  "name": "PayPal USD",
+  "symbol": "PYUSD",
+  "logo": "https://424565.fs1.hubspotusercontent-na1.net/hubfs/424565/PYUSDLOGO.png"
+ }
+}
