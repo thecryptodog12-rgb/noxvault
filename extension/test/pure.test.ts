@@ -96,7 +96,7 @@ describe("rules", () => {
 
 describe("status", () => {
   it("headline priority: lockdown > pending > clocks > secure", () => {
-    expect(headline(snap(), NOW)).toMatchObject({ tone: "ok", label: "SECURE" });
+    expect(headline(snap(), NOW)).toMatchObject({ tone: "ok", label: "ALL CLEAR" });
     expect(headline(snap({ recoveryAt: NOW + 86_400 }), NOW).label).toBe("CLOCK RUNNING");
     expect(headline(snap({ recoveryAt: NOW - 1 }), NOW).label).toBe("OWNER INACTIVE");
     const p = snap({ pending: { kind: "withdraw", mint: SOL, dest: DEST, amount: "1000000000", executableAt: NOW + 3600 } });

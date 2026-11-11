@@ -23,7 +23,7 @@ export function headline(s: ExtSnapshot, now: number): Headline {
   const clocks = [s.recoveryAt, s.testamentAt].filter((x): x is number => x != null);
   if (clocks.some((at) => at <= now)) return { tone: "warn", label: "OWNER INACTIVE", detail: "an inactivity clock has run out" };
   if (clocks.some((at) => at - now <= 14 * 86_400)) return { tone: "warn", label: "CLOCK RUNNING", detail: `inactivity clock ends in ${fmtDuration(Math.min(...clocks) - now)}` };
-  return { tone: "ok", label: "SECURE", detail: "no pending withdrawal" };
+  return { tone: "ok", label: "ALL CLEAR", detail: "no pending withdrawal" };
 }
 
 export interface Clock {
