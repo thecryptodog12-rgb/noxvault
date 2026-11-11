@@ -126,10 +126,17 @@ export function alertsFor(prev: VaultSnapshot | null, cur: VaultSnapshot, now: n
     }
   }
 
-  if (cur.lockdownUntil > now) {
+  const locked = cur.lockdownUntil > now;
+  if (locked) {
+    // Two causes lock a vault (docs/SPEC.md §11): a duress withdrawal, or the recovery phrase's
+    // "cancel and freeze" (CancelLock, v4.2). A payout that vanished together with the start of the
+    // lockdown means the latter; otherwise the alert names both.
+    const frozeAPayout = prev != null && prev.pending != null && cur.pending == null && prev.lockdownUntil <= prev.takenAt;
     out.push({
       key: `lockdown:${cur.lockdownUntil}`,
-      text: `🚨 ${tag}: lockdown started. The duress phrase was used and the vault is locked until ${fmtDate(cur.lockdownUntil)}. Withdrawals are refused until then. Only the recovery key can end it early; check on the owner before you do.${link}`,
+      text: frozeAPayout
+        ? `🧊 ${tag}: the pending payout was cancelled and the vault is frozen until ${fmtDate(cur.lockdownUntil)} (the recovery phrase's cancel and freeze). Until then the main phrase alone can only Ping or cancel: nothing can be withdrawn with it, and its Pings do not count as activity. The owner can still move everything to a new vault with the main phrase and the recovery phrase together.${link}`
+        : `🚨 ${tag}: lockdown started, until ${fmtDate(cur.lockdownUntil)}. Either the duress phrase was used, or the recovery phrase cancelled a payout and froze the vault (anti-theft). Withdrawals with the main phrase alone are refused until then. Only the recovery key can end it early; check on the owner before you do.${link}`,
     });
   }
 
@@ -143,7 +150,9 @@ export function alertsFor(prev: VaultSnapshot | null, cur: VaultSnapshot, now: n
     if (step != null) {
       out.push({
         key: `${name}:${at}:${step}`,
-        text: `⏳ ${tag}: in ${fmtDuration(at - now)} (${fmtDate(at)}) ${soon}, because the owner has been inactive. If you are the owner, ping to reset the clock.${link}`,
+        text: `⏳ ${tag}: in ${fmtDuration(at - now)} (${fmtDate(at)}) ${soon}, because the owner has been inactive. ${
+          locked ? "The vault is in lockdown, so Pings by the main phrase do not reset this clock." : "If you are the owner, ping to reset the clock."
+        }${link}`,
       });
     } else if (at <= now) {
       out.push({ key: `${name}:${at}:open`, text: `⌛ ${tag}: the inactivity period has passed; ${open}. If you are the owner, ping now to reset the clock.${link}` });
@@ -190,7 +199,7 @@ export function formatStatus(s: VaultSnapshot, now: number, siteUrl = ""): strin
       ? `Pending ${p.kind === "withdraw" ? `withdrawal: ${fmtAmount(p.mint, p.amount)}` : "migration"} to ${p.dest}, ${p.executableAt <= now ? "executable now" : `executes ${fmtDate(p.executableAt)}`}`
       : "Pending payout: none"
   );
-  lines.push(s.lockdownUntil > now ? `Lockdown: ACTIVE until ${fmtDate(s.lockdownUntil)}` : "Lockdown: no");
+  lines.push(s.lockdownUntil > now ? `Lockdown: ACTIVE until ${fmtDate(s.lockdownUntil)} (main-phrase Pings do not reset the clocks meanwhile)` : "Lockdown: no");
   const clock = (name: string, at: number | null) =>
     at == null ? `${name}: not set` : at <= now ? `${name}: open since ${fmtDate(at)} (owner inactive)` : `${name}: ${fmtDate(at)} (in ${fmtDuration(at - now)}) unless the owner pings`;
   lines.push(clock("Recovery takeover", s.recoveryAt));
@@ -225,7 +234,7 @@ export interface CommandDeps {
 export const START_TEXT = [
   "Noxvault alerts. I watch vaults on-chain and message you when something needs attention:",
   "• a new pending withdrawal (so the recovery key can cancel it in time)",
-  "• a lockdown (the duress phrase was used)",
+  "• a lockdown (the duress phrase was used, or the recovery phrase cancelled a payout and froze the vault)",
   "• the recovery or testament clock running out (14, 3 and 1 day before)",
   "• a sealed letter opening within 7 days",
   "• scheduled payouts that ran",

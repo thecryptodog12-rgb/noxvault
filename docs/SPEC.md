@@ -1,4 +1,4 @@
-# Noxvault — protocol spec v4.1
+# Noxvault — protocol spec v4.2
 
 A vault on Solana whose funds move only with **hash-based one-time signatures** (WOTS+), arranged
 in Merkle trees so one fixed vault address serves many actions. On top of that: multi-signer
@@ -10,6 +10,29 @@ SPL / Token-2022 tokens.
 This file is the single source of truth for the program, the SDK, the web app and the keeper.
 v3, v2 and v1 are in git history. v4 adds duress mode (§11) and sealed letters (§12) and changes the `Config` and
 `VaultState` layouts, so v3 devnet vaults are not readable by the v4 program (domains unchanged).
+
+### Changes in v4.2 (recovery cancel and freeze; layouts, domains and existing codes unchanged)
+
+v4.2 closes a weakness of the anti-theft use case: a thief holding a signer phrase answered every
+recovery `Cancel` with a new restricted payout (each cancel burns one recovery key, so the thief
+won the war of attrition), and kept `last_active` fresh so recovery-after-inactivity never opened.
+Every account layout and size is the same as v4/v4.1; v4 and v4.1 vaults keep working.
+
+1. **`Kind::CancelLock { secs: i64 }`** (tag 12, appended; borsh `u8(12) || i64le(secs)`). Only an
+   approval that includes the recovery tree executes it, at any time (in a lockdown or not,
+   whatever the owner's activity). `MIN_CANCEL_LOCK = 86 400` (1 day) ≤ `secs` ≤
+   `MAX_CANCEL_LOCK = 7 776 000` (90 days); `open_unlock` refuses other values before a key is
+   burned. It clears `pending` and `migrate_to` like `Cancel`, then sets
+   `lockdown_until = max(lockdown_until, now + secs)` (§4, §11).
+2. **A lockdown binds only approvals without the recovery tree.** An approval with the signer
+   threshold and the recovery tree executes like outside a lockdown (the vault's rules apply); its
+   `Migrate` starts at once, whitelist or not (the escape to a new vault, §4 "Migrate"). During a
+   lockdown a signer-only `Cancel` clears `pending` but not a started migration (`migrate_to`).
+3. **No activity during a lockdown.** Signer and duress approvals made while the vault is locked
+   no longer set `last_active` (§4 "Approvals").
+4. Plain `Cancel` is unchanged; from the recovery tree it still ends any lockdown (§11).
+5. New errors, appended: `CancelLockNeedsRecovery` (6045), `LockOutOfRange` (6046).
+6. Trade-offs: §13 "v4.2".
 
 ### Changes in v4.1 (audit fixes; layouts, domains and existing error codes unchanged)
 
@@ -111,6 +134,7 @@ enum Kind {
   9  CancelBudget   { id: u8 }
   10 Migrate        { new_vault }
   11 LetterKey      { key: Pubkey }             // sealed letters (§12); all-zero key revokes
+  12 CancelLock     { secs: i64 }               // v4.2: recovery only; Cancel, then freeze for secs
 }
 mint = all-zero key for SOL
 d = SHA256("nox3/msg" || program_id || vault || u8(tree) || u16le(leaf) || borsh(Action))
@@ -124,13 +148,17 @@ Every verified signature becomes an **approval** of `action_hash = SHA256("nox3/
 borsh(Action))` in `PDA(["approval", vault, action_hash])`, recording which tree approved.
 An action executes (permissionless, `execute_*`) when:
 
-- signer approvals ≥ `threshold`, or
+- it is `CancelLock` and the recovery tree approved it (v4.2; nothing else ever executes a
+  `CancelLock`: `CancelLockNeedsRecovery`), or
+- signer approvals ≥ `threshold` (during a lockdown without the recovery tree only `Ping` and
+  cancels, §11), or
 - the recovery tree approved it and it is `Cancel`, `CancelSchedule` or `CancelBudget`, or
 - the recovery tree approved it and `now ≥ last_active + recovery_delay`, or
 - only the duress tree approved it (§11).
 
 The duress approval never counts toward `threshold` and adds nothing to recovery powers.
-Signer and duress approvals set `last_active = now`. Executing closes the approval. Each leaf of each tree is
+Signer and duress approvals set `last_active = now`, except while the vault is in lockdown (v4.2:
+a frozen signer phrase must not hold off recovery-after-inactivity). Executing closes the approval. Each leaf of each tree is
 used once (bitmaps in `state`). An unexecuted approval can be discarded after 7 days.
 
 ### The fee (v4.1)
@@ -154,8 +182,15 @@ lockdown for free.
 - **Withdraw**: restriction rules of §3; recovery withdrawals after inactivity are unrestricted.
 - **Cancel**: clears `pending` (a waiting withdrawal or migration) and `migrate_to` (a started
   migration: whatever `migrate_sol` / `migrate_token` have not moved yet stays in the vault). From
-  the recovery tree it also ends a lockdown (§11). It never touches schedules or budgets
-  (`CancelSchedule`, `CancelBudget`) or funds already moved.
+  the recovery tree it also ends a lockdown (§11). During a lockdown, a `Cancel` without the
+  recovery tree clears `pending` only, never a started migration (v4.2). It never touches
+  schedules or budgets (`CancelSchedule`, `CancelBudget`) or funds already moved.
+- **CancelLock** (v4.2, recovery tree only): clears `pending` and `migrate_to`, then
+  `lockdown_until = max(lockdown_until, now + secs)`, 1 day ≤ `secs` ≤ 90 days. It extends a running
+  lockdown (duress or an earlier freeze), never shortens it. It may pay the capped fee (the
+  recovery tree approved it); relayers send it free. The anti-theft answer to a payout the owner
+  did not start: the signer phrase alone then executes only `Ping` and cancels until the freeze
+  ends, its approvals do not count as activity, and the owner escapes with signer + recovery.
 - **Schedule**: pays `amount` every `interval`, `count` times from `start`; anyone runs due
   payments. A restricted destination's first payment is at least `slow_delay` away (refused if
   `slow_delay = 0`). `0 < interval ≤ MAX_DURATION`. `PDA(["schedule", vault, id])`.
@@ -169,7 +204,9 @@ lockdown for free.
 - **Migrate**: sets `migrate_to` (a Noxvault vault). Restricted like a withdrawal destination
   (§3): unless `new_vault` is whitelisted, or the vault has no rules, or recovery acts after
   inactivity, it becomes the pending migration after `slow_delay` (refused when `slow_delay = 0`).
-  Then anyone moves all SOL and any token to it, until a `Cancel` clears `migrate_to`.
+  **Escape (v4.2):** during a lockdown, an approval with the signer threshold and the recovery
+  tree starts it at once. Then anyone moves all SOL and any token to it, until a `Cancel` clears
+  `migrate_to` (during a lockdown only a recovery `Cancel` or `CancelLock` does).
 - **Testament**: when `testament_delay > 0` and `now ≥ last_active + testament_delay`, anyone
   can distribute all SOL / any token to the heirs by `bps`, and deactivate / collect stakes first.
 - After any payout the vault holds 0 or ≥ rent-minimum lamports.
@@ -267,13 +304,16 @@ for a small amount while the rest of the vault locks.
   `MAX_ACTION_FEE`, is paid from the same allowance), ignoring whitelist, instant limit and slow delay, then sets
   `lockdown_until = max(lockdown_until, now + duress_lock)`. During a lockdown already running it
   pays nothing more (it still extends the lockdown). Every other `execute_*` refuses it.
-- **Lockdown** (`now < lockdown_until`): signer approvals execute only `Ping`, `Cancel`,
-  `CancelSchedule`, `CancelBudget`, and only with `fee = 0` (v4.1; an approval the recovery tree
-  also signed may pay the capped fee); `execute_pending(_token)` and `spend_budget(_token)` are
-  refused. Running schedules, the testament, inbox sweeps and an already-started migration
-  continue. Recovery after inactivity is unaffected (duress approvals count as activity).
+- **Lockdown** (`now < lockdown_until`), started by a duress withdrawal or by a recovery
+  `CancelLock` (v4.2, §4): signer approvals without the recovery tree execute only `Ping`,
+  `Cancel`, `CancelSchedule`, `CancelBudget`, and only with `fee = 0` (v4.1);
+  `execute_pending(_token)` and `spend_budget(_token)` are refused. An approval with the signer
+  threshold and the recovery tree is not limited by the lockdown (v4.2: the vault's rules apply,
+  and its `Migrate` starts at once). Running schedules, the testament, inbox sweeps and an
+  already-started migration continue. Recovery after inactivity is unaffected; approvals made
+  during a lockdown do not count as activity (v4.2).
 - A **recovery-tree `Cancel`** also ends the lockdown: the recovery holder, not the coerced owner,
-  decides when it is safe.
+  decides when it is safe. A recovery `CancelLock` during a lockdown only ever extends it.
 - Off-chain: the bot watches `lockdown_until` and alerts recovery contacts. The lockdown is
   visible on chain; the design caps the loss, it does not hide. The app in duress mode shows the
   duress limit as the balance. SOL only; tokens stay locked. Never needs a tier.
@@ -316,9 +356,10 @@ the ciphertext can (the reader fetches that round's beacon). Nothing on chain ch
 
 Design trade-offs the audit found (`docs/audit/INVARIANTS.md` §9) and v4.1 keeps on purpose.
 
-- **G-06: the duress phrase can prolong the lockdown and the owner's "activity".** Every executed
-  duress withdrawal extends the lockdown (even when it pays nothing), and every duress approval
-  sets `last_active`. Whoever holds the duress phrase can therefore chain lockdowns, up to
+- **G-06: the duress phrase can prolong the lockdown.** Every executed duress withdrawal extends
+  the lockdown (even when it pays nothing). Before v4.2 every duress approval also set
+  `last_active`; since v4.2 approvals made during a lockdown do not, so chained lockdowns no longer
+  postpone recovery-after-inactivity or the testament. Whoever holds the duress phrase can therefore chain lockdowns, up to
   2^height × `duress_lock` (≥ 256 days at height 8), which blocks the owner's withdrawals and
   postpones recovery-after-inactivity and the testament. Kept because a duress signature must look
   like any other (indistinguishability) and the lockdown must hold while the coercer is present.
@@ -331,3 +372,15 @@ Design trade-offs the audit found (`docs/audit/INVARIANTS.md` §9) and v4.1 keep
   limits with the 2× worst case in mind.
 - **Fees outside the instant limit.** See "The fee" in §4: at most `MAX_ACTION_FEE` per one-time
   key, never during a lockdown.
+- **v4.2: signers + recovery during a lockdown migrate at once.** Whoever holds both the signer
+  and the recovery phrase can start a freeze (`CancelLock`) and then move everything to a vault of
+  his choice at once, instead of waiting `slow_delay`. Kept: both phrases together already decide
+  the vault (the recovery phrase ends lockdowns at will and, since approvals during a lockdown are
+  not activity, can take over after `recovery_delay`). Keep the two phrases apart.
+- **v4.2: approvals during any lockdown are not activity.** This also holds for a duress lockdown:
+  an owner cannot hold the testament or the recovery takeover off by pinging during one; the
+  recovery holder's `Cancel` ends the lockdown, after which pings count again.
+- **v4.2: schedules still run during a freeze** (§11, unchanged). A schedule a thief created
+  before the freeze pays once due (its first restricted payment waits `slow_delay`). Stop it with
+  the recovery `CancelSchedule`, or escape: an empty vault pays nothing.
+- **v4.2: a freeze ends by itself** after at most 90 days; renewing it costs one recovery key.

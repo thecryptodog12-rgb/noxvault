@@ -70,13 +70,13 @@ export default function Recovery() {
             Recovery <span className="inv">key</span>
           </>
         }
-        sub="Hold someone's recovery phrase? You can cancel a suspicious pending withdrawal at any time. After the owner has been inactive for the vault's recovery delay, you get full control."
+        sub="Hold someone's recovery phrase? You can cancel a suspicious pending withdrawal at any time, and freeze the vault so whoever started it cannot simply try again. After the owner has been inactive for the vault's recovery delay, you get full control."
       />
 
       {fromAlert && !res && (
         <Note kind="warn">
-          Not your withdrawal? Enter the recovery phrase below, open the vault and cancel the pending withdrawal before it executes. If you did start it, you
-          can ignore the alert.
+          Not your withdrawal? Enter the recovery phrase below, open the vault and choose &quot;Cancel + freeze&quot; (14 days by default): it cancels the
+          payout and freezes the vault, so a thief holding the main phrase cannot queue the next one. If you did start it, you can ignore the alert.
         </Note>
       )}
 
@@ -124,6 +124,14 @@ export default function Recovery() {
             <ul className="flex flex-col gap-2 p-4 text-mute">
               <li>
                 <span className="text-teal">always</span> — cancel the vault&apos;s pending withdrawal (e.g. one to an unknown address).
+              </li>
+              <li>
+                <span className="text-teal">cancel + freeze</span> — cancel and freeze the vault for 1 to 90 days (14 by default; recommended if the main
+                phrase may be stolen). The main phrase alone then moves nothing, and its pings no longer keep your takeover away.
+              </li>
+              <li>
+                <span className="text-teal">escape</span> — during a freeze, the main phrase and this recovery phrase together move everything to a new vault
+                at once.
               </li>
               <li>
                 <span className="text-teal">after the delay</span> — if the owner did nothing for the configured time, withdraw, stake

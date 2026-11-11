@@ -12,7 +12,7 @@ import { encodeRelayRequest } from "@nox/sdk/relayer";
 export type ActionJson = Record<string, string | number> & { kind: Action["kind"] };
 
 const KEY_FIELDS = new Set(["mint", "dest", "vote", "session", "newVault", "feePayee", "key"]);
-const BIG_FIELDS = new Set(["amount", "interval", "start", "limit", "period", "expires", "fee"]);
+const BIG_FIELDS = new Set(["amount", "interval", "start", "limit", "period", "expires", "fee", "secs"]);
 const NUM_FIELDS = new Set(["seed", "id", "count"]);
 
 export function actionToJson(a: Action): ActionJson {
@@ -217,6 +217,8 @@ export function describeAction(a: Action): string {
       return `collect stake slot #${a.seed}${fee}`;
     case "cancel":
       return `cancel the pending withdrawal / migration${fee}`;
+    case "cancelLock":
+      return `cancel what is pending and freeze the vault for ${every(a.secs)}${fee}`;
     case "ping":
       return `ping (owner is active)${fee}`;
     case "schedule":

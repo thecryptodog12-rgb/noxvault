@@ -43,7 +43,7 @@ const STEPS = [
     t: "RECOVER",
     Icon: RefreshCw,
     href: "/recovery",
-    d: "Optional recovery key held by someone else: cancels suspicious withdrawals, takes over after long inactivity.",
+    d: "Optional recovery key held by someone else: cancels suspicious withdrawals and can freeze the vault against a stolen phrase, takes over after long inactivity.",
   },
 ];
 

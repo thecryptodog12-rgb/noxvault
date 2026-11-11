@@ -6,6 +6,7 @@ import { expect } from "chai";
 import { sha256 } from "@noble/hashes/sha256";
 import * as wots from "../sdk/wots";
 import * as M from "./model";
+import { canExecute, type VaultStateView } from "../sdk/client";
 
 const seed = process.env.FC_SEED ? Number(process.env.FC_SEED) : undefined;
 const runs = (n: number) => ({ numRuns: n, ...(seed !== undefined ? { seed } : {}) });
@@ -183,7 +184,8 @@ describe("properties (pure SDK)", () => {
         fc.record({ kind: fc.constantFrom("cancelSchedule" as const, "cancelBudget" as const), id: fc.nat(255), ...fee }),
         fc.record({ kind: fc.constant("budget" as const), id: fc.nat(255), session: key, mint: key, limit: u64, period: i64, expires: i64, ...fee }),
         fc.record({ kind: fc.constant("migrate" as const), newVault: key, ...fee }),
-        fc.record({ kind: fc.constant("letterKey" as const), key, ...fee })
+        fc.record({ kind: fc.constant("letterKey" as const), key, ...fee }),
+        fc.record({ kind: fc.constant("cancelLock" as const), secs: i64, ...fee })
       ) as fc.Arbitrary<wots.Action>;
       const canon = (a: wots.Action) => JSON.stringify(a, (_, v) => (typeof v === "bigint" ? v.toString() : v instanceof Uint8Array ? Array.from(v) : v));
       fc.assert(
@@ -339,7 +341,7 @@ describe("properties (pure SDK)", () => {
     });
 
     it("P-16 the duress tree never counts toward the threshold and alone only withdraws SOL", () => {
-      const kinds: M.KindName[] = ["withdraw", "stake", "unstake", "collectStake", "cancel", "ping", "schedule", "cancelSchedule", "budget", "cancelBudget", "migrate", "letterKey"];
+      const kinds: M.KindName[] = ["withdraw", "stake", "unstake", "collectStake", "cancel", "ping", "schedule", "cancelSchedule", "budget", "cancelBudget", "migrate", "letterKey", "cancelLock"];
       fc.assert(
         fc.property(cfgArb, fc.integer({ min: 0, max: 31 }), fc.constantFrom(...kinds), fc.boolean(), fc.boolean(), (c, trees, kind, sol, locked) => {
           const st = fresh();
@@ -474,6 +476,8 @@ describe("properties (pure SDK)", () => {
               mode = (e as M.RuleError).code;
             }
             if (fee > M.MAX_ACTION_FEE) return mode === "FeeTooHigh";
+            // v4.2: CancelLock always carries the recovery tree, so it may pay the capped fee.
+            if (kind === "cancelLock") return mode === ((trees & (1 << M.RECOVERY_TREE)) !== 0 ? "Normal" : "CancelLockNeedsRecovery");
             let signers = 0;
             for (let t = 0; t < M.SIGNER_SLOTS; t++) if (trees & (1 << t)) signers++;
             const signerOnlyInLockdown = locked && signers >= c.threshold && !(trees & (1 << M.RECOVERY_TREE));
@@ -558,6 +562,127 @@ describe("properties (pure SDK)", () => {
           return st.pending === null && !st.migrateTo;
         }),
         runs(400)
+      );
+    });
+
+    // ---------- v4.2: recovery CancelLock (docs/audit/INVARIANTS.md A-11..A-13) ----------
+
+    const ALL_KINDS: M.KindName[] = ["withdraw", "stake", "unstake", "collectStake", "cancel", "ping", "schedule", "cancelSchedule", "budget", "cancelBudget", "migrate", "letterKey", "cancelLock"];
+    const code = (f: () => unknown) => {
+      try {
+        return String(f());
+      } catch (e) {
+        return (e as M.RuleError).code;
+      }
+    };
+
+    it("P-29 a CancelLock executes only with the recovery tree, only for 1 to 90 days, and never shortens a lockdown", () => {
+      fc.assert(
+        fc.property(
+          cfgArb,
+          fc.integer({ min: 0, max: 31 }),
+          fc.boolean(),
+          fc.bigInt({ min: -DAY, max: 100n * DAY }),
+          fc.bigInt({ min: 0n, max: 200n * DAY }),
+          (c, trees, inactive, secs, lockLeft) => {
+            const st = fresh();
+            const now = st.lastActive + (inactive ? c.recoveryDelay : 1n);
+            st.lockdownUntil = lockLeft ? now + lockLeft : 0n;
+            const mode = code(() => M.authorize(trees, c, st, "cancelLock", false, now, 0n, secs));
+            const recovery = (trees & (1 << M.RECOVERY_TREE)) !== 0;
+            const bounded = secs >= DAY && secs <= 90n * DAY;
+            if (!recovery) return mode === "CancelLockNeedsRecovery";
+            if (!bounded) return mode === "LockOutOfRange";
+            if (mode !== "Normal") return false;
+            const before = st.lockdownUntil;
+            st.pending = { kind: 0, mint: M.SOL_MINT, dest: "thief", amount: 1n, executableAt: now };
+            st.migrateTo = "thief-vault";
+            M.cancelLock(st, now, secs);
+            return st.pending === null && !st.migrateTo && st.lockdownUntil >= before && st.lockdownUntil >= now + secs;
+          }
+        ),
+        runs(800)
+      );
+    });
+
+    it("P-30 a thief with only signer phrases moves nothing during a freeze, never keeps the vault active, and the recovery takeover opens", () => {
+      // The thief holds every signer phrase; the recovery holder answers his payout with CancelLock.
+      const thiefOp = fc.record({ dt: fc.bigInt({ min: 0n, max: 3_600n }), kind: fc.constantFrom(...ALL_KINDS), fee: fc.bigInt({ min: 0n, max: M.MAX_ACTION_FEE }) });
+      fc.assert(
+        fc.property(cfgArb, fc.bigInt({ min: DAY, max: 90n * DAY }), fc.array(thiefOp, { maxLength: 30 }), (c, secs, ops) => {
+          const st = fresh();
+          let now = st.lastActive + 10n;
+          M.approveActivity(st, 0, now); // the thief's last action before the freeze
+          st.pending = { kind: 0, mint: M.SOL_MINT, dest: "thief", amount: 5n, executableAt: now + c.slowDelay };
+          M.authorize(1 << M.RECOVERY_TREE, c, st, "cancelLock", false, now, 0n, secs);
+          M.cancelLock(st, now, secs);
+          const frozenActive = st.lastActive;
+          for (const op of ops) {
+            now += op.dt;
+            if (now >= st.lockdownUntil) break;
+            M.approveActivity(st, 0, now);
+            const mode = code(() => M.authorize(0b111, c, st, op.kind, true, now, op.fee));
+            const moved = ["withdraw", "stake", "unstake", "collectStake", "schedule", "budget", "migrate", "letterKey"].includes(op.kind);
+            if (mode === "Normal" && (moved || op.fee > 0n || op.kind === "cancelLock")) return false;
+            if (mode === "Normal" && op.kind === "cancel") M.cancel(st, false, now);
+            if (st.lastActive !== frozenActive) return false;
+          }
+          // Recovery-after-inactivity depends only on the frozen clock.
+          const at = frozenActive + c.recoveryDelay;
+          return code(() => M.authorize(1 << M.RECOVERY_TREE, c, st, "withdraw", true, at)) === "Unrestricted";
+        }),
+        runs(500)
+      );
+    });
+
+    it("P-31 during a freeze, signers + recovery together act under the normal rules and migrate at once; a signer-only Cancel cannot stop that migration", () => {
+      fc.assert(
+        fc.property(cfgArb, fc.constantFrom(...ALL_KINDS), DEST, (c, kind, target) => {
+          const st = fresh();
+          const now = st.lastActive + 5n;
+          st.lockdownUntil = now + 14n * DAY;
+          const trees = 0b111 | (1 << M.RECOVERY_TREE);
+          if (code(() => M.authorize(trees, c, st, kind, true, now, M.MAX_ACTION_FEE)) !== "Normal") return false;
+          if (M.migrate(st, c, target, false, now, true) !== "started" || st.migrateTo !== target) return false;
+          M.cancel(st, false, now); // the thief's pre-staged Cancel
+          if (st.migrateTo !== target) return false;
+          M.cancel(st, true, now); // the recovery holder can still stop it
+          return st.migrateTo === null && st.lockdownUntil === 0n;
+        }),
+        runs(400)
+      );
+    });
+
+    it("P-32 the SDK's canExecute agrees with the model for every tree set, kind, fee and lockdown", () => {
+      const kinds = ALL_KINDS.filter((k) => k !== "withdraw");
+      fc.assert(
+        fc.property(
+          cfgArb,
+          fc.integer({ min: 0, max: 31 }),
+          fc.constantFrom(...kinds),
+          fc.boolean(),
+          fc.boolean(),
+          fc.constantFrom(0n, 1n, M.MAX_ACTION_FEE, M.MAX_ACTION_FEE + 1n),
+          fc.constantFrom(0n, 3600n, DAY, 14n * DAY, 90n * DAY, 91n * DAY),
+          (c, trees, kind, locked, inactive, fee, secs) => {
+            const st = fresh();
+            const now = st.lastActive + (inactive ? c.recoveryDelay : 1n);
+            if (locked) st.lockdownUntil = now + 100n;
+            const model = code(() => M.authorize(trees, c, st, kind, false, now, fee, secs));
+            const view = {
+              config: { threshold: c.threshold, recoveryDelay: c.recoveryDelay },
+              lockdownUntil: Number(st.lockdownUntil),
+              lastActive: Number(st.lastActive),
+            } as unknown as VaultStateView;
+            const action = { kind, secs, id: 0, seed: 0, fee, feePayee: new Uint8Array(32) } as unknown as wots.Action;
+            let signers = 0;
+            for (let t = 0; t < M.SIGNER_SLOTS; t++) if (trees & (1 << t)) signers++;
+            // execute_letter_key also needs the signer threshold (docs/SPEC.md §12).
+            const executes = ["Normal", "Unrestricted", "Duress"].includes(model) && (kind !== "letterKey" || signers >= c.threshold);
+            return canExecute(view, trees, action, Number(now)) === executes;
+          }
+        ),
+        runs(1000)
       );
     });
 

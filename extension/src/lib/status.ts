@@ -13,7 +13,7 @@ export interface Headline {
 }
 
 export function headline(s: ExtSnapshot, now: number): Headline {
-  if (s.lockdownUntil > now) return { tone: "bad", label: "LOCKDOWN", detail: `withdrawals refused for ${fmtDuration(s.lockdownUntil - now)}` };
+  if (s.lockdownUntil > now) return { tone: "bad", label: "LOCKDOWN", detail: `frozen: main-phrase withdrawals refused for ${fmtDuration(s.lockdownUntil - now)}` };
   const p = s.pending;
   if (p) {
     const amt = p.kind === "migrate" ? "all funds" : fmtTokenAmount(p.mint, p.amount, s.tokens);
@@ -36,7 +36,7 @@ export interface Clock {
 
 export function clocks(s: ExtSnapshot, now: number): Clock[] {
   const out: Clock[] = [];
-  if (s.lockdownUntil > now) out.push({ label: "Lockdown ends", at: s.lockdownUntil, text: fmtDate(s.lockdownUntil), tone: "bad" });
+  if (s.lockdownUntil > now) out.push({ label: "Lockdown / freeze ends", at: s.lockdownUntil, text: fmtDate(s.lockdownUntil), tone: "bad" });
   if (s.pending) out.push({ label: s.pending.kind === "migrate" ? "Migration executes" : "Withdrawal executes", at: s.pending.executableAt, text: fmtDate(s.pending.executableAt), tone: "warn" });
   if (s.recoveryAt != null) out.push({ label: "Recovery takeover", at: s.recoveryAt, text: fmtDate(s.recoveryAt), tone: s.recoveryAt - now <= 14 * 86_400 ? "warn" : "dim" });
   if (s.testamentAt != null) out.push({ label: "Testament opens", at: s.testamentAt, text: fmtDate(s.testamentAt), tone: s.testamentAt - now <= 14 * 86_400 ? "warn" : "dim" });

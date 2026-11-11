@@ -1,35 +1,36 @@
-# Noxvault v4: audit scope
+# Noxvault v4.2: audit scope
 
-Read together with `THREAT_MODEL.md`, `INVARIANTS.md`, `docs/SPEC.md` (v4, the single
-source of truth) and `docs/WHITEPAPER.md`.
+Read together with `THREAT_MODEL.md`, `INVARIANTS.md`, `docs/SPEC.md` (v4.2, the single
+source of truth) and `docs/WHITEPAPER.md`. v4.2 (the recovery tree's `CancelLock`, SPEC "Changes in
+v4.2", `INVARIANTS.md` §10) is built and tested locally, not yet deployed on devnet.
 
 ## 1. In scope
 
 | File | Lines | What |
 |---|---:|---|
-| `programs/noxvault/src/lib.rs` | 1 888 | 45 instructions, account structs, rules (`authorize`, `gate`, `budget_spend`, `split`, …), errors |
-| `programs/noxvault/src/state.rs` | 367 | Accounts (`VaultState`, `Approval`, `Unlock` zero-copy, `Schedule`, `Budget`, `Link`, `Protocol`, `Canary`, `LetterKey`, `Letter`), `Config`, `Action`, constants |
+| `programs/noxvault/src/lib.rs` | 1 920 | 45 instructions, account structs, rules (`authorize`, `gate`, `budget_spend`, `split`, …), errors |
+| `programs/noxvault/src/state.rs` | 492 | Accounts (`VaultState`, `Approval`, `Unlock` zero-copy, `Schedule`, `Budget`, `Link`, `Protocol`, `Canary`, `LetterKey`, `Letter`), `Config`, `Action`, `approval_mode` (the authorization rules), constants |
 | `programs/noxvault/src/wots.rs` | 78 | WOTS+ digits/checksum, chains, leaf and node hashes, domains |
-| **Program total** | **2 333** | |
+| **Program total** | **2 490** | |
 
 Secondary scope (the program relies on these encodings; review them for parity with the
 program):
 
 | File | Lines | What |
 |---|---:|---|
-| `sdk/wots.ts` | 308 | Key derivation, signing, borsh encodings of `Action` and `Config` |
-| `sdk/client.ts` | 1 606 | PDAs, instruction builders, `planAction`, `findSignedMessages` / `pickLeaf` (the one-message-per-leaf client rule, SPEC §9), preflight |
-| `sdk/relayer.ts` | 169 | Relayer checks (fee policy, signature re-verification) |
+| `sdk/wots.ts` | 312 | Key derivation, signing, borsh encodings of `Action` and `Config` |
+| `sdk/client.ts` | 1 767 | PDAs, instruction builders, `planAction`, `findSignedMessages` / `pickLeaf` (the one-message-per-leaf client rule, SPEC §9), preflight |
+| `sdk/relayer.ts` | 200 | Relayer checks (fee policy, signature re-verification) |
 
 Tests (not in scope, but useful):
 
 | File | Lines | What |
 |---|---:|---|
-| `tests/noxvault.ts` | 855 | 38 end-to-end tests against a local validator |
-| `tests/properties.chain.ts` | 416 | 11 on-chain property tests: differential/fuzz properties + gap proofs (GAP-xx) |
-| `tests/properties.sdk.ts` | 466 | 28 pure property tests on WOTS+ and the rules model |
-| `tests/model.ts` | 164 | TypeScript model of the program's pure rules, line-referenced to `lib.rs` |
-| `programs/noxvault/tests/props.rs` | 314 | 13 Rust host property tests, incl. Rust ↔ TS parity vectors |
+| `tests/noxvault.ts` | 1 104 | 48 end-to-end tests against a local validator |
+| `tests/properties.chain.ts` | 520 | 11 on-chain property tests: differential/fuzz properties + fix proofs (FIX-xx) |
+| `tests/properties.sdk.ts` | 719 | 32 pure property tests on WOTS+ and the rules model |
+| `tests/model.ts` | 232 | TypeScript model of the program's pure rules, line-referenced to `lib.rs` / `state.rs` |
+| `programs/noxvault/tests/props.rs` | 549 | 17 Rust host property tests, incl. Rust ↔ TS parity vectors and the full authorization table (`approval_mode`) |
 
 Build:
 
@@ -38,7 +39,9 @@ Build:
 - Dependencies: `anchor-lang` 0.31.1 (`init-if-needed`), `anchor-spl` 0.31.1, `bytemuck`.
 - `target/deploy/noxvault.so` at the time of writing: 816 272 bytes, sha256
   `4988233e691a678aef34e6d626c2f109d2808d61cbd97eaa0fce588657262bb5` (local, non-verifiable
-  build). Use `anchor build --verifiable` for the audited artifact.
+  build; the v4 program on devnet has this data length). The v4.1 source builds to 822 744 bytes,
+  v4.2 to 822 424 bytes (local builds); both need the devnet program account extended before the
+  upgrade. Use `anchor build --verifiable` for the audited artifact.
 - Program id `8iDqwPFRxr2rHiuieVhGL4jdTT7XPE5qPAReS6VzTPw4` (devnet).
 
 ## 2. Build and test
@@ -46,7 +49,7 @@ Build:
 ```bash
 pnpm install                      # root (program tests, SDK)
 anchor build
-anchor test                       # local validator: all 38 e2e + 11 on-chain property + 28 pure property tests (~6 min)
+anchor test                       # local validator: all 48 e2e + 11 on-chain property + 32 pure property tests (~8 min)
 pnpm test:props                   # pure property tests only, no validator (~3 s)
 pnpm test:rust                    # Rust host property tests (cargo test -p noxvault --test props)
 FC_CHAIN_RUNS=20 anchor test      # more fast-check runs for the on-chain properties (slower)
@@ -117,7 +120,7 @@ Findings from this review are in `INVARIANTS.md` §9. In brief:
 | G-02 | High | `Migrate` ignores `instant_limit` restriction on vaults without a whitelist |
 | G-03 | High | Session budgets ignore `instant_limit` restriction on vaults without a whitelist |
 | G-04 | Medium | `Cancel` never clears `migrate_to`; a started migration cannot be stopped |
-| G-06 | Medium | A duress-phrase holder can chain lockdowns and keep the vault "active" (spec-intended, abusable) |
+| G-06 | Medium | A duress-phrase holder can chain lockdowns (spec-intended, abusable); since v4.2 approvals during a lockdown no longer keep the vault "active" |
 | G-05 | Low | Duplicate roots across signer/recovery slots accepted (one-time key reuse across slots) |
 | G-07 | Low | Instant limit and budgets use fixed windows (up to 2× per 24 h around a reset) |
 | G-08 | Low | Unbounded i64 delays/intervals/periods can make instructions abort on overflow |
@@ -133,7 +136,9 @@ Limits by design (documented in SPEC / `/risks`):
 | K-2 | Session keys, letter keys, Escape Hatch wallets and the protocol admin are ed25519 (not quantum-safe) |
 | K-3 | The Escape Hatch is a race against an attacker who has broken a wallet key; the canary is an alarm, not a guarantee |
 | K-4 | After `recovery_delay` of inactivity the recovery holder controls everything, unrestricted, also during a lockdown |
-| K-5 | Running schedules, the testament, inbox sweeps and a started migration continue during a lockdown |
+| K-5 | Running schedules, the testament, inbox sweeps and a started migration continue during a lockdown (also during a v4.2 freeze: a schedule a thief created earlier still pays once due) |
+| K-10 | v4.2: signers + recovery together migrate at once during a lockdown; whoever holds both phrases controls the vault (`INVARIANTS.md` §10) |
+| K-11 | v4.2: approvals during any lockdown are not activity, so a long duress lockdown can let the testament or recovery clock run out unless the recovery holder ends it |
 | K-6 | A lockdown is visible on chain; duress mode caps the loss, it does not hide it. SOL only |
 | K-7 | Sealed letters open at their drand round even if the owner is alive but did not refresh |
 | K-8 | Token-2022 extensions (transfer fees, hooks) are not specially handled; a fee-on-transfer mint pays heirs/destinations less than `amount` |
@@ -145,6 +150,7 @@ Limits by design (documented in SPEC / `/risks`):
 |---|---|---|
 | 2026-10-09 | Security review of the signing flow (commit `9321733`) | **Critical, client side, fixed.** The web flow could publish a second signature for the same one-time key: time-out + discard, another payer, another device, or a cancelled buffer. Fix: `write_sigs` names the vault; `findSignedMessages` reads the vault's full history; preflight refuses any other message and refuses to sign when history cannot be read. Tested by `tests/noxvault.ts` "remembers a signed message for good…" |
 | 2026-11 | Pre-audit review (this folder) | Threat model, invariants with enforcement and coverage, property tests (TS + Rust), gap proofs, upgrade-authority plan. Findings G-01..G-11; **program unchanged**. |
+| 2026-11 | v4.2: anti-theft cancel and freeze | A thief with a signer phrase out-waited the recovery holder (each cancel burns a recovery key; his pings kept the takeover away). Added `CancelLock` (recovery only, 1 to 90 days), lockdowns that bind only approvals without the recovery tree (signers + recovery escape at once), no activity during a lockdown. Invariants A-11..A-13, D-7; tests T:904..T:1039, P-29..P-32, R-14..R-17. |
 
 No external audit has taken place.
 
@@ -153,6 +159,10 @@ No external audit has taken place.
 1. Is the fee design (G-01) acceptable with a cap, or should fees be removed from approvals
    whose rules restrict the destination?
 2. Lockdown semantics (G-06): should a running lockdown be extendable at all?
+2b. v4.2: is the instant escape (signers + recovery migrate at once during a lockdown) the right
+   trade-off, versus keeping `slow_delay` and making a queued migration executable during a
+   lockdown? Should approvals during a duress lockdown still count as activity (needs a new
+   state field to tell duress lockdowns from freezes)?
 3. Any path that moves value from the vault on a signer approval without passing `gate` or an
    equivalent check, beyond the ones listed in S-5?
 4. `Unlock` is zero-copy with `_pad`: is the layout sound across Rust versions

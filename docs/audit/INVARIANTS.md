@@ -1,4 +1,4 @@
-# Noxvault v4.1: invariants
+# Noxvault v4.2: invariants
 
 Every property the program must keep, where it is enforced, and which test covers it.
 
@@ -6,6 +6,9 @@ Every property the program must keep, where it is enforced, and which test cover
 - v4.1 fixed G-01..G-05 and G-08 (§9). Rows touched by those fixes cite v4.1 line numbers; the
   other rows still cite the v4 lines of the audit commit (`6e0213b`), which v4.1 shifted by up to
   ~30 lines (no logic there changed).
+- v4.2 adds the recovery tree's `CancelLock` (anti-theft freeze, §10). Rows A-11..A-13 and D-7
+  and every row marked "v4.2" cite v4.2 line numbers. v4.2 moved the rules of `authorize` into
+  `state::approval_mode` (state.rs:231), so older `authorize` line references now point there.
 - Test references:
   - `T:<line>` is a test in `tests/noxvault.ts`, by the line of its `it(`.
   - `P-xx` is in `tests/properties.sdk.ts` (pure, fast-check).
@@ -56,12 +59,15 @@ Every property the program must keep, where it is enforced, and which test cover
 | A-1 | Only signer approvals count toward the threshold | `authorize` lib.rs:895 (`SIGNER_BITS`) | T:333, T:674, P-16 | OK |
 | A-2 | The recovery tree alone executes only cancels while the owner is active; everything (unrestricted) after `recovery_delay` | lib.rs:900-905 | T:381, T:398, P-16 | OK |
 | A-3 | The duress tree alone authorizes only a SOL withdrawal; it never adds to signer or recovery power | lib.rs:907-911; `authorize_full` lib.rs:917-921 | T:640, T:674, P-16 | OK |
-| A-4 | During a lockdown signer approvals execute only Ping and cancels, with fee 0 unless the recovery tree also approved | `authorize` lib.rs:920-924; `open_unlock` lib.rs:116-118; state.rs allowed_in_lockdown | T:620, T:632, P-17, P-26, R-09, FIX-01 | OK (fee part: v4.1) |
+| A-4 | During a lockdown signer approvals without the recovery tree execute only Ping and cancels, with fee 0 (v4.2: with the recovery tree they are not limited by the lockdown, A-12) | `approval_mode` state.rs:231 (lockdown branch); `open_unlock` lib.rs:117-119; state.rs allowed_in_lockdown | T:620, T:632, T:925, P-17, P-26, R-09, R-14, R-16, FIX-01 | OK (fee part: v4.1) |
 | A-10 | No action pays a fee above `MAX_ACTION_FEE` (0.01 SOL), on any path, duress included | `authorize` lib.rs:915; `pay_fee` lib.rs:1064; `open_unlock` lib.rs:114; state.rs:48 | FIX-01, FIX-01b, P-24, P-26, R-13 | OK (v4.1) |
 | A-5 | Only a signer-threshold approval sets the letter key | `execute_letter_key` lib.rs:447-449 | T:792 | OK |
 | A-6 | Executing an approval closes it (no double execution) | `close = creator` on every `Execute*` account struct (lib.rs:1215, 1237, 1264, 1297, 1324, 1349, 1375, 1400) | T:333 (`fetchApproval` → null) | OK |
 | A-7 | Each execute instruction executes only its own kinds | `let Kind::… else WrongAction` in each handler | T:640 (indirect) | Partial |
-| A-8 | Signer and duress approvals update `last_active`; recovery approvals do not | lib.rs:195-197 | T:603, T:718 | OK |
+| A-8 | Signer and duress approvals update `last_active`, except during a lockdown (v4.2, A-13); recovery approvals never do | `approve` lib.rs:205-211 | T:603, T:718, T:958, T:989 | OK |
+| A-11 | `CancelLock` executes only with the recovery tree's approval (any time: lockdown, inactivity or not), only for `secs` in [1 day, 90 days]; it clears `pending` and `migrate_to` and sets `lockdown_until = max(lockdown_until, now + secs)` | `approval_mode` state.rs:231 (`needs_recovery`, `lock_bounded` state.rs:193-202); `open_unlock` lib.rs:116 (bounds before a key burns); `execute_admin` lib.rs:374-380; `extend_lockdown` state.rs:322 | T:904, T:940, T:980, T:1039, P-29, R-09, R-14, R-15, R-17 | OK (v4.2) |
+| A-12 | During a lockdown an approval with the signer threshold **and** the recovery tree is not limited by the lockdown (normal rules apply); a `Migrate` it approves starts at once, whitelist or not (the escape); a signer-only `Cancel` during a lockdown cannot clear that started migration | `approval_mode` state.rs:231; `execute_admin` lib.rs:366 (Cancel), lib.rs:400 (escape) | T:1004, P-31, P-32, R-14, R-16 | OK (v4.2) |
+| A-13 | A thief holding only signer phrases cannot keep the vault "active" through a freeze: approvals during a lockdown never move `last_active`, so recovery-after-inactivity opens `recovery_delay` after the last activity before the freeze | `approve` lib.rs:209 | T:958, T:968, P-30 | OK (v4.2) |
 | A-9 | An unexecuted approval can be discarded by anyone after 7 days, rent to its creator | lib.rs:202-206, 1196 | none | Untested; G-09 |
 
 ## 4. Spending rules (SPEC §3, §4)
@@ -74,7 +80,7 @@ Every property the program must keep, where it is enforced, and which test cover
 | S-4 | Restricted tokens never pay at once | lib.rs:934 (SOL only) | P-11 | Partial (no on-chain token case) |
 | S-5 | Every way value leaves the vault on a signer approval obeys S-1..S-3 — fees excepted, which are capped instead | withdrawals: `gate` lib.rs:956; schedules: lib.rs:412-415; migrate: lib.rs:379 (`Config::restricted`); budgets: lib.rs:445, 999; fees: ≤ `MAX_ACTION_FEE` lib.rs:915, none during a lockdown lib.rs:923 | FIX-01, FIX-01b, FIX-02, FIX-03, P-19, P-19b, P-26, P-27 | **FIXED (v4.1)**: G-01, G-02, G-03 (fees: bounded residual, SPEC §4 "The fee") |
 | S-6 | A pending withdrawal pays only when due, not during a lockdown, and only to its destination | lib.rs:536-562, 952-957 | T:381, T:391, T:620 | OK |
-| S-7 | Any `Cancel` (signers, or recovery at any time) stops everything still waiting: the pending withdrawal or migration and a started migration | lib.rs:353-362 clears `pending` and `migrate_to`; `migrate_sol`/`migrate_token` then refuse (`WrongDest`) | FIX-02, FIX-04, P-27 | **FIXED (v4.1)**: G-04 |
+| S-7 | Any `Cancel` (signers, or recovery at any time) stops everything still waiting: the pending withdrawal or migration and a started migration. v4.2: during a lockdown only a recovery `Cancel` (or `CancelLock`) clears a started migration | lib.rs:362-371 clears `pending` and `migrate_to`; `migrate_sol`/`migrate_token` then refuse (`WrongDest`) | FIX-02, FIX-04, P-27, P-31, T:1004 | **FIXED (v4.1)**: G-04 |
 | S-8 | A schedule pays `amount` every `interval`, `count` times, never early; first restricted payment ≥ `slow_delay` | lib.rs:384-414, 959-965 | T:431 | Partial (no restricted-schedule test) |
 | S-9 | A budget spends ≤ `limit` per period, before `expires`, only to non-restricted destinations, never during a lockdown | `budget_spend` lib.rs:994-1008 (restricted: 999); creation refused when every destination is restricted lib.rs:445 | T:452, P-19, P-19b, FIX-03, R-13 | **FIXED (v4.1)**: G-03; fixed window G-07 (known limitation, SPEC §13) |
 | S-10 | After any payout the vault holds 0 or ≥ rent minimum lamports | `check_rent` lib.rs:1004, called on SOL-moving paths | T:316 (preflight), P-14 | Partial (`migrate_sol`, `testament_sol` empty the vault, so 0) |
@@ -86,10 +92,11 @@ Every property the program must keep, where it is enforced, and which test cover
 |---|---|---|---|---|
 | D-1 | A duress withdrawal pays at most `min(amount, duress_limit, lamports − rent)`, fee included | lib.rs:224-237 | T:603, P-14, P-24 | OK |
 | D-2 | During a running lockdown a duress withdrawal pays nothing, and extends the lockdown | lib.rs:230, 238 | T:632, P-14, P-15, P-24 | OK |
-| D-3 | After a duress withdrawal `lockdown_until ≥ now + duress_lock` and never decreases (except a recovery Cancel) | lib.rs:238, 346-348 | T:603, T:662, P-14 | OK |
+| D-3 | After a duress withdrawal `lockdown_until ≥ now + duress_lock` and never decreases (except a recovery Cancel) | lib.rs:252 (`extend_lockdown` state.rs:322), 368-370 | T:603, T:662, P-14, R-17 | OK |
 | D-4 | Total value out of the vault during one lockdown ≤ `duress_limit` (unless the recovery holder co-signs a fee) | duress branch lib.rs:234-251; signer fees refused in lockdown lib.rs:923, 117 | P-15, P-15b, FIX-01 | **FIXED (v4.1)**: G-01 |
-| D-5 | A recovery-tree Cancel ends the lockdown; nothing else does before it expires | lib.rs:346-348 | T:662 | OK |
-| D-6 | The duress phrase cannot keep the vault locked or "active" indefinitely | **not enforced**: each duress execution extends the lockdown (lib.rs:248) and each duress approval resets `last_active` (lib.rs:206) | none | Known limitation G-06 (SPEC §13), kept by design |
+| D-5 | A recovery-tree Cancel ends the lockdown (a duress lockdown or a `CancelLock` freeze); nothing else does before it expires | lib.rs:368-370 | T:662, T:727, T:989 | OK |
+| D-7 | A `CancelLock` during a running lockdown (duress or freeze) only ever extends it | `extend_lockdown` state.rs:322 | T:717, T:980, P-29, R-17 | OK (v4.2) |
+| D-6 | The duress phrase cannot keep the vault locked or "active" indefinitely | **partly**: each duress execution still extends the lockdown (lib.rs:252); since v4.2 a duress approval made during a lockdown no longer resets `last_active` (lib.rs:209), so chained lockdowns no longer postpone recovery-after-inactivity or the testament | P-30 (same rule for signer approvals) | Known limitation G-06 (SPEC §13), narrowed in v4.2 |
 
 ## 6. Testament, recovery, migration
 
@@ -98,7 +105,7 @@ Every property the program must keep, where it is enforced, and which test cover
 | T-1 | The testament opens only when active and the owner has been inactive `testament_delay` | `testament_open` lib.rs:983-988 | T:489 | OK |
 | T-2 | Heirs get exactly `bps/10000` of the total (rounded down), the last heir the remainder; sum = total | `split` lib.rs:995-1002 | T:489, P-18 | OK |
 | T-3 | Heirs are paid only to their configured addresses / token accounts they own | lib.rs:649, 666-668 | T:489 | OK |
-| T-4 | Migration moves funds only to `migrate_to`, which only an authorized, rule-abiding `Migrate` sets and any `Cancel` clears | lib.rs:379-391, 357; `migrate_sol`/`migrate_token` check `migrate_to` | T:837, FIX-02, FIX-04 | OK (v4.1: G-02, G-04 fixed) |
+| T-4 | Migration moves funds only to `migrate_to`, which only an authorized, rule-abiding `Migrate` sets (v4.2: or the escape, A-12) and a `Cancel` clears (v4.2: during a lockdown only a recovery Cancel) | lib.rs:396-412, 362-371; `migrate_sol`/`migrate_token` check `migrate_to` | T:837, T:1004, FIX-02, FIX-04 | OK (v4.1: G-02, G-04 fixed) |
 | T-5 | Recovery acts unrestricted only after the owner's inactivity, and that ignores a lockdown (spec) | lib.rs:900-905 | T:398 | OK |
 
 ## 7. Sealed letters and the letter key (SPEC §12)
@@ -173,3 +180,46 @@ size changed.
   (lib.rs:214, 383, 414, 772, 962, 973, 990, 1001). Tests: FIX-08, R-12.
 - **G-06, G-07** — unchanged by design; documented in SPEC §13 "Known limitations".
 - **G-09..G-11** — unchanged (informational).
+
+## 10. v4.2: the recovery tree's cancel and freeze (`CancelLock`)
+
+**Weakness closed.** A thief holding the owner's signer phrase answers every recovery `Cancel` with
+a new restricted payout. Each cancel burns one recovery key (a recovery tree has at most 2^8,
+the apps make 16), so the thief wins the war of attrition; meanwhile his Pings keep `last_active`
+fresh, so recovery-after-inactivity never opens.
+
+**Rules** (SPEC §4 "CancelLock", §11):
+
+- `Kind::CancelLock { secs }` (tag 12, appended: every earlier encoding is unchanged). Only an
+  approval that includes the recovery tree executes it (`CancelLockNeedsRecovery`, 6045), at any
+  time; `secs` ∈ [`MIN_CANCEL_LOCK` = 1 day, `MAX_CANCEL_LOCK` = 90 days] (`LockOutOfRange`,
+  6046; `open_unlock` refuses it before a key burns). It clears `pending` and `migrate_to` and
+  sets `lockdown_until = max(lockdown_until, now + secs)` (A-11, D-7). It may pay the capped fee:
+  the recovery tree approved it (G-01 rule unchanged). Relayers send it free.
+- A lockdown binds only approvals **without** the recovery tree (A-4, A-12). Signers + recovery
+  together act under the normal rules; during a lockdown their `Migrate` starts at once (the
+  escape), because a queued migration could not run before the lockdown ends and the frozen
+  signer phrase could cancel it. During a lockdown a signer-only `Cancel` clears `pending` but
+  not a started migration (S-7).
+- Approvals made during a lockdown never move `last_active` (A-8, A-13).
+- Plain `Cancel` is unchanged: from the recovery tree it still ends any lockdown (D-5).
+
+**Trade-offs, kept on purpose.**
+
+- *Signers + recovery during a lockdown migrate instantly.* That is new power for someone holding
+  **both** phrases: the recovery phrase can always start a freeze, so whoever holds both can now
+  move everything at once instead of waiting `slow_delay`. Accepted because both phrases together
+  already decide the vault: the recovery phrase ends lockdowns at will and, since approvals in a
+  lockdown no longer count as activity, can freeze the owner out and take over after
+  `recovery_delay`. Keep the two phrases apart (the anti-theft preset says so).
+- *Approvals during a lockdown are not activity* also applies to duress lockdowns. An owner whose
+  duress lockdown outlasts `testament_delay` (or `recovery_delay`) past the last activity can no
+  longer hold the testament (or the recovery takeover) off by pinging during that lockdown; the
+  recovery holder's `Cancel` ends the lockdown, after which pings count again. It also narrows
+  G-06: chained duress lockdowns no longer postpone recovery-after-inactivity or the testament.
+- *Running schedules continue during a lockdown* (SPEC §11, unchanged). A schedule the thief
+  created before the freeze still pays once due; its first restricted payment waits `slow_delay`.
+  Answer: the recovery `CancelSchedule` (any time), or the owner's escape (an empty vault pays
+  nothing). Not changed in v4.2: pausing schedules would change duress mode for every vault.
+- *A freeze ends by itself* after `secs` (at most 90 days); the recovery holder renews it with
+  another `CancelLock` (one key per renewal) or ends it with `Cancel`.

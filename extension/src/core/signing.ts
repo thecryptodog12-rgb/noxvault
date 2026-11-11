@@ -13,6 +13,8 @@ import { PublicKey, type Connection } from "@solana/web3.js";
 import type { Program } from "@coral-xyz/anchor";
 import {
   RECOVERY_TREE,
+  MAX_CANCEL_LOCK_SECS,
+  MIN_CANCEL_LOCK_SECS,
   actionDigest,
   buildSteps,
   completesApproval,
@@ -31,7 +33,8 @@ import {
   type Signer,
   type VaultStateView,
 } from "../../../sdk/client";
-import { authPath, equal, sign, type Action } from "../../../sdk/wots";
+import { authPath, equal, sign, type Action, type Kind } from "../../../sdk/wots";
+import { freeEmergencyAction } from "../../../sdk/relayer";
 import { errMsg, hex } from "../../../web/lib/format";
 import { actionFromJson, actionToJson, describeAction, isSol, sendIxs, type PendingAction, type RelayerInfo, type SendFn } from "../../../web/lib/unlock";
 import type { PendingStore } from "./pendingStore";
@@ -67,9 +70,30 @@ export interface Ctx {
 
 const conn = (ctx: Ctx): Connection => ctx.program.provider.connection;
 
-/** ActionPanel `lockdownFree`: during a lockdown the signers' Ping and cancels carry fee 0. */
+/**
+ * ActionPanel `lockdownFree`: during a lockdown the signers' Ping and cancels carry fee 0; the
+ * recovery phrase's Cancel and CancelLock are relayed free too (v4.2, emergencies).
+ */
 export function lockdownFree(state: VaultStateView, tree: number, kind: KindName, now?: number): boolean {
-  return tree < RECOVERY_TREE && inLockdown(state, now) && ["ping", "cancel", "cancelSchedule", "cancelBudget"].includes(kind);
+  return (tree < RECOVERY_TREE && inLockdown(state, now) && ["ping", "cancel", "cancelSchedule", "cancelBudget"].includes(kind)) || freeEmergencyAction(tree, kind);
+}
+
+/**
+ * v4.2: the cancel a cancel screen signs. The recovery phrase may "cancel and freeze" (CancelLock)
+ * for `days`; the owner's phrase, or a program that predates v4.2 (`supported` false), gets a plain
+ * Cancel, with a note saying why.
+ */
+export function cancelKind(o: { tree: number; freeze: boolean; days: number; supported: boolean }): { kind: Kind; note?: string } {
+  if (!o.freeze) return { kind: { kind: "cancel" } };
+  if (o.tree !== RECOVERY_TREE) return { kind: { kind: "cancel" }, note: "Only the recovery phrase can freeze the vault; this is a plain cancel." };
+  const secs = Math.round(o.days * 86_400);
+  if (!Number.isFinite(secs) || secs < MIN_CANCEL_LOCK_SECS || secs > MAX_CANCEL_LOCK_SECS) throw new Error("Freeze for 1 to 90 days");
+  if (!o.supported)
+    return {
+      kind: { kind: "cancel" },
+      note: "The Noxvault program on this network does not support cancel and freeze yet (it arrives with the v4.2 upgrade), so this is a plain cancel. Whoever holds the main phrase can queue a new payout after it: move your funds to a new vault on nox-vault.com.",
+    };
+  return { kind: { kind: "cancelLock", secs: BigInt(secs) } };
 }
 
 // ---- the vault's history decides which leaf signs, and whether a message is already fixed ----

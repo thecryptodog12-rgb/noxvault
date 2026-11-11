@@ -164,8 +164,10 @@ defineView(
     let alert = "";
     if (s.lockdownUntil > t) {
       alert = `<div class="alert bad"><div class="t">🚨 LOCKDOWN</div><div class="big tick" data-at="${s.lockdownUntil}"></div>
-        <p>The duress phrase was used. Withdrawals are refused until the lockdown ends. Only the recovery key can end it early: check on the owner first.</p>
-        ${s.rules.recoveryDelay != null ? `<button class="btn danger block" data-a="cancel-start" data-arg="${esc(v.key)}">End lockdown with the recovery phrase</button>` : ""}</div>`;
+        <dl class="kv" style="margin:6px 0 0"><dt>Frozen until</dt><dd>${esc(new Date(s.lockdownUntil * 1000).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }))}</dd></dl>
+        <p>Either the duress phrase was used, or the recovery phrase cancelled a payout and froze the vault. Until it ends the main phrase alone can only Ping or cancel: nothing can be withdrawn with it, and its Pings do not count as activity. Only the recovery key can end it early: check on the owner first.</p>
+        <p class="dim small">Main phrase stolen? Escape: on nox-vault.com sign a migration to a fresh vault with the main phrase and co-sign it with the recovery phrase; together they move everything at once.</p>
+        ${s.rules.recoveryDelay != null ? `<button class="btn danger block" data-a="cancel-start" data-plain="1" data-arg="${esc(v.key)}">End lockdown with the recovery phrase</button>` : ""}</div>`;
     }
     if (s.pending) {
       const p = s.pending;

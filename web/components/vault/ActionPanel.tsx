@@ -26,6 +26,8 @@ import {
   pickLeaf,
   preflightAction,
   remainingSteps,
+  supportsCancelLock,
+  DEFAULT_CANCEL_LOCK_DAYS,
   type BudgetView,
   type ScheduleView,
   type SignedAction,
@@ -35,6 +37,7 @@ import {
   type VaultStateView,
 } from "@nox/sdk/client";
 import { authPath, equal, sign, type Action, type Kind } from "@nox/sdk/wots";
+import { freeEmergencyAction } from "@nox/sdk/relayer";
 import { Label, Note } from "@/components/ui";
 import TierHint from "./TierHint";
 import { useNox } from "@/lib/hooks";
@@ -95,9 +98,11 @@ const KINDS: { k: KindName; label: string }[] = [
   { k: "migrate", label: "Migrate" },
   { k: "ping", label: "Ping" },
   { k: "cancel", label: "Cancel pending" },
+  { k: "cancelLock", label: "Cancel + freeze" },
 ];
 
-const RECOVERY_CANCELS: KindName[] = ["cancel", "cancelSchedule", "cancelBudget"];
+/** v4.2: the recovery phrase's cancel and freeze comes first: it is the recommended answer to a payout you did not start. */
+const RECOVERY_CANCELS: KindName[] = ["cancelLock", "cancel", "cancelSchedule", "cancelBudget"];
 
 const unitSecs = { h: 3600, d: 86400 } as const;
 
@@ -137,13 +142,20 @@ export default function ActionPanel({
   const isDuress = tree === DURESS_TREE;
   // v4.1 (docs/SPEC.md §11): during a lockdown the signers' Ping and cancels carry fee 0, and the
   // relayer sends them for free.
+  // v4.2: the recovery phrase's Cancel and CancelLock are relayed free as well (emergencies).
   const lockdownFree = (a: { kind: KindName }) =>
-    tree < RECOVERY_TREE && inLockdown(state) && ["ping", "cancel", "cancelSchedule", "cancelBudget"].includes(a.kind);
+    (tree < RECOVERY_TREE && inLockdown(state) && ["ping", "cancel", "cancelSchedule", "cancelBudget"].includes(a.kind)) || freeEmergencyAction(tree, a.kind);
+  const vaultLocked = inLockdown(state);
+  // v4.2: the escape. During a lockdown the owner's main phrase and the recovery phrase together
+  // may migrate at once: either side signs "Migrate" first, the other co-signs it (open approvals).
+  const escapeKind = { k: "migrate" as KindName, label: "Escape (with main phrase)" };
   const kinds = isDuress
     ? KINDS.filter((x) => x.k === "withdraw")
     : isRecovery && !recoveryOpen
-      ? RECOVERY_CANCELS.map((k) => KINDS.find((x) => x.k === k)!)
-      : KINDS;
+      ? [...RECOVERY_CANCELS.map((k) => KINDS.find((x) => x.k === k)!), ...(vaultLocked ? [escapeKind] : [])]
+      : isRecovery
+        ? [KINDS.find((x) => x.k === "cancelLock")!, ...KINDS.filter((x) => x.k !== "cancelLock")]
+        : KINDS.filter((x) => x.k !== "cancelLock");
 
   const protocol = useProtocol();
   const needsGuardian = (k: KindName) => k === "schedule" || k === "budget";
@@ -170,6 +182,7 @@ export default function ActionPanel({
   const [session, setSession] = useState("");
   const [expiresDays, setExpiresDays] = useState("30");
   const [newVault, setNewVault] = useState("");
+  const [freezeDays, setFreezeDays] = useState(String(DEFAULT_CANCEL_LOCK_DAYS));
   const [validators, setValidators] = useState<{ vote: string; stake: number }[] | null>(null);
   const [relayer, setRelayer] = useState<RelayerInfo | null>(null);
   const [relayerErr, setRelayerErr] = useState<string | null>(null);
@@ -359,6 +372,11 @@ export default function ActionPanel({
       case "cancel":
       case "ping":
         return { kind: { kind } };
+      case "cancelLock": {
+        const days = Number(freezeDays);
+        if (!Number.isFinite(days) || days < 1 || days > 90) throw new Error("Freeze for 1 to 90 days");
+        return { kind: { kind, secs: BigInt(Math.round(days * 86400)) } };
+      }
       case "letterKey":
         throw new Error("Set the letter key on the Sealed letters page (/letters).");
     }
@@ -400,7 +418,19 @@ export default function ActionPanel({
       const preKey = `${leaf}:${hex(digest)}`;
       let res: { errors: string[]; warnings: string[] };
       try {
-        res = await preflightAction({ program, payer, vault, signer, leaf, action, tokenProgram });
+        // v4.2: during a lockdown a migration is the escape, signed by the main phrase and the
+        // recovery phrase together: preflight it as such (it executes once both have approved).
+        const together = vaultLocked && action.kind === "migrate" && tree <= RECOVERY_TREE;
+        res = await preflightAction({ program, payer, vault, signer, leaf, action, tokenProgram, together });
+        if (together)
+          res.warnings.unshift(
+            isRecovery
+              ? "Escape: this only executes once the vault's main phrase approves the same migration too (open the vault with it and co-sign under open approvals). Then everything can move to the new vault at once."
+              : "Escape: during the lockdown this migration only executes once the recovery phrase approves it too (open /recovery with it and co-sign under open approvals). Then everything can move to the new vault at once."
+          );
+        // v4.2: the program on this network may predate CancelLock (devnet before the upgrade).
+        if (action.kind === "cancelLock" && !(await supportsCancelLock(program, payer, vault)))
+          res.errors.push("The Noxvault program on this network does not support cancel and freeze yet (it arrives with the v4.2 upgrade). Use plain Cancel for now.");
         // Re-read the history right before freezing: nothing may have been signed meanwhile.
         const signed = await findSignedMessages(program, vault, signer);
         const fresh = await fetchState(program, vault);
@@ -849,12 +879,33 @@ export default function ActionPanel({
               </p>
             </div>
           )}
-          {kind === "ping" && <p className="text-[12.5px] text-mute">Proves the owner is active: resets the recovery and testament clocks. Uses one key.</p>}
+          {kind === "ping" && (
+            <p className="text-[12.5px] text-mute">
+              Proves the owner is active: resets the recovery and testament clocks. Uses one key.
+              {vaultLocked && " During a lockdown a Ping signed by the main phrase alone does not reset them."}
+            </p>
+          )}
+          {kind === "cancelLock" && (
+            <div className="flex flex-col gap-2">
+              <label className="flex flex-col gap-1.5">
+                <Label>freeze for (days, 1 to 90)</Label>
+                <input className="field w-32" inputMode="numeric" value={freezeDays} onChange={(e) => setFreezeDays(e.target.value)} />
+              </label>
+              <p className="text-[12.5px] text-mute">
+                Cancel and freeze for {Number(freezeDays) || DEFAULT_CANCEL_LOCK_DAYS} days: recommended if the main phrase may be stolen. It drops the pending
+                payout or migration, then freezes the vault: the main phrase alone can only Ping or cancel until then, and its Pings stop counting as
+                activity, so a thief cannot hold off your recovery takeover. The owner can still escape: the main phrase and this recovery phrase together
+                move everything to a new vault at once. Uses one recovery key; a running lockdown is only ever extended.
+              </p>
+            </div>
+          )}
           {kind === "cancel" && (
             <p className="text-[12.5px] text-mute">
               {state.pending || state.migrateTo
                 ? "Drops the pending withdrawal or migration, and stops a started migration from moving what is still in the vault."
                 : "Nothing is pending right now."}
+              {isRecovery &&
+                " Plain cancel: whoever holds the main phrase can queue a new payout right after. If that phrase may be stolen, use Cancel + freeze instead. A plain recovery Cancel also ends any lockdown."}
             </p>
           )}
 

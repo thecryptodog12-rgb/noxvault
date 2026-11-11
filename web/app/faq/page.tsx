@@ -59,7 +59,7 @@ const QA: [string, React.ReactNode][] = [
   ],
   [
     "What are the whitelist, instant limit and delay?",
-    "Up to 4 trusted addresses receive withdrawals immediately. Other destinations get at most the instant limit of SOL per 24 h straight away; anything more waits out the delay as a pending withdrawal that a signer or the recovery key can cancel, or is refused when the delay is 0.",
+    "Up to 4 trusted addresses receive withdrawals immediately. Other destinations get at most the instant limit of SOL per 24 h straight away; anything more waits out the delay as a pending withdrawal that a signer or the recovery key can cancel, or is refused when the delay is 0. If your main phrase may be stolen, the recovery key can cancel and freeze the vault (1 to 90 days) so the thief cannot simply queue the next payout, while your main and recovery phrase together can still move everything to a new vault.",
   ],
   [
     "What is the testament?",

@@ -65,7 +65,7 @@ Every feature below is enforced by the on-chain program, works for SOL and for S
 | Feature | What it does | Who can trigger it |
 | --- | --- | --- |
 | Multi-signer approvals | Up to 3 signer trees; an action executes once `threshold` of them approve the identical action | Each signer, one one-time key each |
-| Recovery key | A separate tree held by someone else; may cancel anything at any time and act fully after the owner is inactive for a set period (default 180 days) | The recovery holder |
+| Recovery key | A separate tree held by someone else; may cancel anything at any time, cancel and freeze the vault for 1 to 90 days against a stolen main phrase (v4.2: the main phrase alone then moves nothing and does not count as activity, main and recovery phrase together can still escape to a new vault), and act fully after the owner is inactive for a set period (default 180 days) | The recovery holder |
 | Testament | Up to 4 heirs with percentages; after a set inactivity (default 365 days) anyone can distribute SOL, tokens and stakes to them | Anyone, once due |
 | Whitelist, instant limit, delay | Up to 4 trusted addresses pay out at once; others pay out at once up to a daily limit, above it after a delay (default 24 h) during which it can be cancelled | Owner signs; anyone executes when due |
 | Schedules | Recurring payments (amount, interval, count) from one signature | Anyone, only when due |
@@ -118,7 +118,7 @@ A vault is as strong as SHA-256 and the program's code; nothing in it depends on
 
 **One tree, one vault.** A key tree is used in exactly one vault, because the signed message names the vault.
 
-**Status:** devnet only. Unaudited. 38 end-to-end program tests, 39 TypeScript and 13 Rust property tests (v4: duress mode and sealed letters included), plus an internal review that found and fixed one critical client issue before launch.
+**Status:** devnet only. Unaudited. 48 end-to-end program tests, 43 TypeScript and 17 Rust property tests (duress mode, sealed letters and the v4.2 recovery freeze included), plus an internal review that found and fixed one critical client issue before launch.
 
 ## $NOX utility
 
@@ -184,7 +184,7 @@ Noxvault is on devnet today; mainnet follows an independent audit, and governanc
 
 | Phase | Status | What it contains |
 | --- | --- | --- |
-| Build | Done | Protocol v1 to v4 (duress mode, sealed letters, treasury pages), 38 end-to-end and 52 property tests |
+| Build | Done | Protocol v1 to v4 (duress mode, sealed letters, treasury pages), 48 end-to-end and 60 property tests |
 | Devnet | Now | Public testing, test $NOX tiers |
 | Audit | Next | External review, bug bounty |
 | Mainnet | After the audit gate: report public, findings fixed | Upgrade authority to a team multisig, $NOX tiers live |
@@ -200,7 +200,7 @@ The largest risk today is unaudited code; the largest long-term risk is that the
 | --- | --- | --- |
 | Smart-contract bug | Funds locked or lost | Independent audit before mainnet, bug bounty, small limits at launch |
 | Lost phrase | Vault unrecoverable | Recovery key, testament, Shamir and encrypted backups |
-| Stolen phrase | Funds moved within the vault's rules | Whitelist, delays, instant limit, recovery key can cancel |
+| Stolen phrase | Funds moved within the vault's rules | Whitelist, delays, instant limit, recovery key can cancel, or cancel and freeze (v4.2) |
 | Coercion | Someone forces the owner to open the vault | Duress phrase: capped payout, then lockdown that only the recovery key lifts |
 | Browser compromise | Phrase read while signing | Offline signing on an air-gapped device |
 | Escape Hatch race | An attacker who breaks a wallet key moves its funds first | Keep most funds in the vault; canary priority |

@@ -281,12 +281,16 @@ fn r09_only_cancels_and_ping_pass_a_lockdown() {
         Kind::CancelBudget { id: 0 },
         Kind::Migrate { new_vault: k },
         Kind::LetterKey { key: k },
+        Kind::CancelLock { secs: DAY },
     ];
-    for kind in kinds {
+    for (i, kind) in kinds.into_iter().enumerate() {
         let tag = kind.try_to_vec().unwrap()[0];
+        // Append-only enum: every tag is its position, so v4 encodings stay valid (v4.2 adds 12).
+        assert_eq!(tag as usize, i);
         let a = Action { kind, fee: u64::MAX, fee_payee: k };
         assert_eq!(a.is_cancel(), matches!(tag, 4 | 7 | 9), "tag {tag}");
         assert_eq!(a.allowed_in_lockdown(), matches!(tag, 4 | 5 | 7 | 9), "tag {tag}");
+        assert_eq!(a.needs_recovery(), tag == 12, "tag {tag}");
         // Every action fits the on-chain buffers (Unlock.action, Approval.action).
         assert!(a.try_to_vec().unwrap().len() <= MAX_ACTION);
     }
@@ -371,4 +375,175 @@ fn r13_budgets_need_some_unrestricted_destination() {
     }
     // The fee cap: 0.01 SOL.
     assert_eq!(MAX_ACTION_FEE, 10_000_000);
+}
+
+// ---------- v4.2: recovery CancelLock (docs/audit/INVARIANTS.md A-11..A-13) ----------
+
+fn any_kind(r: &mut Rng) -> Kind {
+    let k = r.key();
+    let secs = [0, 1, DAY - 1, DAY, 14 * DAY, MAX_CANCEL_LOCK, MAX_CANCEL_LOCK + 1, -DAY, i64::MAX][r.below(9) as usize];
+    let mint = if r.below(2) == 0 { Pubkey::default() } else { k };
+    match r.below(13) {
+        0 => Kind::Withdraw { mint, dest: k, amount: 1 },
+        1 => Kind::Stake { seed: 0, vote: k, amount: 1 },
+        2 => Kind::Unstake { seed: 0 },
+        3 => Kind::CollectStake { seed: 0 },
+        4 => Kind::Cancel,
+        5 => Kind::Ping,
+        6 => Kind::Schedule { id: 0, mint, dest: k, amount: 1, interval: 1, count: 1, start: 0 },
+        7 => Kind::CancelSchedule { id: 0 },
+        8 => Kind::Budget { id: 0, session: k, mint, limit: 1, period: 1, expires: 1 },
+        9 => Kind::CancelBudget { id: 0 },
+        10 => Kind::Migrate { new_vault: k },
+        11 => Kind::LetterKey { key: k },
+        _ => Kind::CancelLock { secs },
+    }
+}
+
+/// docs/SPEC.md §4 / §11 written out independently of state.rs: the mode, or the error's name.
+fn spec_mode(trees: u8, threshold: u8, locked: bool, recovery_open: bool, a: &Action) -> Result<Mode, &'static str> {
+    if a.fee > 10_000_000 {
+        return Err("FeeTooHigh");
+    }
+    let signers = (trees & 0b111).count_ones() as u8;
+    let recovery = trees & 0b1000 != 0;
+    let cancel = matches!(a.kind, Kind::Cancel | Kind::CancelSchedule { .. } | Kind::CancelBudget { .. });
+    if let Kind::CancelLock { secs } = a.kind {
+        if !recovery {
+            return Err("CancelLockNeedsRecovery");
+        }
+        if !(86_400..=90 * 86_400).contains(&secs) {
+            return Err("LockOutOfRange");
+        }
+        return Ok(Mode::Normal);
+    }
+    if signers >= threshold {
+        if locked && !recovery && !(cancel || matches!(a.kind, Kind::Ping)) {
+            return Err("Lockdown");
+        }
+        if locked && !recovery && a.fee > 0 {
+            return Err("FeeInLockdown");
+        }
+        return Ok(Mode::Normal);
+    }
+    if recovery {
+        return if cancel {
+            Ok(Mode::Normal)
+        } else if recovery_open {
+            Ok(Mode::Unrestricted)
+        } else {
+            Err("RecoveryLocked")
+        };
+    }
+    if trees == 0b1_0000 {
+        return if matches!(a.kind, Kind::Withdraw { mint, .. } if mint == Pubkey::default()) { Ok(Mode::Duress) } else { Err("DuressSolOnly") };
+    }
+    Err("NotApproved")
+}
+
+fn err_name(e: noxvault::NoxError) -> &'static str {
+    use noxvault::NoxError as E;
+    match e {
+        E::FeeTooHigh => "FeeTooHigh",
+        E::CancelLockNeedsRecovery => "CancelLockNeedsRecovery",
+        E::LockOutOfRange => "LockOutOfRange",
+        E::Lockdown => "Lockdown",
+        E::FeeInLockdown => "FeeInLockdown",
+        E::RecoveryLocked => "RecoveryLocked",
+        E::DuressSolOnly => "DuressSolOnly",
+        E::NotApproved => "NotApproved",
+        _ => "other",
+    }
+}
+
+#[test]
+fn r14_approval_mode_matches_the_spec_table() {
+    let mut r = Rng::new();
+    let k = Pubkey::new_unique();
+    for _ in 0..runs(50_000) {
+        let trees = r.below(32) as u8;
+        let threshold = 1 + r.below(3) as u8;
+        let (locked, open) = (r.below(2) == 0, r.below(2) == 0);
+        let fee = [0, 1, MAX_ACTION_FEE, MAX_ACTION_FEE + 1][r.below(4) as usize];
+        let a = Action { kind: any_kind(&mut r), fee, fee_payee: k };
+        let got = approval_mode(trees, threshold, locked, open, &a).map_err(err_name);
+        assert_eq!(got, spec_mode(trees, threshold, locked, open, &a), "trees {trees:05b} t {threshold} locked {locked} open {open}");
+    }
+}
+
+#[test]
+fn r15_cancel_lock_needs_the_recovery_tree_and_bounded_secs() {
+    // A-11: no approval without the recovery bit ever executes a CancelLock, whatever the
+    // signers, the duress tree, the lockdown or the owner's inactivity; with it, only bounded secs.
+    let mut r = Rng::new();
+    let k = Pubkey::new_unique();
+    assert_eq!((MIN_CANCEL_LOCK, MAX_CANCEL_LOCK), (DAY, 90 * DAY));
+    for _ in 0..runs(20_000) {
+        let trees = r.below(32) as u8;
+        let secs = [r.next() as i64, 0, DAY - 1, DAY, 90 * DAY, 90 * DAY + 1, 1 + r.below(90 * DAY as u64) as i64][r.below(7) as usize];
+        let a = Action { kind: Kind::CancelLock { secs }, fee: r.below(MAX_ACTION_FEE + 1), fee_payee: k };
+        let m = approval_mode(trees, 1 + r.below(3) as u8, r.below(2) == 0, r.below(2) == 0, &a);
+        let bounded = (DAY..=90 * DAY).contains(&secs);
+        assert_eq!(a.lock_bounded(), bounded);
+        match (trees & (1 << RECOVERY_TREE) != 0, bounded) {
+            (false, _) => assert!(matches!(m, Err(noxvault::NoxError::CancelLockNeedsRecovery))),
+            (true, false) => assert!(matches!(m, Err(noxvault::NoxError::LockOutOfRange))),
+            // G-01 kept: it may pay a (capped) fee in a lockdown, since the recovery tree approved it.
+            (true, true) => assert_eq!(m.ok(), Some(Mode::Normal)),
+        }
+    }
+}
+
+#[test]
+fn r16_a_lockdown_binds_exactly_the_approvals_without_the_recovery_tree() {
+    // A-12: during a lockdown the signers alone execute only Ping and cancels, with fee 0; the
+    // signers plus the recovery tree are not limited by it (the owner's escape).
+    let mut r = Rng::new();
+    let k = Pubkey::new_unique();
+    for _ in 0..runs(20_000) {
+        let threshold = 1 + r.below(3) as u8;
+        let signers: u8 = [0b001, 0b011, 0b111][(threshold - 1) as usize];
+        let a = Action { kind: any_kind(&mut r), fee: r.below(MAX_ACTION_FEE + 1), fee_payee: k };
+        let together = approval_mode(signers | 1 << RECOVERY_TREE, threshold, true, r.below(2) == 0, &a);
+        if a.lock_bounded() {
+            assert_eq!(together.ok(), Some(Mode::Normal));
+        }
+        let alone = approval_mode(signers, threshold, true, r.below(2) == 0, &a);
+        assert_eq!(alone.is_ok(), a.allowed_in_lockdown() && a.fee == 0);
+        // Outside a lockdown the recovery bit changes nothing for a signer-threshold approval.
+        if !a.needs_recovery() {
+            assert_eq!(
+                approval_mode(signers, threshold, false, false, &a).ok(),
+                approval_mode(signers | 1 << RECOVERY_TREE, threshold, false, false, &a).ok()
+            );
+        }
+    }
+}
+
+#[test]
+fn r17_extend_lockdown_never_shortens_and_never_overflows() {
+    let mut r = Rng::new();
+    for _ in 0..runs(20_000) {
+        let mut st = VaultState {
+            vault: Pubkey::default(),
+            vault_bump: 0,
+            config_hash: [0; 32],
+            config: config(&mut r),
+            used: [[0; 32]; TREE_COUNT],
+            last_active: 0,
+            created_at: 0,
+            actions: 0,
+            pending: None,
+            window_start: 0,
+            window_spent: 0,
+            migrate_to: None,
+            lockdown_until: [0, (r.next() >> 2) as i64, i64::MAX][r.below(3) as usize],
+        };
+        let now = (r.next() >> 2) as i64;
+        let secs = MIN_CANCEL_LOCK + r.below((MAX_CANCEL_LOCK - MIN_CANCEL_LOCK + 1) as u64) as i64;
+        let before = st.lockdown_until;
+        st.extend_lockdown(now, secs);
+        assert_eq!(st.lockdown_until, before.max(now.saturating_add(secs)));
+        assert!(st.lockdown_until >= before && st.locked(now));
+    }
 }

@@ -22,7 +22,7 @@ const MODEL = [
   {
     Icon: Clock,
     t: "Time as a defence",
-    d: "Restricted payouts wait out a delay that the recovery key can cancel. Recovery and the testament need the owner to be inactive first. Duress mode pays a capped amount and locks the rest.",
+    d: "Restricted payouts wait out a delay that the recovery key can cancel, or cancel and freeze for up to 90 days so a stolen main phrase moves nothing meanwhile. Recovery and the testament need the owner to be inactive first. Duress mode pays a capped amount and locks the rest.",
   },
   {
     Icon: KeyRound,

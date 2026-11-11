@@ -1,6 +1,7 @@
 use anchor_lang::prelude::*;
 
 use crate::wots::{LEN, MAX_HEIGHT, N};
+use crate::NoxError;
 
 pub const VAULT_SEED: &[u8] = b"vault";
 pub const STATE_SEED: &[u8] = b"state";
@@ -49,6 +50,9 @@ pub const MAX_ACTION_FEE: u64 = 10_000_000;
 /// Longest delay, lock, interval or period a config or action may set (10 years). Keeps every
 /// `now + x` far from i64 overflow (docs/SPEC.md §3, v4.1).
 pub const MAX_DURATION: i64 = 10 * 365 * DAY;
+/// Shortest and longest freeze a recovery `CancelLock` may start (docs/SPEC.md §4, v4.2).
+pub const MIN_CANCEL_LOCK: i64 = DAY;
+pub const MAX_CANCEL_LOCK: i64 = 90 * DAY;
 
 /// The canary: a point on the ed25519 curve found by hashing, so nobody knows its private key
 /// (docs/SPEC.md §7). Derivation: first i with SHA256("noxvault/canary/v1" || u32le(i)) on the
@@ -161,6 +165,11 @@ pub enum Kind {
     /// Authorizes an ordinary ed25519 key to write the vault's sealed letters (docs/SPEC.md §12).
     /// The default key revokes it.
     LetterKey { key: Pubkey },
+    /// v4.2 (append only, tag 12): the recovery tree's anti-theft cancel. Clears what `Cancel`
+    /// clears and freezes the vault: `lockdown_until = max(lockdown_until, now + secs)`, with
+    /// `secs` in [MIN_CANCEL_LOCK, MAX_CANCEL_LOCK]. Executes only with the recovery tree's
+    /// approval (docs/SPEC.md §4, §11).
+    CancelLock { secs: i64 },
 }
 
 /// What one approval authorizes. Signed as borsh bytes (docs/SPEC.md §4).
@@ -180,6 +189,17 @@ impl Action {
     pub fn allowed_in_lockdown(&self) -> bool {
         self.is_cancel() || matches!(self.kind, Kind::Ping)
     }
+    /// v4.2: actions that execute only when the recovery tree approved them.
+    pub fn needs_recovery(&self) -> bool {
+        matches!(self.kind, Kind::CancelLock { .. })
+    }
+    /// v4.2: a `CancelLock` freeze is within [MIN_CANCEL_LOCK, MAX_CANCEL_LOCK]; other kinds pass.
+    pub fn lock_bounded(&self) -> bool {
+        match self.kind {
+            Kind::CancelLock { secs } => (MIN_CANCEL_LOCK..=MAX_CANCEL_LOCK).contains(&secs),
+            _ => true,
+        }
+    }
     /// Intervals and periods the action sets are within (0, MAX_DURATION] where it has them.
     pub fn durations_bounded(&self) -> bool {
         match self.kind {
@@ -188,6 +208,75 @@ impl Action {
             _ => true,
         }
     }
+}
+
+/// How an approval authorizes its action.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Mode {
+    /// Signer threshold, or a recovery cancel: the vault's rules apply.
+    Normal,
+    /// Recovery tree after the owner's inactivity: destinations are unrestricted.
+    Unrestricted,
+    /// Duress tree alone: a capped SOL withdrawal, then lockdown (docs/SPEC.md §11).
+    Duress,
+}
+
+pub const SIGNER_BITS: u8 = (1 << SIGNER_SLOTS) - 1;
+
+/// The rules of docs/SPEC.md §4 and §11 as a pure function: which `Mode` the approval bitmap
+/// `trees` gives `action`, or why it cannot execute. `locked` = the vault is in lockdown,
+/// `recovery_open` = the owner has been inactive for `recovery_delay`. `authorize` (lib.rs) calls
+/// it with the vault's state; the property tests (tests/props.rs) call it directly.
+/// The duress bit never counts toward the threshold and never adds to recovery powers.
+pub fn approval_mode(trees: u8, threshold: u8, locked: bool, recovery_open: bool, action: &Action) -> core::result::Result<Mode, NoxError> {
+    // v4.1 (G-01): no execution path pays a fee above the protocol maximum (the duress path
+    // also takes its fee from the duress allowance).
+    if action.fee > MAX_ACTION_FEE {
+        return Err(NoxError::FeeTooHigh);
+    }
+    let signers = (trees & SIGNER_BITS).count_ones() as u8;
+    let recovery = trees & (1 << RECOVERY_TREE) != 0;
+    // v4.2: CancelLock is the recovery tree's own action, at any time (in a lockdown or not,
+    // whatever the owner's activity). Signers alone or the duress tree never freeze the vault.
+    if action.needs_recovery() {
+        if !recovery {
+            return Err(NoxError::CancelLockNeedsRecovery);
+        }
+        if !action.lock_bounded() {
+            return Err(NoxError::LockOutOfRange);
+        }
+        return Ok(Mode::Normal);
+    }
+    if signers >= threshold {
+        // During a lockdown the signers alone may only Ping or cancel, with fee 0 (v4.1, G-01).
+        // v4.2: an approval the recovery tree also signed is not limited by the lockdown (the
+        // vault's rules still apply): the real owner holds both phrases and must be able to act,
+        // e.g. escape to a new vault, while a thief holding only the signer phrase is frozen.
+        // The recovery tree alone can end any lockdown anyway (`Cancel`).
+        if locked && !recovery {
+            if !action.allowed_in_lockdown() {
+                return Err(NoxError::Lockdown);
+            }
+            if action.fee != 0 {
+                return Err(NoxError::FeeInLockdown);
+            }
+        }
+        return Ok(Mode::Normal);
+    }
+    if recovery {
+        if action.is_cancel() {
+            return Ok(Mode::Normal);
+        }
+        if !recovery_open {
+            return Err(NoxError::RecoveryLocked);
+        }
+        return Ok(Mode::Unrestricted);
+    }
+    if trees == 1 << DURESS_TREE {
+        let sol = matches!(action.kind, Kind::Withdraw { mint, .. } if mint == Pubkey::default());
+        return if sol { Ok(Mode::Duress) } else { Err(NoxError::DuressSolOnly) };
+    }
+    Err(NoxError::NotApproved)
 }
 
 pub const PENDING_WITHDRAW: u8 = 0;
@@ -219,13 +308,19 @@ pub struct VaultState {
     pub window_start: i64,
     pub window_spent: u64,
     pub migrate_to: Option<Pubkey>,
-    /// Until then only Ping and cancels execute (set by a duress withdrawal, docs/SPEC.md §11).
+    /// Until then the signers alone execute only Ping and cancels (set by a duress withdrawal,
+    /// docs/SPEC.md §11, or by a recovery `CancelLock`, v4.2).
     pub lockdown_until: i64,
 }
 
 impl VaultState {
     pub fn locked(&self, now: i64) -> bool {
         now < self.lockdown_until
+    }
+    /// `lockdown_until = max(lockdown_until, now + secs)`: a duress withdrawal or a `CancelLock`
+    /// extends a running lockdown, never shortens it (only a recovery `Cancel` ends one).
+    pub fn extend_lockdown(&mut self, now: i64, secs: i64) {
+        self.lockdown_until = self.lockdown_until.max(now.saturating_add(secs));
     }
     pub fn used(&self, tree: u8, leaf: u16) -> bool {
         self.used[tree as usize][(leaf / 8) as usize] & (1 << (leaf % 8)) != 0

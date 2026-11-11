@@ -123,13 +123,14 @@ export default function Docs() {
             <li>
               signer approvals reach the vault&apos;s <strong>threshold</strong> (1, 2 or 3 of up to 3 signer trees), or
             </li>
-            <li>the recovery tree approved a Cancel, Cancel schedule or Cancel budget, or</li>
+            <li>the recovery tree approved a Cancel, Cancel schedule, Cancel budget or Cancel + freeze, or</li>
             <li>the recovery tree approved anything and the owner has been inactive for the recovery delay.</li>
           </ul>
           <p>
             For a 2-of-3 vault, each co-signer keeps their own 24 words; the vault commits to all three roots. The first signer&apos;s
             approval waits on chain; the second signer approves <em>exactly the same action</em> and it executes. An approval that
-            never completes can be discarded after 7 days. Signer approvals reset the vault&apos;s <code>last_active</code> clock.
+            never completes can be discarded after 7 days. Signer approvals reset the vault&apos;s <code>last_active</code> clock, except
+            during a lockdown.
           </p>
 
           <h2 id="rules">Rules: whitelist, instant limit, delay</h2>
@@ -170,12 +171,22 @@ export default function Docs() {
             postpones it.
           </p>
 
+          <h2 id="freeze">Cancel and freeze (recovery)</h2>
+          <p>
+            Against a stolen main phrase. A thief with your main phrase could answer every recovery Cancel with a new payout, and each
+            Cancel uses one of the recovery tree&apos;s 16 keys. So the recovery phrase can also <strong>cancel and freeze</strong>: it
+            drops what is pending and puts the vault in lockdown for 1 to 90 days (the apps suggest 14). During the freeze the main
+            phrase alone can only Ping or cancel, and its Pings do not keep the recovery takeover away. Your main phrase and recovery
+            phrase <em>together</em> are not frozen: sign a migration to a fresh vault with both and everything moves at once. A plain
+            recovery Cancel still ends any lockdown; a freeze during a lockdown only extends it. Needs program v4.2.
+          </p>
+
           <h2 id="duress">Duress phrase</h2>
           <p>
             An optional fifth tree from its <strong>own 24 words</strong>, to hand over if someone forces you. It can only withdraw SOL,
             pays at most the duress limit at once (0.5 SOL by default, fee included), ignoring whitelist and delay, and then puts the
-            vault in <strong>lockdown</strong> for the duress lock (3 days by default, at least 1). During a lockdown only Ping and
-            cancels execute; a Cancel from the recovery key ends it at once. Every vault stores a duress root, a decoy derived from the
+            vault in <strong>lockdown</strong> for the duress lock (3 days by default, at least 1). During a lockdown the signers alone
+            can only Ping and cancel, and their approvals do not count as activity; a Cancel from the recovery key ends it at once. Every vault stores a duress root, a decoy derived from the
             owner&apos;s seed when unused, so the chain does not show which vaults have one. Opening <Link href="/mine">My vaults</Link>{" "}
             with the duress phrase shows an ordinary vault holding only that amount. See <Link href="/duress">/duress</Link>.
           </p>

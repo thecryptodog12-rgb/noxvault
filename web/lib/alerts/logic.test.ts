@@ -66,6 +66,15 @@ describe("alertsFor", () => {
     expect(keys(null, snap({ lockdownUntil: NOW + 3 * DAY }))).toEqual([`lockdown:${NOW + 3 * DAY}`]);
     expect(keys(null, snap({ lockdownUntil: NOW - 1 }))).toEqual([]);
     expect(alertsFor(null, snap({ lockdownUntil: NOW + DAY }), NOW)[0].text).toContain("duress phrase was used");
+    // v4.2: a recovery "cancel and freeze" (the pending payout vanished as the lockdown began).
+    const pending = { kind: "withdraw" as const, mint: SOL_MINT, dest: DEST, amount: "2000000000", executableAt: NOW + 3 * DAY };
+    const frozen = alertsFor(snap({ pending, takenAt: NOW - 60 }), snap({ lockdownUntil: NOW + 14 * DAY }), NOW)[0].text;
+    expect(frozen).toContain("frozen until");
+    expect(frozen).toContain("new vault");
+    expect(frozen).not.toContain("duress");
+    // During a lockdown the clock alerts no longer tell the owner to ping.
+    const clock = alertsFor(null, snap({ lockdownUntil: NOW + 14 * DAY, recoveryAt: NOW + 2 * DAY }), NOW).find((a) => a.key.startsWith("recovery:"))!.text;
+    expect(clock).toContain("do not reset");
   });
 
   it("steps recovery and testament warnings at 14, 3 and 1 day", () => {

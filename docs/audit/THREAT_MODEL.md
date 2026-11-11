@@ -11,6 +11,9 @@ v4.1 fixed the gaps G-01..G-05 and G-08 (`INVARIANTS.md` §9, SPEC "Changes in v
 G-07 are documented known limitations (SPEC §13). The risk notes below are from the v4 review:
 those naming G-01..G-05 or G-08 are closed, and the line numbers are v4 lines.
 
+v4.2 adds the recovery tree's `CancelLock` (cancel and freeze) against a thief who holds a signer
+phrase and out-waits the recovery holder (§7 below, `INVARIANTS.md` §10, SPEC "Changes in v4.2").
+
 ## 1. Assets
 
 | # | Asset | Where it lives | What protects it |
@@ -31,11 +34,11 @@ those naming G-01..G-05 or G-08 are closed, and the line numbers are v4 lines.
 
 | Actor | Holds | Intended power | Must never be able to |
 |---|---|---|---|
-| Owner / signers (trees 0..2) | 24-word phrase(s), WOTS+ trees | any action once `threshold` signer trees approve, within the vault rules | exceed the rules (whitelist, instant limit, delay); act during a lockdown except Ping/cancels |
-| Recovery holder (tree 3) | recovery phrase | cancel at any time; everything, unrestricted, after `recovery_delay` of owner inactivity; end a lockdown with `Cancel` | set the letter key; act unrestricted while the owner is active |
+| Owner / signers (trees 0..2) | 24-word phrase(s), WOTS+ trees | any action once `threshold` signer trees approve, within the vault rules; with the recovery tree also during a lockdown (v4.2: then a `Migrate` starts at once, the escape) | exceed the rules (whitelist, instant limit, delay); act during a lockdown without the recovery tree except Ping/cancels; count as active during a lockdown (v4.2) |
+| Recovery holder (tree 3) | recovery phrase | cancel at any time; cancel and freeze for 1 to 90 days (`CancelLock`, v4.2); everything, unrestricted, after `recovery_delay` of owner inactivity; end a lockdown with `Cancel` | set the letter key; act unrestricted while the owner is active; shorten a lockdown other than by ending it |
 | Duress attacker (tree 4) | duress phrase (given under coercion) | one SOL withdrawal of at most `duress_limit` (fee included), then a lockdown | move tokens, stake, schedule, budget, migrate, set the letter key; count toward the threshold |
 | Coercer with the real phrase during a lockdown | signer phrase | Ping and cancels only | move funds until the lockdown ends |
-| Thief of a signer phrase (no coercion) | signer phrase | what the rules allow a restricted destination: within `instant_limit`, else wait `slow_delay` (recovery can cancel) | drain faster than the rules allow |
+| Thief of a signer phrase (no coercion) | signer phrase | what the rules allow a restricted destination: within `instant_limit`, else wait `slow_delay` (recovery can cancel, or cancel and freeze) | drain faster than the rules allow; out-wait the recovery holder (v4.2: a freeze stops his payouts and his "activity"); interrupt the owner's escape during a freeze |
 | Heirs | addresses in `Config.heirs` | receive all SOL / tokens / stake after `testament_delay` of inactivity | receive more than their `bps` share, or early |
 | Session key | ed25519 key in a `Budget` | spend up to `limit` per `period` until `expires`, only to non-restricted destinations | spend past the budget or after expiry; anything else |
 | Letter key | ed25519 key in `LetterKey` | write, overwrite, close the vault's letters | move vault funds, touch `VaultState`, keep the vault "active" |
@@ -90,7 +93,7 @@ should look at first (G-xx are the gaps in `INVARIANTS.md`).
 | `execute_withdraw_token` (252) | Withdraw token | `authorize_full`, mint/dest match, `gate`, funds | fee ungated (G-01) |
 | `execute_stake` (271) | Stake | vote and stake PDA match, funds | not gated (stake stays vault-owned) |
 | `execute_stake_authority` (320) | Unstake, CollectStake | stake PDA match in `stake_authority` (1103) | — |
-| `execute_admin` (337) | Cancel, Ping, CancelSchedule, CancelBudget, Migrate | schedule/budget ownership (353, 358); migrate target is a real vault (363) | Migrate restricted only by the whitelist (G-02); Cancel never clears `migrate_to` (G-04); Ping/Cancel with a fee during lockdown (G-01) |
+| `execute_admin` (337) | Cancel, CancelLock (v4.2), Ping, CancelSchedule, CancelBudget, Migrate | schedule/budget ownership (353, 358); migrate target is a real vault (363) | Migrate restricted only by the whitelist (G-02); Cancel never clears `migrate_to` (G-04); Ping/Cancel with a fee during lockdown (G-01) |
 | `execute_create_schedule` (384) | Schedule | tier, id, amounts, dest ≠ vault, first payment ≥ slow_delay when restricted (397-400) | later payments are not gated (by design: recovery must cancel within the delay) |
 | `execute_create_budget` (416) | Budget | tier, id, session/limit/period/expiry (426) | no restriction check at creation or spend (G-03) |
 | `execute_letter_key` (445) | LetterKey | signer threshold only (449) | — |
@@ -119,6 +122,17 @@ should look at first (G-xx are the gaps in `INVARIANTS.md`).
 | `escape_token` (781) | P | panic or tripped canary; owner = link wallet; delegate = escape PDA | moves to the linked vault only |
 | `escape_sol` (808) | E (wallet) | link wallet and vault | public pre-signed tx: anyone can broadcast it (by design) |
 | `init_canary` / `raise_baseline` / `trip_canary` (823-849) | P | fixed address; trip only when balance < baseline | relies on no rent collection from the canary address |
+
+## 7. v4.2: thief with a signer phrase vs the recovery holder
+
+| Threat | Before v4.2 | v4.2 answer | Residual |
+|---|---|---|---|
+| War of attrition: each recovery `Cancel` burns a recovery key (16 in the apps, at most 256), the thief re-queues at once | thief wins after 16 cancels | `CancelLock`: one recovery key freezes the vault for up to 90 days; the signer phrase alone then executes only Ping and cancels (A-11, A-4) | renewing a freeze costs one recovery key per ≤ 90 days; the owner should escape during the first freeze |
+| Thief keeps `last_active` fresh so the recovery takeover never opens | Pings reset the clock forever | approvals during a lockdown do not count as activity (A-13) | none for the takeover; the testament clock also runs during a freeze (see `INVARIANTS.md` §10) |
+| Thief cancels the owner's migration | a queued migration waits `slow_delay`, any signer `Cancel` stops it | during a lockdown, signers + recovery migrate at once; a signer-only `Cancel` does not clear a started migration (A-12, S-7) | the sweeps (`migrate_sol`, `migrate_token`) must run before the freeze ends; the apps send them right after |
+| Thief created a schedule before the freeze | — | not stopped by a freeze (schedules run during lockdowns, SPEC §11) | the recovery `CancelSchedule`, or the escape (empty vault); first restricted payment waits `slow_delay` |
+| Someone holds **both** the signer and the recovery phrase | could already end lockdowns and, after `recovery_delay`, take over | can now also migrate at once during a freeze he starts | by design: both phrases decide the vault; keep them apart |
+| Program without v4.2 (devnet before the upgrade) | — | `open_unlock` cannot decode tag 12 (`InstructionDidNotDeserialize`, nothing burned); apps detect it (`supportsCancelLock`) and fall back to a plain cancel | — |
 
 ## 5. Root-of-trust assumptions
 

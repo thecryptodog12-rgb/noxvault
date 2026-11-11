@@ -625,7 +625,7 @@ export type Noxvault = {
     {
       "name": "executeAdmin",
       "docs": [
-        "Cancel, Ping, CancelSchedule, CancelBudget and Migrate."
+        "Cancel, CancelLock, Ping, CancelSchedule, CancelBudget and Migrate."
       ],
       "discriminator": [
         194,
@@ -4304,6 +4304,16 @@ export type Noxvault = {
       "code": 6044,
       "name": "durationTooLong",
       "msg": "A delay, lock, interval or period is longer than 10 years"
+    },
+    {
+      "code": 6045,
+      "name": "cancelLockNeedsRecovery",
+      "msg": "Only an approval that includes the recovery tree can cancel and freeze the vault"
+    },
+    {
+      "code": 6046,
+      "name": "lockOutOfRange",
+      "msg": "A freeze lasts at least 1 day and at most 90 days"
     }
   ],
   "types": [
@@ -4720,6 +4730,15 @@ export type Noxvault = {
               {
                 "name": "key",
                 "type": "pubkey"
+              }
+            ]
+          },
+          {
+            "name": "cancelLock",
+            "fields": [
+              {
+                "name": "secs",
+                "type": "i64"
               }
             ]
           }
@@ -5241,7 +5260,8 @@ export type Noxvault = {
           {
             "name": "lockdownUntil",
             "docs": [
-              "Until then only Ping and cancels execute (set by a duress withdrawal, docs/SPEC.md §11)."
+              "Until then the signers alone execute only Ping and cancels (set by a duress withdrawal,",
+              "docs/SPEC.md §11, or by a recovery `CancelLock`, v4.2)."
             ],
             "type": "i64"
           }

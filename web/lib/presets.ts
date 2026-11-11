@@ -24,7 +24,8 @@ export const PRESET_SETTINGS: Partial<Record<Preset, { forWho: string; settings:
     forWho: "Your own savings, in case someone gets hold of your phrase.",
     settings: [
       `Up to ${ANTITHEFT_INSTANT_SOL} SOL a day goes out at once; anything more, and every token payout, waits 72 h`,
-      "A recovery phrase can cancel a pending payout at any time",
+      "A recovery phrase can cancel a pending payout at any time, and freeze the vault for 14 days (1 to 90) so a thief with your main phrase cannot simply queue the next one",
+      "During a freeze the main phrase alone moves nothing and its Pings do not count as activity; your main phrase and recovery phrase together can still escape to a new vault at once",
       "Recovery takes over after 90 days of inactivity",
       "Store the recovery phrase apart from your main phrase, or it protects nothing",
       "Optional: whitelist a wallet of your own with other keys, as an instant escape route",
