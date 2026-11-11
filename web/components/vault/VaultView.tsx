@@ -38,6 +38,7 @@ import { errMsg, fromBaseUnits, short, sol } from "@/lib/format";
 import { explorerUrl } from "@/lib/config";
 import { isSol, vaultAssets, type VaultAssets } from "@/lib/unlock";
 import { dateTime, duration, useNow } from "@/lib/time";
+import PushAlerts from "./PushAlerts";
 
 const slotName = (t: number) => (t === RECOVERY_TREE ? "recovery" : `signer ${t + 1}`);
 
@@ -214,6 +215,14 @@ export default function VaultView({
             </Note>
           )}
           {!duress && <Pending vault={vault} state={state} onChanged={refresh} />}
+          {!duress && (
+            <div>
+              <Label>alerts</Label>
+              <div className="mt-1.5">
+                <PushAlerts vault={vault.toBase58()} compact />
+              </div>
+            </div>
+          )}
           {readErr && <Note kind="warn">{readErr}</Note>}
         </div>
       </div>

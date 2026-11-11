@@ -8,6 +8,7 @@ import { NETWORK, explorerUrl } from "@/lib/config";
 import { loadTreasury, isSolMint, type Treasury } from "@/lib/treasury";
 import { useTokenInfo } from "@/lib/tokens";
 import { dateTime, duration, useNow } from "@/lib/time";
+import PushAlerts from "@/components/vault/PushAlerts";
 
 export default function TreasuryView({ vault }: { vault: string }) {
   const { connection } = useNox();
@@ -84,6 +85,12 @@ export default function TreasuryView({ vault }: { vault: string }) {
               the recovery key can still cancel it.
             </Note>
           )}
+
+          <Panel title="alerts // this device">
+            <div className="p-4 sm:p-5">
+              <PushAlerts vault={vault} />
+            </div>
+          </Panel>
 
           <Panel title="enforced on-chain">
             <ul className="flex flex-col gap-2.5 p-4 text-[13.5px] sm:p-5">

@@ -1,0 +1,35 @@
+# Runs the vault alert pass (Telegram + Web Push) every 10 minutes. The Vercel cron in
+# web/vercel.json stays at once a day (Hobby plan limit); this makes a 72 h delay safe to rely on.
+# Setup: docs/ALERTS.md. Secrets: ALERTS_CRON_URL (full URL of /api/telegram/cron) and CRON_SECRET.
+name: alerts
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: alerts
+  cancel-in-progress: false
+
+jobs:
+  pass:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Call the alert cron
+        shell: bash # -eo pipefail: a failed curl fails the run
+        env:
+          ALERTS_CRON_URL: ${{ secrets.ALERTS_CRON_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$ALERTS_CRON_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::notice::ALERTS_CRON_URL or CRON_SECRET is not set; skipping."
+            exit 0
+          fi
+          # Print counts only: the full report names watched vaults, and Actions logs can be public.
+          curl -fsS --max-time 90 --retry 2 --retry-delay 15 \
+            -H "Authorization: Bearer $CRON_SECRET" "$ALERTS_CRON_URL" \
+            | jq -c '{vaults, read, sent, pushed, failed, errors: (.errors | length)}'

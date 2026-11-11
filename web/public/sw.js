@@ -1,7 +1,8 @@
 // Noxvault service worker: keeps the app shell and /offline usable with no network.
 // Strategy: hashed build assets (/_next/static) cache-first; pages network-first with a
 // cached fallback; /offline and its assets are precached on install.
-const VERSION = "nox-v2-2"; // bump: /offline now ships the QR scanner (BarcodeDetector + jsQR)
+// Also shows vault alerts sent with Web Push (docs/ALERTS.md) and opens the page they point to.
+const VERSION = "nox-v2-3"; // bump: push alerts (push, notificationclick, pushsubscriptionchange)
 const SHELL = `${VERSION}-shell`;
 const STATIC = `${VERSION}-static`;
 const PRECACHE_PAGES = ["/offline", "/backup", "/"];
@@ -95,4 +96,65 @@ self.addEventListener("fetch", (event) => {
   if (PRECACHE_FILES.includes(url.pathname)) {
     event.respondWith(caches.match(url.pathname).then((hit) => hit || fetch(req)));
   }
+});
+
+// ---------- vault alerts (Web Push) ----------
+// Payload (lib/alerts/push.ts PushPayload): { title, body, url, tag, urgent }.
+
+self.addEventListener("push", (event) => {
+  let d = {};
+  try {
+    d = event.data ? event.data.json() : {};
+  } catch {
+    d = { body: event.data ? event.data.text() : "" };
+  }
+  const title = typeof d.title === "string" && d.title ? d.title : "Noxvault alert";
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body: typeof d.body === "string" ? d.body : "",
+      tag: typeof d.tag === "string" ? d.tag : undefined,
+      renotify: typeof d.tag === "string",
+      requireInteraction: d.urgent === true,
+      icon: "/vault.png",
+      data: { url: typeof d.url === "string" ? d.url : "/" },
+    })
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  let target = new URL("/", self.location.origin);
+  try {
+    const u = new URL((event.notification.data && event.notification.data.url) || "/", self.location.origin);
+    if (u.origin === self.location.origin) target = u; // never open another site from a push
+  } catch {}
+  event.waitUntil(
+    (async () => {
+      const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      for (const w of wins) {
+        const u = new URL(w.url);
+        if (u.pathname + u.search === target.pathname + target.search && "focus" in w) return w.focus();
+      }
+      return self.clients.openWindow(target.href);
+    })()
+  );
+});
+
+// The browser replaced the subscription: tell the server, so this device keeps its vault alerts.
+self.addEventListener("pushsubscriptionchange", (event) => {
+  event.waitUntil(
+    (async () => {
+      const old = event.oldSubscription;
+      if (!old) return;
+      const sub =
+        event.newSubscription ||
+        (await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: old.options.applicationServerKey }).catch(() => null));
+      if (!sub) return;
+      await fetch("/api/push", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "rotate", oldEndpoint: old.endpoint, subscription: sub.toJSON() }),
+      }).catch(() => {});
+    })()
+  );
 });

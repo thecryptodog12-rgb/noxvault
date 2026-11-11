@@ -26,7 +26,7 @@ const BENEFITS = [
   { Icon: KeyRound, t: "Hash-based keys", d: "Funds move only with one-time SHA-256 signatures, not elliptic-curve keys, so they hold up against future quantum computers." },
 ];
 
-const PROJECT_PRESETS = PRESETS.filter(([p]) => PRESET_SETTINGS[p]);
+const PROJECT_PRESETS = PRESETS.filter(([p]) => PRESET_SETTINGS[p] && !PRESET_SETTINGS[p]?.personal);
 
 export default function Page() {
   return (

@@ -35,7 +35,8 @@ import { TIER_FREE, TIER_NAMES, TIER_SENTINEL, noxAmount, useVaultTier } from "@
 import TierBadge from "@/components/vault/TierBadge";
 import TierHint from "@/components/vault/TierHint";
 import { NOX_CA } from "@/lib/config";
-import { PRESETS, type Preset } from "@/lib/presets";
+import { ANTITHEFT_INSTANT_SOL, PRESETS, type Preset } from "@/lib/presets";
+import PushAlerts from "@/components/vault/PushAlerts";
 
 const signerCountOf = (c: { trees: { height: number }[] }) => [0, 1, 2].filter((t) => c.trees[t].height > 0).length;
 const fromHex = (h: string) => Uint8Array.from(h.match(/../g)!.map((x) => parseInt(x, 16)));
@@ -131,15 +132,21 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
     setPreset(p);
     const team = p === "team" || p === "vesting";
     const slow = p === "slow" || p === "vesting";
+    const antitheft = p === "antitheft";
     setCoCodes(team ? ["", ""] : []);
     setThreshold(team ? 2 : 1);
     setWhitelist([""]);
     setStrict(false);
-    setSlowHours(slow ? "72" : "24");
-    setInstantSol(slow ? "0.01" : "0");
+    setSlowHours(slow || antitheft ? "72" : "24");
+    setInstantSol(slow ? "0.01" : antitheft ? ANTITHEFT_INSTANT_SOL : "0");
     if (team || slow) {
       setRecMode((m) => (m === "none" ? "generate" : m));
       setRecDays("30");
+    }
+    if (antitheft) {
+      // the recovery phrase is what cancels a thief's withdrawal: it must exist
+      setRecMode((m) => (m === "none" ? "generate" : m));
+      setRecDays("90");
     }
     if (p === "dao") {
       // the DAO address is the only destination; everything else is refused (strict, no instant limit)
@@ -451,7 +458,7 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
           {/* presets */}
           <div className="flex flex-col gap-3">
             <Label>start from</Label>
-            <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-5 [&>*]:min-w-0">
+            <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-6 [&>*]:min-w-0">
               {PRESETS.map(([p, t, d]) => (
                 <button
                   key={p}
@@ -489,7 +496,22 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
                 </Note>
               </div>
             )}
-            {preset !== "personal" && preset !== "dao" && (
+            {preset === "antitheft" && (
+              <div className="flex flex-col gap-2">
+                <Note kind="info">
+                  If someone gets your phrase, they can only take {ANTITHEFT_INSTANT_SOL} SOL a day at once. Anything more, and every token payout, waits 72
+                  hours as a pending withdrawal. Your recovery phrase can cancel it in that time, and after 90 days without activity from you it can take over
+                  the vault. Tip: whitelist one wallet of your own that does not use this phrase (a hardware wallet, say). Payouts to it stay instant, so
+                  if your phrase leaks you can move everything there at once, and a thief can only send it there too.
+                </Note>
+                <Note kind="warn">
+                  <strong>Keep the recovery phrase apart from your main phrase</strong>: another place, or a person you trust. Never in the same note, photo,
+                  password manager or drawer. Whoever finds both has both keys, and then this protects nothing. After you create the vault, turn on alerts
+                  for this device so you notice a pending withdrawal in time.
+                </Note>
+              </div>
+            )}
+            {preset !== "personal" && preset !== "dao" && preset !== "antitheft" && (
               <Note kind="info">
                 {preset === "slow"
                   ? "Payouts above 0.01 SOL a day wait 72 hours and show up as pending on the public treasury page, so holders see them coming. A recovery key (set below) can cancel them."
@@ -557,7 +579,9 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
                     </ol>
                     <label className="flex cursor-pointer items-center gap-2 text-[12.5px]">
                       <input type="checkbox" className="accent-[#2ee6d6]" checked={recHanded} onChange={(e) => setRecHanded(e.target.checked)} />
-                      The recovery phrase is written down / handed over.
+                      {preset === "antitheft"
+                        ? "The recovery phrase is written down and stored apart from my main phrase."
+                        : "The recovery phrase is written down / handed over."}
                     </label>
                   </>
                 )}
@@ -952,6 +976,12 @@ export default function SetupVault({ master, words, onForget }: { master: Uint8A
                 </a>
               )}
             </Note>
+          )}
+          {initialized && vault && (
+            <div className="flex flex-col gap-2 rounded-md border border-teal/40 p-3 sm:p-4">
+              <Label>alerts // this device</Label>
+              <PushAlerts vault={vault.toBase58()} />
+            </div>
           )}
           <div className="flex flex-wrap gap-3">
             <Link href="/mine" className="btn ghost">

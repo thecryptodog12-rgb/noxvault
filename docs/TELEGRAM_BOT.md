@@ -4,6 +4,9 @@ The bot runs inside the Next.js app on Vercel: a webhook (`/api/telegram`) answe
 cron route (`/api/telegram/cron`) reads every watched vault and sends alerts. It only reads public
 on-chain data; it holds no Solana keys and sends no transactions.
 
+The same cron pass also sends Web Push notifications to devices that turned on "Warn me on this
+device"; see `docs/ALERTS.md`. The route needs `TELEGRAM_BOT_TOKEN` or the VAPID keys (or both).
+
 | piece | file |
 |---|---|
 | webhook (commands) | `web/app/api/telegram/route.ts` |
@@ -118,6 +121,10 @@ expression makes the deployment fail. The intended schedule is every 15 minutes:
 
 With only the daily run, an alert can arrive up to a day late. That is still in time for the
 14/3/1-day warnings and for pending withdrawals with a delay above 24 h, but not for shorter delays.
+
+The repository ships `.github/workflows/alerts.yml`, which calls the route every 10 minutes from
+GitHub Actions. It needs two repository secrets, `ALERTS_CRON_URL` and `CRON_SECRET`: setup in
+`docs/ALERTS.md`, step 2.
 
 ### 6. Test
 

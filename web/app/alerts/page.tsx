@@ -56,6 +56,13 @@ export default function Page() {
         </ol>
       </div>
 
+      <div data-reveal className="panel p-5 text-[13px] leading-6 text-mute">
+        <div className="mb-2 text-[15px] font-bold text-bone">Or as a push notification</div>
+        Open your vault&apos;s page (<code className="text-bone">/t/&lt;vault address&gt;</code>) on your phone or computer and tap{" "}
+        <span className="text-bone">Warn me on this device</span>. You get the same alerts as a notification, and tapping one about a pending withdrawal opens the
+        recovery page. On iPhone and iPad, add the site to your home screen first (Share → Add to Home Screen) and open it from there.
+      </div>
+
       <div data-reveal className="panel border-warn/40 p-5 text-[13px] leading-6 text-mute">
         <div className="mb-1 font-bold text-warn">What it does not do</div>
         The bot only reads public on-chain data. It never asks for your phrase, recovery code or any key, and it cannot move or cancel anything: you still act with your own keys.

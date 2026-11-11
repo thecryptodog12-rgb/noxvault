@@ -1,5 +1,5 @@
 "use client";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { PublicKey } from "@solana/web3.js";
 import { RECOVERY_TREE, fetchState, withRetry, wordsToSecret, type Signer, type VaultStateView } from "@nox/sdk/client";
 import { equal } from "@nox/sdk/wots";
@@ -20,6 +20,16 @@ export default function Recovery() {
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [res, setRes] = useState<{ vault: PublicKey; state: VaultStateView; signer: Signer } | null>(null);
+  const [fromAlert, setFromAlert] = useState(false);
+
+  // /recovery?vault=<address>: opened from an alert about a pending withdrawal
+  useEffect(() => {
+    const v = new URLSearchParams(window.location.search).get("vault");
+    if (v) {
+      setAddr((a) => a || v);
+      setFromAlert(true);
+    }
+  }, []);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -62,6 +72,13 @@ export default function Recovery() {
         }
         sub="Hold someone's recovery phrase? You can cancel a suspicious pending withdrawal at any time. After the owner has been inactive for the vault's recovery delay, you get full control."
       />
+
+      {fromAlert && !res && (
+        <Note kind="warn">
+          Not your withdrawal? Enter the recovery phrase below, open the vault and cancel the pending withdrawal before it executes. If you did start it, you
+          can ignore the alert.
+        </Note>
+      )}
 
       {!res ? (
         <div className="grid gap-6 xl:grid-cols-[1.25fr_1fr] [&>*]:min-w-0">
