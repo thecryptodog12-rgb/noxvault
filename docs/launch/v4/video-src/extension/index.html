@@ -1,0 +1,85 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+@font-face{font-family:J;src:url(JetBrainsMono-Regular.ttf);font-weight:400}
+@font-face{font-family:J;src:url(JetBrainsMono-Bold.ttf);font-weight:700}
+:root{--ink:#03070a;--line:#15262b;--line2:#213a40;--dim:#5f7479;--mute:#93a5a9;--bone:#e6f0ef;--teal:#2ee6d6;--warn:#ffb547}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1920px;height:1080px;overflow:hidden;background:var(--ink);color:var(--bone);font-family:J,monospace;-webkit-font-smoothing:antialiased}
+#bg{position:absolute;inset:0;background:
+ radial-gradient(900px 700px at 72% 50%,rgba(46,230,214,.13),transparent 65%),
+ linear-gradient(var(--line) 1px,transparent 1px) 0 0/80px 80px,
+ linear-gradient(90deg,var(--line) 1px,transparent 1px) 0 0/80px 80px;opacity:.6}
+#vig{position:absolute;inset:0;background:radial-gradient(ellipse at center,transparent 45%,rgba(3,7,10,.92) 100%)}
+.brand{position:absolute;left:110px;top:80px;display:flex;align-items:center;gap:16px;font-weight:700;letter-spacing:.32em;font-size:22px;color:var(--mute)}
+.brand img{width:40px;height:40px}
+.copy{position:absolute;left:110px;top:330px;width:900px}
+.step{font-size:22px;letter-spacing:.25em;color:var(--teal);font-weight:700;margin-bottom:22px}
+.cap{font-weight:700;font-size:66px;line-height:1.12;letter-spacing:-.01em}
+.sub{font-size:28px;color:var(--mute);margin-top:28px;line-height:1.5}
+.phone{position:absolute;left:1200px;top:96px;width:560px;height:888px;border-radius:26px;overflow:hidden;border:2px solid var(--line2);
+ box-shadow:0 40px 120px rgba(0,0,0,.7),0 0 0 10px rgba(46,230,214,.05)}
+.phone img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:top}
+.end{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+.end img{width:140px;height:140px}
+.end .n{font-size:72px;font-weight:700;letter-spacing:.3em;margin-top:36px;margin-left:.3em}
+.end .tl{font-size:40px;font-weight:700;margin-top:30px}
+.end .u{font-size:40px;color:var(--teal);margin-top:40px;font-weight:700}
+.end .f{font-size:22px;color:var(--dim);margin-top:20px;letter-spacing:.12em}
+</style></head><body>
+<div id="bg"></div><div id="vig"></div>
+<div class="brand" id="brand"><img src="icon.svg">NOXVAULT</div>
+<div class="copy" id="copy"><div class="step" id="step"></div><div class="cap" id="cap"></div><div class="sub" id="sub"></div></div>
+<div class="phone" id="phone"></div>
+<div class="end" id="end">
+  <img src="icon.svg"><div class="n">NOXVAULT</div>
+  <div class="tl">The wallet extension with a vault inside.</div>
+  <div class="u">nox-vault.com</div>
+  <div class="f">COMING TO THE CHROME WEB STORE · DEVNET · UNAUDITED</div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const cl=(x,a=0,b=1)=>Math.min(b,Math.max(a,x));
+const lin=(t,a,b)=>cl((t-a)/(b-a));
+const out=x=>1-Math.pow(1-x,3);
+const SCENES=[
+ {a:0,   b:4.6, step:"01 · ONE EXTENSION", cap:"Your wallet and your vaults. One extension.", sub:"Noxvault for Chrome and Brave.", imgs:[["s1.png",0]]},
+ {a:4.6, b:9.4, step:"02 · SEE THE RISK", cap:"Every Solana wallet is exposed.", sub:"Its address is its public key. No quantum computer can use that today. A large one could.", imgs:[["s2.png",0]]},
+ {a:9.4, b:14.4,step:"03 · PROTECT IT", cap:"One click: Protect it.", sub:"Pick a preset. Your wallet pays the fee. The vault is created on-chain.", imgs:[["s3.png",0],["s3b.png",2.4]]},
+ {a:14.4,b:19.4,step:"04 · MOVE FUNDS IN", cap:"Move your SOL into the vault.", sub:"Inside, every payout needs a hash-based one-time signature. No ed25519 key can move it.", imgs:[["s4.png",0],["s4b.png",2.4]]},
+ {a:19.4,b:24.2,step:"05 · STOLEN PHRASE?", cap:"New payouts wait 72 hours.", sub:"A payout to an address you never approved goes pending, and you get an alert.", imgs:[["s5.png",0]]},
+ {a:24.2,b:28.8,step:"06 · CANCEL + FREEZE", cap:"Stop it with your recovery phrase.", sub:"Cancel the payout and freeze the vault for the thief. The recovery phrase is never stored in the extension.", imgs:[["s6.png",0]]},
+];
+// preload images
+const phone=$("phone"); const IM={};
+SCENES.forEach(s=>s.imgs.forEach(([src])=>{const i=document.createElement("img");i.src=src;i.style.opacity=0;phone.appendChild(i);IM[src]=i;}));
+window.render=function(t){
+  const endO=lin(t,28.9,29.5);
+  let cur=null; for(const s of SCENES) if(t>=s.a&&t<s.b) cur=s;
+  // copy fade per scene
+  Object.values(IM).forEach(i=>{i.style.opacity=0;});
+  if(cur){
+    const fin=out(lin(t,cur.a,cur.a+.5)), fo=1-lin(t,cur.b-.35,cur.b);
+    const o=fin*fo;
+    $("step").textContent=cur.step;$("cap").textContent=cur.cap;$("sub").textContent=cur.sub;
+    $("copy").style.opacity=o; $("copy").style.transform=`translateY(${(1-fin)*24}px)`;
+    // which image
+    let act=cur.imgs[0];for(const im of cur.imgs) if(t-cur.a>=im[1]) act=im;
+    const prevIdx=cur.imgs.indexOf(act)-1;
+    const ia=t-cur.a-act[1];
+    const xf=lin(ia,0,.45);
+    if(prevIdx>=0){IM[cur.imgs[prevIdx][0]].style.opacity=1-xf;}
+    IM[act[0]].style.opacity= prevIdx>=0? xf : 1;
+  } else { $("copy").style.opacity=0; }
+  // phone container fades in/out with scene boundaries and at end
+  const firstIn=out(lin(t,.1,.8));
+  const sc=cur?Math.min(out(lin(t,cur.a,cur.a+.5)),1):0;
+  const ph=$("phone"); ph.style.opacity=(cur? (0.25+0.75*sc):0)*firstIn*(1-endO);
+  ph.style.transform=`translateY(${(1-sc)*30}px) scale(${.985+.015*sc})`;
+  $("end").style.opacity=endO;
+  [...$("end").children].forEach((c,i)=>{if(i>1)c.style.opacity=lin(t,29.3+i*.25,29.7+i*.25);});
+  $("end").children[0].style.transform=`scale(${.8+.2*out(lin(t,28.9,29.7))})`;
+  $("brand").style.opacity=1-endO;
+};
+render(0);
+</script></body></html>
