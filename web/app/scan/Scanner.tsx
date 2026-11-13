@@ -530,6 +530,23 @@ function Report({ s }: { s: Scan }) {
             <Link href={sharePath} className="text-[10px] uppercase tracking-[0.18em] text-dim hover:text-teal">
               [open]
             </Link>
+            <a
+              href={`https://x.com/intent/post?${new URLSearchParams({
+                text:
+                  kind === "vault"
+                    ? "This Solana address is a Noxvault: withdrawals need a hash-based one-time signature, not one ed25519 key. Check yours:"
+                    : priced && total > 0
+                      ? `$${Math.round(total).toLocaleString("en-US")} in this Solana wallet sits behind one ed25519 key. How exposed is yours?`
+                      : "On Solana the address is the public key. How exposed is your wallet?",
+                url: shareUrl,
+                via: "noxvaultHQ",
+              })}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[10px] uppercase tracking-[0.18em] text-dim hover:text-teal"
+            >
+              [post on x]
+            </a>
             <Copy value={shareUrl} />
           </div>
         </div>
